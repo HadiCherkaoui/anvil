@@ -41,3 +41,14 @@ Thumbs.db
 
 # Misc
 *.log
+
+# Superpowers brainstorm session state
+.superpowers/
+
+# Local dev SQLite artifacts (the panel writes here when ANVIL_DATABASE_URL
+# is the default; production uses the PVC mount path).
+/backend/anvil.db
+/backend/anvil.db-*
+
+# IDE-local SQLite project files
+identifier.sqlite
