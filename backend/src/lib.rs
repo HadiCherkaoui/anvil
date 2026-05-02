@@ -16,6 +16,7 @@ pub mod k8s;
 pub mod routes;
 #[cfg(any(feature = "serve-dir", feature = "embed"))]
 pub mod static_serve;
+pub mod validation;
 
 pub use routes::{router, stateless_router};
 
