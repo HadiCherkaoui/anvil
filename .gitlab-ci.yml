@@ -1,88 +1,176 @@
-# anvil CI/CD — M0 scaffold.
-# Real jobs land in M1 (backend lint/test) and M3 (frontend + docker build).
-# Build pipeline order: frontend (pnpm build) -> backend (cargo build --features embed-frontend) -> runtime image.
+# anvil CI/CD pipeline.
+#
+# Three stages: test (parallel lint + unit tests), build (frontend bundle and
+# release binary), image (multi-stage Docker push). No deploy stage — Flux
+# pulls from the registry on its own cadence.
+#
+# Reproducibility:
+#   - cargo: --locked, --frozen on all build/test invocations
+#   - pnpm:  --frozen-lockfile
+#   - base images: pinned to a major (rust:1, node:22-slim) — bump deliberately
+#
+# Path filters keep feature branches cheap: only the relevant jobs run when
+# the matching subtree changes.
 
 stages:
-  - lint
   - test
   - build
+  - image
 
-scaffold:
-  stage: lint
-  image: alpine:3.20
-  script:
-    - echo "anvil M0 scaffold — jobs land in M1 / M3"
+# ----------------------------------------------------------------------------
+# Cargo cache (anchor reused by every Rust job)
+# ----------------------------------------------------------------------------
+.rust_cache: &rust_cache
+  key:
+    files:
+      - backend/Cargo.lock
+  paths:
+    - backend/.cargo/registry/
+    - backend/.cargo/git/
+  policy: pull-push
+
+.rust_defaults: &rust_defaults
+  image: rust:1-bookworm
+  variables:
+    CARGO_HOME: $CI_PROJECT_DIR/backend/.cargo
+  cache:
+    <<: *rust_cache
+  before_script:
+    - rustc --version && cargo --version
   rules:
-    - if: $CI_COMMIT_BRANCH
+    - changes:
+        - backend/**/*
+        - .gitlab-ci.yml
 
-# ---- M1 plan (uncomment when ready) ----
-#
-# rust-fmt:
-#   stage: lint
-#   image: rust:1
-#   script:
-#     - cd backend && cargo fmt --all -- --check
-#   rules:
-#     - changes: [backend/**/*]
-#
-# rust-clippy:
-#   stage: lint
-#   image: rust:1
-#   cache: &cargo_cache
-#     key: $CI_COMMIT_REF_SLUG
-#     paths: [backend/.cargo/registry/, backend/.cargo/git/]
-#     policy: pull-push
-#   script:
-#     - cd backend && cargo clippy --all-targets --all-features --locked -- -D warnings
-#   rules:
-#     - changes: [backend/**/*]
-#
-# rust-test:
-#   stage: test
-#   image: rust:1
-#   cache:
-#     <<: *cargo_cache
-#     policy: pull
-#   script:
-#     - cd backend && cargo test --locked
-#   rules:
-#     - changes: [backend/**/*]
-#
-# ---- M3 plan (uncomment when ready) ----
-#
-# pnpm-typecheck:
-#   stage: lint
-#   image: node:22-slim
-#   script:
-#     - corepack enable
-#     - cd frontend && pnpm install --frozen-lockfile && pnpm typecheck && pnpm lint
-#   rules:
-#     - changes: [frontend/**/*]
-#
-# pnpm-build:
-#   stage: build
-#   image: node:22-slim
-#   script:
-#     - corepack enable
-#     - cd frontend && pnpm install --frozen-lockfile && pnpm build
-#   artifacts:
-#     paths: [frontend/out/]
-#     expire_in: 1 day
-#   rules:
-#     - changes: [frontend/**/*]
-#
-# docker-build:
-#   stage: build
-#   image: docker:27
-#   services: [docker:27-dind]
-#   variables:
-#     DOCKER_BUILDKIT: "1"
-#   needs: [pnpm-build]
-#   before_script:
-#     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-#   script:
-#     - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE:latest .
-#     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
-#     - docker push $CI_REGISTRY_IMAGE:latest
-#   rules:
-#     - if: $CI_COMMIT_BRANCH == "main"
+# ----------------------------------------------------------------------------
+# pnpm cache anchor
+# ----------------------------------------------------------------------------
+.pnpm_defaults: &pnpm_defaults
+  image: node:22-slim
+  variables:
+    PNPM_HOME: $CI_PROJECT_DIR/.pnpm
+    PATH: "$CI_PROJECT_DIR/.pnpm:$PATH"
+  cache:
+    key:
+      files:
+        - frontend/pnpm-lock.yaml
+    paths:
+      - frontend/node_modules/
+      - .pnpm-store/
+    policy: pull-push
+  before_script:
+    - corepack enable
+    - cd frontend
+    - pnpm config set store-dir "$CI_PROJECT_DIR/.pnpm-store"
+    - pnpm install --frozen-lockfile
+  rules:
+    - changes:
+        - frontend/**/*
+        - .gitlab-ci.yml
+
+# ----------------------------------------------------------------------------
+# test stage — parallel
+# ----------------------------------------------------------------------------
+rust-fmt:
+  <<: *rust_defaults
+  stage: test
+  script:
+    - set -euo pipefail
+    - cd backend && cargo fmt --all -- --check
+
+rust-clippy:
+  <<: *rust_defaults
+  stage: test
+  script:
+    - set -euo pipefail
+    # Both feature flavours need to be linted independently — `--all-features`
+    # would activate `serve-dir` *and* `embed`, which is a hard
+    # `compile_error!` (mutex). Two passes keep both code paths honest.
+    - cd backend && cargo clippy --all-targets --features serve-dir --locked -- -D warnings
+    - cd backend && cargo clippy --all-targets --features embed --locked -- -D warnings
+
+rust-test:
+  <<: *rust_defaults
+  stage: test
+  script:
+    - set -euo pipefail
+    - cd backend && cargo test --features serve-dir --locked
+
+pnpm-typecheck-lint:
+  <<: *pnpm_defaults
+  stage: test
+  script:
+    - set -euo pipefail
+    - pnpm typecheck
+    - pnpm lint
+
+# ----------------------------------------------------------------------------
+# build stage — produces the frontend bundle and the release binary
+# ----------------------------------------------------------------------------
+pnpm-build:
+  <<: *pnpm_defaults
+  stage: build
+  script:
+    - set -euo pipefail
+    - pnpm build
+  artifacts:
+    paths:
+      - frontend/out/
+    expire_in: 1 day
+
+# Release binary (only builds on main — feature branches don't need it).
+cargo-build-release:
+  <<: *rust_defaults
+  stage: build
+  needs:
+    - job: pnpm-build
+      artifacts: true
+  script:
+    - set -euo pipefail
+    - cd backend && cargo build --release --locked --features embed
+  artifacts:
+    paths:
+      - backend/target/release/anvil
+    expire_in: 1 day
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - backend/**/*
+        - frontend/**/*
+        - .gitlab-ci.yml
+
+# ----------------------------------------------------------------------------
+# image stage — pushes :<sha> + :latest to the GitLab project registry
+# ----------------------------------------------------------------------------
+docker-build:
+  stage: image
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_BUILDKIT: "1"
+    DOCKER_TLS_CERTDIR: "/certs"
+  # `needs:` here is for sequencing — the Dockerfile re-runs `pnpm build`
+  # internally in stage 1, so we don't actually consume the artifact. Holding
+  # the dependency stops us from spending image-build minutes when the
+  # frontend already failed.
+  needs:
+    - job: pnpm-build
+      artifacts: true
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - set -euo pipefail
+    - docker build
+        --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+        --tag "$CI_REGISTRY_IMAGE:latest"
+        .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - backend/**/*
+        - frontend/**/*
+        - Dockerfile
+        - .gitlab-ci.yml
