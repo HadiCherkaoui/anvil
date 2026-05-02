@@ -6,6 +6,7 @@ import {
 	Suspense,
 	useCallback,
 	useEffect,
+	useRef,
 	useState,
 	type ReactElement,
 } from "react";
@@ -47,6 +48,8 @@ function ServerDetail(): ReactElement {
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
+	// See app/page.tsx for the rationale on this ref pattern.
+	const triggerReload = useRef<() => void>(() => undefined);
 
 	const reloadDetail = useCallback(
 		async (signal: AbortSignal): Promise<void> => {
@@ -69,24 +72,29 @@ function ServerDetail(): ReactElement {
 		[id],
 	);
 
-	const reloadLogs = useCallback(async (): Promise<void> => {
-		if (id === null) return;
-		const ctrl = new AbortController();
-		try {
-			const lines = await fetchLogs(id, ctrl.signal);
-			setLogs(lines);
-		} catch (err: unknown) {
-			void err; // log fetch failures are non-fatal — leave existing tail
-		}
-	}, [id]);
+	const reloadLogs = useCallback(
+		async (signal: AbortSignal): Promise<void> => {
+			if (id === null) return;
+			try {
+				const lines = await fetchLogs(id, signal);
+				setLogs(lines);
+			} catch (err: unknown) {
+				if (err instanceof DOMException && err.name === "AbortError") return;
+				void err; // log fetch failures are non-fatal — leave existing tail
+			}
+		},
+		[id],
+	);
 
 	useEffect(() => {
 		if (id === null) return undefined;
 		const ctrl = new AbortController();
-		// eslint-disable-next-line react-hooks/set-state-in-effect
-		void reloadDetail(ctrl.signal);
-		const handle = setInterval(() => {
+		triggerReload.current = (): void => {
 			void reloadDetail(ctrl.signal);
+		};
+		triggerReload.current();
+		const handle = setInterval(() => {
+			triggerReload.current();
 		}, DETAIL_POLL_MS);
 		return () => {
 			clearInterval(handle);
@@ -96,40 +104,36 @@ function ServerDetail(): ReactElement {
 
 	useEffect(() => {
 		if (id === null || detail?.status !== "running") return undefined;
+		const ctrl = new AbortController();
 		// eslint-disable-next-line react-hooks/set-state-in-effect
-		void reloadLogs();
+		void reloadLogs(ctrl.signal);
 		const handle = setInterval(() => {
-			void reloadLogs();
+			void reloadLogs(ctrl.signal);
 		}, LOG_POLL_MS);
 		return () => {
 			clearInterval(handle);
+			ctrl.abort();
 		};
 	}, [id, detail?.status, reloadLogs]);
 
-	const runAction = useCallback(
-		(fn: () => Promise<unknown>): void => {
-			setActionError(null);
-			setBusy(true);
-			fn()
-				.then(() => {
-					const ctrl = new AbortController();
-					void reloadDetail(ctrl.signal);
-				})
-				.catch((err: unknown) => {
-					if (err instanceof ApiError) {
-						setActionError(`${err.code}: ${err.message}`);
-					} else {
-						setActionError(
-							err instanceof Error ? err.message : "unknown error",
-						);
-					}
-				})
-				.finally(() => {
-					setBusy(false);
-				});
-		},
-		[reloadDetail],
-	);
+	const runAction = useCallback((fn: () => Promise<unknown>): void => {
+		setActionError(null);
+		setBusy(true);
+		fn()
+			.then(() => {
+				triggerReload.current();
+			})
+			.catch((err: unknown) => {
+				if (err instanceof ApiError) {
+					setActionError(`${err.code}: ${err.message}`);
+				} else {
+					setActionError(err instanceof Error ? err.message : "unknown error");
+				}
+			})
+			.finally(() => {
+				setBusy(false);
+			});
+	}, []);
 
 	if (id === null) {
 		return (
@@ -244,7 +248,7 @@ function ServerDetail(): ReactElement {
 						<button
 							type="button"
 							onClick={() => {
-								void reloadLogs();
+								void reloadLogs(new AbortController().signal);
 							}}
 							className="text-xs text-slate-400 hover:text-slate-100"
 						>

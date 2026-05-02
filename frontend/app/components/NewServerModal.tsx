@@ -21,7 +21,7 @@ import { Modal } from "./Modal";
 interface NewServerModalProps {
 	open: boolean;
 	onClose: () => void;
-	onCreated: (id: string) => void;
+	onCreated: () => void;
 }
 
 const MC_VERSIONS = [
@@ -33,7 +33,8 @@ const MC_VERSIONS = [
 	"1.20.4",
 ] as const;
 
-const MEMORY_STEPS_MI = [1024, 2048, 4096, 6144, 8192, 12_288, 16_384] as const;
+const MEMORY_MIN_MI = 1024;
+const MEMORY_MAX_MI = 16_384;
 
 const NAME_REGEX = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -105,8 +106,8 @@ export function NewServerModal({
 			...(form.storageClass !== "" && { storage_class: form.storageClass }),
 		};
 		createServer(request)
-			.then((res) => {
-				onCreated(res.id);
+			.then(() => {
+				onCreated();
 			})
 			.catch((err: unknown) => {
 				if (err instanceof ApiError) {
@@ -174,8 +175,8 @@ export function NewServerModal({
 					<Field label={`Memory: ${(form.memoryMi / 1024).toString()} GiB`}>
 						<input
 							type="range"
-							min={MEMORY_STEPS_MI[0]}
-							max={MEMORY_STEPS_MI[MEMORY_STEPS_MI.length - 1]}
+							min={MEMORY_MIN_MI}
+							max={MEMORY_MAX_MI}
 							step={1024}
 							value={form.memoryMi}
 							onChange={(e) => {

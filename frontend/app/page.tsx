@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	type ReactElement,
+} from "react";
 
 import { Button } from "./components/Button";
 import { NewServerModal } from "./components/NewServerModal";
@@ -17,6 +23,11 @@ type LoadState =
 export default function HomePage(): ReactElement {
 	const [state, setState] = useState<LoadState>({ kind: "loading" });
 	const [modalOpen, setModalOpen] = useState(false);
+	// Holds the latest "trigger reload" closure so action handlers (and
+	// the modal's onCreated) can re-fetch using the same AbortController
+	// the polling effect set up. Aborting on unmount cancels both the
+	// in-flight poll and any user-triggered reloads.
+	const triggerReload = useRef<() => void>(() => undefined);
 
 	const reload = useCallback(async (signal: AbortSignal): Promise<void> => {
 		try {
@@ -36,13 +47,12 @@ export default function HomePage(): ReactElement {
 
 	useEffect(() => {
 		const ctrl = new AbortController();
-		// Polling pattern: reload is async (setState is gated behind an
-		// await fetch) so this is not a synchronous setState — the lint
-		// rule overreaches here.
-		// eslint-disable-next-line react-hooks/set-state-in-effect
-		void reload(ctrl.signal);
-		const handle = setInterval(() => {
+		triggerReload.current = (): void => {
 			void reload(ctrl.signal);
+		};
+		triggerReload.current();
+		const handle = setInterval(() => {
+			triggerReload.current();
 		}, POLL_INTERVAL_MS);
 		return () => {
 			clearInterval(handle);
@@ -51,14 +61,13 @@ export default function HomePage(): ReactElement {
 	}, [reload]);
 
 	const onActionDone = useCallback((): void => {
-		const ctrl = new AbortController();
-		void reload(ctrl.signal);
-	}, [reload]);
+		triggerReload.current();
+	}, []);
 
 	const onCreated = useCallback((): void => {
 		setModalOpen(false);
-		onActionDone();
-	}, [onActionDone]);
+		triggerReload.current();
+	}, []);
 
 	return (
 		<main className="min-h-screen px-6 py-12">
