@@ -72,9 +72,9 @@ mod tests {
 
     #[test]
     fn wrong_key_fails() {
-        let token = mint(&vec![0x41_u8; 32], &fixture(60)).unwrap();
+        let token = mint(&[0x41_u8; 32], &fixture(60)).unwrap();
         assert!(matches!(
-            verify(&vec![0x42_u8; 32], &token),
+            verify(&[0x42_u8; 32], &token),
             Err(AppError::Unauthorized)
         ));
     }

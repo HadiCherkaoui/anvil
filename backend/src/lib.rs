@@ -5,10 +5,14 @@
 //! `tests/*.rs` are public.
 
 use std::fmt;
+use std::sync::Arc;
 
+use axum::extract::FromRef;
+use axum_extra::extract::cookie::Key;
 use kube::Client;
 use sqlx::SqlitePool;
 
+use crate::auth::OidcState;
 use crate::routes::cluster::CapabilitiesCache;
 
 pub mod auth;
@@ -28,7 +32,7 @@ pub use routes::{router, stateless_router};
 
 /// State shared across handlers.
 ///
-/// Cheap to clone — `Client`, `SqlitePool`, and `String` all wrap
+/// Cheap to clone — `Client`, `SqlitePool`, `String`, and `Arc` all wrap
 /// reference-counted internals — so axum's `State` extractor is fine to
 /// use everywhere.
 #[derive(Clone)]
@@ -49,6 +53,14 @@ pub struct AppState {
     pub loadbalancer_supported: bool,
     /// 5-minute cache for `GET /api/cluster/capabilities`.
     pub capabilities_cache: CapabilitiesCache,
+    /// HMAC secret for the session JWT.
+    pub session_key: Vec<u8>,
+    /// AES-GCM key (derived from `session_key`) for the encrypted OIDC-state cookie.
+    pub cookie_key: Key,
+    /// Authentik subjects allowed to use the panel. Empty = any authenticated user.
+    pub allowed_subs: Vec<String>,
+    /// OIDC client + cached provider metadata.
+    pub oidc: Arc<OidcState>,
 }
 
 // `kube::Client` doesn't impl `Debug`, so the derive on `AppState` would
@@ -65,6 +77,17 @@ impl fmt::Debug for AppState {
             .field("node_host", &self.node_host)
             .field("loadbalancer_supported", &self.loadbalancer_supported)
             .field("capabilities_cache", &"<Mutex<...>>")
+            .field("session_key", &"<redacted>")
+            .field("cookie_key", &"<redacted>")
+            .field("allowed_subs", &self.allowed_subs)
+            .field("oidc", &self.oidc)
             .finish()
+    }
+}
+
+// Lets `axum_extra::extract::cookie::PrivateCookieJar` find its key from `AppState`.
+impl FromRef<AppState> for Key {
+    fn from_ref(state: &AppState) -> Self {
+        state.cookie_key.clone()
     }
 }

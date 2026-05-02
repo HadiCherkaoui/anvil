@@ -24,7 +24,7 @@ embed = ["dep:rust-embed", "dep:mime_guess"]
 [dependencies]
 anyhow = "1.0.102"
 axum = { version = "0.8.9", features = ["macros", "ws"] }
-axum-extra = { version = "0.10", features = ["cookie", "cookie-private", "cookie-signed"] }
+axum-extra = { version = "0.10", features = ["cookie", "cookie-key-expansion", "cookie-private", "cookie-signed"] }
 base64 = "0.22"
 bytes = "1.11.1"
 chrono = { version = "0.4.44", default-features = false, features = ["serde", "clock"] }

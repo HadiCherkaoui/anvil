@@ -4,18 +4,20 @@
 //! builds the router, and serves it on the configured bind address.
 //! SIGTERM / Ctrl-C trigger graceful shutdown so in-flight requests finish.
 
+use anvil::auth::OidcState;
 use anvil::config::Config;
-use anvil::{AppState, db, k8s, router};
+use anvil::{db, k8s, router, AppState};
 use anyhow::{Context as _, Result};
+use axum_extra::extract::cookie::Key;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
-use tracing::Level;
 use tracing::event;
-use tracing_subscriber::EnvFilter;
+use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -32,6 +34,14 @@ async fn main() -> Result<()> {
     let kube = k8s::try_default_client()
         .await
         .context("initializing kube client")?;
+    let oidc = OidcState::new(
+        config.oidc_issuer_url.clone(),
+        config.oidc_client_id.clone(),
+        config.oidc_client_secret.clone(),
+        config.oidc_redirect_url.clone(),
+    )
+    .map_err(|e| anyhow::anyhow!("OIDC client init: {e}"))?;
+    let cookie_key = Key::derive_from(&config.session_key);
     let state = AppState {
         kube,
         pool,
@@ -41,6 +51,10 @@ async fn main() -> Result<()> {
         node_host: config.node_host.clone(),
         loadbalancer_supported: config.loadbalancer_supported,
         capabilities_cache: anvil::routes::cluster::new_cache(),
+        session_key: config.session_key.clone(),
+        cookie_key,
+        allowed_subs: config.allowed_subs.clone(),
+        oidc,
     };
 
     let app = router(state)
