@@ -9,25 +9,26 @@ pub mod create;
 pub mod delete;
 pub mod get;
 pub mod logs;
+pub mod rcon;
 pub mod restart;
 pub mod start;
 pub mod stop;
 
 use std::collections::HashMap;
 
-use axum::Json;
 use axum::extract::State;
+use axum::Json;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Service};
-use kube::Api;
 use kube::api::ListParams;
+use kube::Api;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::AppState;
 use crate::error::AppError;
-use crate::k8s::{LABEL_SERVER, MANAGED_BY_LABEL, MANAGED_BY_VALUE, ServerStatus, ServerSummary};
+use crate::k8s::{ServerStatus, ServerSummary, LABEL_SERVER, MANAGED_BY_LABEL, MANAGED_BY_VALUE};
 use crate::k8s_status::{derive_endpoint, derive_status};
+use crate::AppState;
 
 /// Body of `GET /api/servers` (spec §2.2).
 #[derive(Debug, Serialize)]
