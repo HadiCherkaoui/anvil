@@ -8,7 +8,6 @@
 
 use std::collections::BTreeMap;
 
-use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetSpec};
 use k8s_openapi::api::core::v1::{
     Container, ContainerPort, EnvVar, EnvVarSource, PersistentVolumeClaim,
@@ -18,8 +17,9 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
-use rand::RngExt as _;
+use k8s_openapi::ByteString;
 use rand::distr::Alphanumeric;
+use rand::RngExt as _;
 
 use crate::k8s::{
     ANNOTATION_CREATED_AT, ANNOTATION_MC_VERSION, ANNOTATION_MEMORY_MI, ANNOTATION_SERVER_NAME,
@@ -290,21 +290,18 @@ fn env_from_secret(name: &str, secret_name: &str, key: &str) -> EnvVar {
     }
 }
 
-/// Returns memory and CPU requests/limits for the Minecraft container.
+/// Returns CPU and memory limits for the Minecraft container.
 ///
-/// Memory is pinned to the configured budget — `request == limit` — so
-/// the JVM heap and the cgroup match. CPU is conservative (250m request,
-/// 2 cores limit) and not user-tunable in M2.
+/// Limits only — no requests. The homelab cluster is intentionally
+/// overprovisioned, so binding scheduler-visible requests to the
+/// per-server budget would force the operator to right-size every
+/// server before deploying. Limits still cap runaway containers.
 fn pod_resources(memory_mi: i64) -> ResourceRequirements {
-    let mem = Quantity(format!("{memory_mi}Mi"));
-    let mut requests: BTreeMap<String, Quantity> = BTreeMap::new();
-    requests.insert("memory".to_owned(), mem.clone());
-    requests.insert("cpu".to_owned(), Quantity("500m".to_owned()));
     let mut limits: BTreeMap<String, Quantity> = BTreeMap::new();
-    limits.insert("memory".to_owned(), mem);
+    limits.insert("memory".to_owned(), Quantity(format!("{memory_mi}Mi")));
     limits.insert("cpu".to_owned(), Quantity("2000m".to_owned()));
     ResourceRequirements {
-        requests: Some(requests),
+        requests: None,
         limits: Some(limits),
         claims: None,
     }
