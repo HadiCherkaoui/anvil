@@ -3,16 +3,16 @@
 //! NOT a streaming endpoint — the spec says snapshot only. The frontend
 //! has a refresh button. Streaming via WebSocket lands in M3.
 
-use axum::Json;
 use axum::extract::{Path, State};
+use axum::Json;
 use k8s_openapi::api::core::v1::Pod;
-use kube::Api;
 use kube::api::LogParams;
+use kube::Api;
 use serde::Serialize;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::routes::servers::get::fetch_server_row;
+use crate::AppState;
 
 /// Number of trailing log lines returned per request.
 const LOG_TAIL_LINES: i64 = 200;

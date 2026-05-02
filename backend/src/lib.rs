@@ -9,6 +9,8 @@ use std::fmt;
 use kube::Client;
 use sqlx::SqlitePool;
 
+use crate::routes::cluster::CapabilitiesCache;
+
 pub mod config;
 pub mod db;
 pub mod error;
@@ -43,6 +45,8 @@ pub struct AppState {
     pub node_host: String,
     /// Whether the cluster has a `LoadBalancer` provider.
     pub loadbalancer_supported: bool,
+    /// 5-minute cache for `GET /api/cluster/capabilities`.
+    pub capabilities_cache: CapabilitiesCache,
 }
 
 // `kube::Client` doesn't impl `Debug`, so the derive on `AppState` would
@@ -58,6 +62,7 @@ impl fmt::Debug for AppState {
             .field("mc_svc_type", &self.mc_svc_type)
             .field("node_host", &self.node_host)
             .field("loadbalancer_supported", &self.loadbalancer_supported)
+            .field("capabilities_cache", &"<Mutex<...>>")
             .finish()
     }
 }

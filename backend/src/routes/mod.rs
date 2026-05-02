@@ -1,10 +1,11 @@
 //! HTTP route definitions.
 
-use axum::Router;
 use axum::routing::{get, post};
+use axum::Router;
 
 use crate::AppState;
 
+pub mod cluster;
 pub mod health;
 pub mod servers;
 
@@ -58,4 +59,5 @@ fn api_routes() -> Router<AppState> {
         .route("/api/servers/{id}/stop", post(servers::stop::handle))
         .route("/api/servers/{id}/restart", post(servers::restart::handle))
         .route("/api/servers/{id}/logs", get(servers::logs::handle))
+        .route("/api/cluster/capabilities", get(cluster::handle))
 }

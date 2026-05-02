@@ -5,17 +5,17 @@
 //! SIGTERM / Ctrl-C trigger graceful shutdown so in-flight requests finish.
 
 use anvil::config::Config;
-use anvil::{AppState, db, k8s, router};
+use anvil::{db, k8s, router, AppState};
 use anyhow::{Context as _, Result};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
-use tracing::Level;
 use tracing::event;
-use tracing_subscriber::EnvFilter;
+use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,6 +40,7 @@ async fn main() -> Result<()> {
         mc_svc_type: config.mc_svc_type.clone(),
         node_host: config.node_host.clone(),
         loadbalancer_supported: config.loadbalancer_supported,
+        capabilities_cache: anvil::routes::cluster::new_cache(),
     };
 
     let app = router(state)
