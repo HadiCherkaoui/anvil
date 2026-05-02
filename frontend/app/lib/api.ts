@@ -79,6 +79,17 @@ export const rconResponseSchema = z.object({
 	output: z.string(),
 });
 
+// --- auth -----------------------------------------------------------------
+
+export const meSchema = z.object({
+	sub: z.string(),
+	name: z.string(),
+	email: z.string(),
+	picture: z.string().nullable(),
+});
+
+const logoutResponseSchema = z.object({ logoutUrl: z.string() });
+
 // --- create ---------------------------------------------------------------
 
 const NAME_REGEX = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -114,6 +125,7 @@ export type ClusterCapabilities = z.infer<typeof clusterCapabilitiesSchema>;
 export type CreateServerRequest = z.infer<typeof createServerRequestSchema>;
 export type ServerStatus = z.infer<typeof serverStatusSchema>;
 export type ExposureMode = z.infer<typeof exposureModeSchema>;
+export type Me = z.infer<typeof meSchema>;
 
 // --- typed error wrapper --------------------------------------------------
 
@@ -131,10 +143,21 @@ export class ApiError extends Error {
 	}
 }
 
+// 401 from any /api/* call means our session cookie is missing/expired.
+// Hand control to the backend's /api/auth/login → Authentik dance and never
+// resolve the in-flight Promise so callers don't render an error state.
+function redirectToLogin(): Promise<never> {
+	if (typeof window !== "undefined") {
+		window.location.replace("/api/auth/login");
+	}
+	return new Promise<never>(() => undefined);
+}
+
 async function jsonOrThrow<T>(
 	res: Response,
 	schema: z.ZodSchema<T>,
 ): Promise<T> {
+	if (res.status === 401) return redirectToLogin();
 	if (!res.ok) {
 		const raw: unknown = await res.json().catch(() => ({}));
 		const parsed = errorResponseSchema.safeParse(raw);
@@ -152,6 +175,10 @@ async function jsonOrThrow<T>(
 }
 
 async function noContentOrThrow(res: Response): Promise<void> {
+	if (res.status === 401) {
+		await redirectToLogin();
+		return;
+	}
 	if (res.ok) return;
 	const raw: unknown = await res.json().catch(() => ({}));
 	const parsed = errorResponseSchema.safeParse(raw);
@@ -253,4 +280,16 @@ export async function sendRconCommand(
 		body: JSON.stringify({ cmd }),
 	});
 	return jsonOrThrow(res, rconResponseSchema);
+}
+
+export async function getMe(signal?: AbortSignal): Promise<Me> {
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch("/api/auth/me", init);
+	return jsonOrThrow(res, meSchema);
+}
+
+export async function logout(): Promise<string> {
+	const res = await fetch("/api/auth/logout", { method: "POST" });
+	const body = await jsonOrThrow(res, logoutResponseSchema);
+	return body.logoutUrl;
 }
