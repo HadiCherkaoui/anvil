@@ -73,6 +73,12 @@ export const logsResponseSchema = z.object({
 	lines: z.array(z.string()),
 });
 
+// --- rcon -----------------------------------------------------------------
+
+export const rconResponseSchema = z.object({
+	output: z.string(),
+});
+
 // --- create ---------------------------------------------------------------
 
 const NAME_REGEX = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -235,4 +241,16 @@ export async function deleteServer(id: string): Promise<void> {
 		method: "DELETE",
 	});
 	await noContentOrThrow(res);
+}
+
+export async function sendRconCommand(
+	id: string,
+	cmd: string,
+): Promise<{ output: string }> {
+	const res = await fetch(`/api/servers/${encodeURIComponent(id)}/rcon`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ cmd }),
+	});
+	return jsonOrThrow(res, rconResponseSchema);
 }
