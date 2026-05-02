@@ -6,6 +6,16 @@
 
 This doc is the source of truth for implementation. CLAUDE.md describes *how* we work; this describes *what* we build.
 
+> **Sync note (2026-05-02):** M2 shipped with the following deltas vs the brainstormed
+> spec — see `/api/cluster/capabilities`, ADR 0005, and migration 0002. The §2/§3 below
+> are the M1 design; the deployed contract uses UUID `id` as the URL identifier and as
+> the SQLite primary key, with `name` as a UNIQUE column; columns named `memory_mi`,
+> `exposure_mode`, `storage_size_gi`, plus integer `unix-second` timestamps; and an
+> additional `nodeport` column. The new `GET /api/cluster/capabilities` endpoint
+> exposes `loadbalancer | nodeport | clusterip` booleans plus the
+> `available_storage_classes` list (5-min cached). `POST /api/servers/:id/restart` is
+> async — it returns 202 and the actual stop-wait-start runs in a tokio task.
+
 ---
 
 ## 1. UX

@@ -36,18 +36,36 @@ Deliverables:
 
 ## M2 — Server Management Core
 
-**Goal:** Full server lifecycle via REST API. No frontend yet — test with `httpie` / `curl`.
+**Status:** in progress (2026-05-02). Backend feature-complete; frontend in progress
+under the same milestone (the M2 task brief absorbed M3's frontend scope).
+
+**Goal:** Full server lifecycle from creation to deletion, drivable from a Next.js UI.
 
 Deliverables:
-- `POST /api/servers` — creates StatefulSet + PVC + Service in configured namespace
-- `POST /api/servers/{id}/start` — patches StatefulSet `replicas` to 1
-- `POST /api/servers/{id}/stop` — patches StatefulSet `replicas` to 0
-- `DELETE /api/servers/{id}` — deletes Service → StatefulSet → PVC (must be stopped first)
-- `GET /api/servers/{id}/logs` — streams pod logs (SSE or chunked)
-- All mutations write `audit_log` entries
-- `GET /api/servers` returns status derived live from k8s
+- [x] `POST /api/servers` — creates `Secret` + `StatefulSet` (replicas=0) + `Service`
+      in configured namespace; returns 202
+- [x] `POST /api/servers/:id/start` — patches `/scale` subresource to replicas=1
+- [x] `POST /api/servers/:id/stop` — patches `/scale` subresource to replicas=0
+- [x] `POST /api/servers/:id/restart` — async stop → wait pod gone → start (90 s timeout);
+      returns 202 with `{status: restarting}`
+- [x] `DELETE /api/servers/:id` — `StatefulSet` → wait pod gone → PVC → `Service` →
+      `Secret` → SQLite row; rejects 409 `must_be_stopped` if running
+- [x] `GET /api/servers/:id` — detail with live status + endpoint
+- [x] `GET /api/servers/:id/logs` — last 200 lines, snapshot (not streaming; M3 adds WS)
+- [x] `GET /api/cluster/capabilities` — exposure-mode availability + StorageClass list,
+      cached 5 min (ADR 0005)
+- [x] All mutations write `audit_log` entries
+- [x] `GET /api/servers` JOINs SQLite metadata with live k8s status (StatefulSet + Pod
+      + Service per server)
+- [x] Migration 0002: UUID PK, `memory_mi`, `exposure_mode`, `nodeport`, unix-second
+      timestamps
+- [x] Helm: `mcDefaults.nodeHost`, `mcDefaults.loadbalancerSupported`, `ClusterRole`
+      for StorageClass list
+- [ ] Frontend: server list, "New server" modal, per-server detail page, polling
+- [ ] v0.2.0 tag
 
-**Not in M2:** frontend (M3), auth (M4)
+**Not in M2:** WebSocket log streaming, RCON command input (M3+), auth (M4),
+modpacks (M5)
 
 ---
 
