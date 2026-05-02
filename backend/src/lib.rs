@@ -11,6 +11,7 @@ use sqlx::SqlitePool;
 
 use crate::routes::cluster::CapabilitiesCache;
 
+pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
