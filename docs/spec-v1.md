@@ -86,7 +86,7 @@ Per the design system (ui-ux-pro-max):
 
 | Method   | Path                        | Milestone | Notes                                                                                                      |
 |----------|-----------------------------|-----------|------------------------------------------------------------------------------------------------------------|
-| `GET`    | `/api/health`               | M1        | `{ "ok": true }`                                                                                           |
+| `GET`    | `/api/health`               | M1        | `{ "ok": true, "version": "<crate version>" }` — `version` lets the panel report which build is running.   |
 | `GET`    | `/api/servers`              | M1        | List for the dense table                                                                                   |
 | `POST`   | `/api/servers`              | M2        | Create from modal A                                                                                        |
 | `GET`    | `/api/servers/{name}`       | M2        | Detail (Overview tab)                                                                                      |
@@ -256,42 +256,52 @@ CREATE INDEX idx_audit_server_ts ON audit_log (server_name, ts DESC);
 
 Frontend is Next.js with `output: 'export'`; backend is axum. One binary in production.
 
-### 4.1 Three modes
+### 4.1 Two modes
 
-**1. Dev with HMR** (active frontend dev): two processes.
-- `pnpm dev` runs Next dev server on `:3001` with HMR.
-- `cargo run` runs axum on `:3000` without `embed-frontend`.
-- `next.config.ts` has `rewrites` proxying `/api/:path*` to `http://localhost:3000/api/:path*`. Browser hits `:3001`. Same-origin from the browser's POV → no CORS.
-- Axum serves only `/api/*` and 404s the rest in this mode.
+Next.js 16 disallows `rewrites()` alongside `output: 'export'`, so the dual-process HMR
+proxy mode is not available. The supported workflow is:
 
-**2. Single-binary local** (one process, no Rust recompile on FE change):
+**1. Single-binary local** (one process, no Rust recompile on FE change):
 - `cd frontend && pnpm build` produces `frontend/out/`.
-- `cd ../backend && cargo run` (no `embed-frontend` feature) → `tower-http::services::ServeDir` reads `frontend/out` from disk; SPA fallback serves `frontend/out/index.html` for unmatched non-`/api` routes.
-- Browser hits `:3000`.
+- `cd ../backend && cargo run --features serve-dir` → `tower-http::services::ServeDir`
+  reads `frontend/out` from disk; SPA fallback serves `frontend/out/index.html` for
+  unmatched non-`/api` routes.
+- Browser hits `:8080` (one port for both the API and the bundle — no CORS).
 
-**3. Release / container**:
+**2. Release / container**:
 - `cd frontend && pnpm build`.
-- `cd ../backend && cargo build --release --features embed-frontend`.
-- `rust_embed::Embed` derives a struct that bakes `frontend/out` into the binary at compile time. Same Router shape as mode 2; SPA fallback serves the embedded `index.html`.
+- `cd ../backend && cargo build --release --features embed`.
+- `rust_embed::Embed` derives a struct that bakes `frontend/out` into the binary at
+  compile time. Same router shape as mode 1; SPA fallback serves the embedded
+  `index.html`.
 - This is the Dockerfile output.
 
-### 4.2 Cargo feature flag
+### 4.2 Cargo feature flags
+
+Two **mutually-exclusive** features, neither active by default:
 
 ```toml
 [features]
 default = []
-embed-frontend = []   # M3 will add: dep:rust-embed (or include_dir)
+serve-dir = ["tower-http/fs"]            # dev: tower-http::ServeDir
+embed     = ["dep:rust-embed", "dep:mime_guess"]  # release: bake bundle into binary
 ```
 
 ```rust
-#[cfg(not(feature = "embed-frontend"))]
-fn frontend_routes() -> Router { /* ServeDir + on-disk SPA fallback */ }
+// In src/static_serve.rs:
+#[cfg(all(feature = "serve-dir", feature = "embed"))]
+compile_error!("features `serve-dir` and `embed` are mutually exclusive");
 
-#[cfg(feature = "embed-frontend"))]
-fn frontend_routes() -> Router { /* rust_embed handler + embedded SPA fallback */ }
+#[cfg(feature = "serve-dir")]
+mod serve_dir_impl { /* ServeDir + on-disk SPA fallback */ }
+
+#[cfg(feature = "embed")]
+mod embed_impl { /* rust_embed handler + embedded SPA fallback */ }
 ```
 
-One module, two impls, identical Router. M1 stubs ServeDir against an empty `frontend/out`. M3 wires the embed path.
+Enabling neither is fine — the static-serve module is then absent (used by `cargo test`).
+M1 wires both paths and exercises them via the manual acceptance test; the frontend bundle
+is real, not a stub.
 
 ### 4.3 Embed crate choice
 
@@ -311,17 +321,20 @@ The smallest deployable artifact that proves Rust → kube-rs → real cluster +
 
 ```
 backend/
-├── Cargo.toml              (axum 0.8, tokio "full", tower-http (compression, trace, fs),
-│                            kube ~0.99 (client, derive, ws), k8s-openapi (latest available
-│                            for v1.31+), sqlx (sqlite, migrate, runtime-tokio-rustls,
-│                            offline), serde, serde_json, tracing, tracing-subscriber,
-│                            anyhow, thiserror)
+├── Cargo.toml              (axum 0.8, tokio "full", tower-http (trace, compression-gzip;
+│                            +fs via the `serve-dir` feature), kube 3.x (client, rustls-tls,
+│                            ring), k8s-openapi (pinned to v1_31+), sqlx (sqlite,
+│                            runtime-tokio, migrate, chrono, macros), serde, serde_json,
+│                            chrono, tracing, tracing-subscriber, anyhow, thiserror,
+│                            rust-embed [optional], mime_guess [optional])
 ├── migrations/
 │   └── 0001_init.sql       (servers + audit_log per §3)
 ├── src/
 │   ├── main.rs             (tokio runtime, axum Server::bind, graceful shutdown on SIGTERM)
-│   ├── config.rs           (env: ANVIL_MC_NAMESPACE, ANVIL_DB_PATH, ANVIL_BIND_ADDR,
-│   │                        ANVIL_DEFAULT_MC_VER, ANVIL_MC_STORAGE_CLASS, ANVIL_MC_SVC_TYPE)
+│   ├── config.rs           (M1 env: ANVIL_BIND_ADDR, ANVIL_DATABASE_URL,
+│   │                        ANVIL_MC_NAMESPACE, ANVIL_LOG_LEVEL.
+│   │                        M2 adds: ANVIL_DEFAULT_MC_VER, ANVIL_MC_STORAGE_CLASS,
+│   │                        ANVIL_MC_SVC_TYPE.)
 │   ├── error.rs            (AppError enum, IntoResponse impl, mapping to §2.5 codes)
 │   ├── k8s.rs              (kube::Config::infer; list_statefulsets in mc namespace)
 │   ├── db.rs               (SqlitePool, run migrations on startup)
@@ -346,35 +359,39 @@ rolebinding.yaml         (binds SA → Role across namespaces via RoleBinding na
 statefulset.yaml         (anvil pod, replicas: 1, volumeClaimTemplates for SQLite at
                           /var/lib/anvil/anvil.db)
 service.yaml             (type from .Values.service.type; default LoadBalancer)
-configmap.yaml           (env: ANVIL_MC_NAMESPACE, ANVIL_DB_PATH, …)
+configmap.yaml           (env: ANVIL_BIND_ADDR, ANVIL_DATABASE_URL, ANVIL_MC_NAMESPACE, ANVIL_LOG_LEVEL)
 ```
 
-**Why StatefulSet for anvil itself:** consistent with ADR 0002 — anvil needs a PVC for the SQLite db with stable pod identity. Same primitive we use for managed servers; one less concept to teach.
+**Why a Deployment (not StatefulSet) for anvil itself:** simpler — one PVC + a single-replica Deployment with `strategy: Recreate` (so the old Pod releases the RWO volume before the new one binds it) covers the same need without the StatefulSet ceremony.
 
-**Panel `Service` defaults to `LoadBalancer`** so it gets its own IP from the Cilium pool. M3 may add ingress (depends on the cert-manager decision in §7).
+**Panel `Service` is `ClusterIP`**; the panel is fronted by an Ingress (`traefik` per the cluster profile). cert-manager TLS is gated behind `ingress.tls.enabled` — install cert-manager in the cluster first (M3 prereq).
 
-M2 expands `role.yaml` to add write verbs on `apps/statefulsets`, plus get/list/create/delete/patch on `core/services`, `core/persistentvolumeclaims`, `core/pods`, and get on `core/pods/log`.
+The chart's RBAC ships M2-ready: full read/write verbs on `apps/statefulsets`, `apps/statefulsets/scale`, `core/services`, `core/persistentvolumeclaims`, `core/pods`, `core/pods/log`, `core/secrets`. Surfaced now to keep the chart contract stable through the lifecycle handlers.
 
 ### 5.3 Acceptance test (manual)
 
 ```bash
-helm install anvil ./deploy -n anvil --create-namespace
-# mc namespace already exists via FluxCD (commit e244686)
+helm install anvil ./deploy -n anvil --create-namespace \
+  --set image.tag=<commit-sha> \
+  --set mcDefaults.storageClassName=tank
+# mc namespace already exists via FluxCD (commit e244686).
 
-LB_IP=$(kubectl get svc -n anvil anvil -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-curl http://$LB_IP:3000/api/health           # → {"ok":true}
-curl http://$LB_IP:3000/api/servers          # → {"servers":[]}
-kubectl logs -n anvil sts/anvil              # observe startup, migration logs, kube client init
+kubectl port-forward -n anvil svc/anvil 8080:8080 &
+curl http://localhost:8080/api/health        # → {"ok":true,"version":"0.1.0"}
+curl http://localhost:8080/api/servers       # → {"servers":[]}
+kubectl logs -n anvil deploy/anvil           # observe startup, migration logs, kube client init
 ```
 
 ### 5.4 CI
 
-In `.gitlab-ci.yml`, uncomment for M1:
-- `rust-fmt` (`cargo fmt --check`)
-- `rust-clippy` (`cargo clippy --all-targets --all-features --locked -- -D warnings`)
-- `rust-test` (`cargo test --locked`)
-
-`docker-build` stays commented until M3 (no point producing images without the frontend).
+In `.gitlab-ci.yml`, M1 ships:
+- `rust-fmt` (`cargo fmt --all -- --check`)
+- `rust-clippy` (two passes: `--features serve-dir` and `--features embed`; `--all-features` is a hard `compile_error!` due to the static-serve mutex)
+- `rust-test` (`cargo test --features serve-dir --locked`)
+- `pnpm-typecheck-lint` (`pnpm typecheck && pnpm lint`)
+- `pnpm-build` (artifacts: `frontend/out/`)
+- `cargo-build-release` (`--features embed`, gated to `main`, needs `pnpm-build`)
+- `docker-build` (gated to `main`, push `:$CI_COMMIT_SHA` and `:latest`)
 
 ---
 

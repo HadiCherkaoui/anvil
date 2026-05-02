@@ -26,7 +26,7 @@ Last verified: **2026-05-02** against cluster `homelab` (`kubectl` against conte
 | OIDC provider for M4                    | **Yes**  | Authentik installed in `authentik` namespace.                                               |
 | GitOps tooling                          | Yes      | FluxCD installed (`flux-system`).                                                           |
 | Existing MC tooling                     | Yes      | `craftycontroller` running with LB IP `172.26.20.17` (ports 25565, 25566). **Anvil replaces this** — coexists fine until decommissioned. |
-| `mc` namespace                          | **No**   | Will be created by the Helm chart at install time.                                          |
+| `mc` namespace                          | **Yes**  | Flux-owned (`apps/anvil/namespace.yaml` in `homelab-k8s-fluxcd`, commit `e244686`). The Anvil chart does **not** create it. |
 
 ## Network Notes (informational, not for hardcoding)
 
@@ -54,7 +54,7 @@ These are decisions for Hadi to make at the end of M0:
 - [ ] **`cert-manager`** — install now (needed for M3 TLS on the panel ingress) or defer?
 - [ ] **`VolumeSnapshotClass` for `zfs.csi.openebs.io`** — create now (enables future
       backup workflows) or defer to M5+?
-- [ ] **`mc` namespace** — confirm Helm chart will create it on install. Does NOT exist yet.
+- [x] **`mc` namespace** — Flux-owned, pre-existing on the cluster. Helm chart trusts the prereq and does NOT create it.
 - [ ] **Existing `craftycontroller`** — coexistence is fine; anvil + crafty share the cluster
       until decommission.
 

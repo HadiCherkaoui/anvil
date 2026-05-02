@@ -20,13 +20,17 @@ We need a frontend stack that:
 **Next.js with App Router and `output: 'export'`**, built into `./frontend/out/`. The Rust
 binary serves the static bundle:
 
-- **Dev mode** — `tower-http::services::ServeDir` reads from `./frontend/out` on disk.
-  `pnpm dev` runs Next's dev server on a separate port for HMR; the Rust API is consumed via
-  cross-origin or proxied.
-- **Release mode** — `rust-embed` (or `include_dir`) bakes the bundle into the binary at
-  compile time. One file ships.
+- **Dev mode** — `tower-http::services::ServeDir` (Cargo feature `serve-dir`) reads from
+  `./frontend/out` on disk. The dev workflow is `pnpm build` once, then
+  `cargo run --features serve-dir` — the binary serves both the API and the static bundle
+  on a single port (`:8080`). `pnpm dev` does NOT proxy `/api/*` to the backend because
+  `next.config.ts` rewrites are unsupported alongside `output: 'export'` in Next.js 16.
+- **Release mode** — `rust-embed` (Cargo feature `embed`) bakes the bundle into the binary
+  at compile time. One file ships.
 
-Both modes are gated by a Cargo feature `embed-frontend` (enabled by default in `--release`).
+Both modes are gated by mutually exclusive Cargo features (`serve-dir` and `embed`) — the
+crate emits a `compile_error!` when both are enabled, and neither active is allowed for
+`cargo test` (the static-serve module is then absent).
 
 ## Rationale
 
@@ -50,8 +54,8 @@ Both modes are gated by a Cargo feature `embed-frontend` (enabled by default in 
   client-side routing works on direct URL access (e.g., `/servers/foo`). Implement as the
   axum fallback handler.
 - **Build pipeline order matters.** `pnpm build` (frontend) MUST run before
-  `cargo build --release --features embed-frontend` (backend). The `Dockerfile` and CI
-  encode this order.
+  `cargo build --release --features embed` (backend). The `Dockerfile` and CI encode
+  this order.
 - **Trailing slashes / dynamic segments at export time** — App Router supports static export
   for dynamic routes only via `generateStaticParams` (or kept fully client-side). The plan is
   to keep dynamic routes (e.g., `/servers/[id]`) client-rendered with the data fetched via

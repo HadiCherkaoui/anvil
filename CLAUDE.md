@@ -59,9 +59,11 @@ These are non-negotiable. If you think you have a reason to break one, ask first
 
 - Frontend is Next.js with App Router and `output: 'export'`. Static export only — **no API
   routes, no SSR, no middleware.** All data fetching is client-side against `/api/*`.
-- Backend serves the static export. `tower-http::services::ServeDir` in dev (frontend
-  rebuilds on disk, axum picks up); `rust-embed` in release for single-binary distribution.
-  Feature-gated. SPA fallback: any unmatched non-`/api` GET returns `index.html`.
+- Backend serves the static export. `tower-http::services::ServeDir` (Cargo feature
+  `serve-dir`) in dev — the frontend rebuilds on disk and axum picks up the change;
+  `rust-embed` (Cargo feature `embed`) in release for single-binary distribution.
+  Features are mutually exclusive — enabling both is a hard `compile_error!`. SPA
+  fallback: any unmatched non-`/api` GET returns `index.html` with status 200.
 - Use **kube-rs typed APIs** (`kube::Api<StatefulSet>` etc.). No raw HTTP to k8s.
 - **No CRDs, no controller-runtime, no reconciliation loop.**
 - **SQLite for v1** via `sqlx`, offline migrations. Postgres deferred until asked.
@@ -97,7 +99,9 @@ This is for **ONE cluster, ~5 users, internal use. NOT a SaaS.**
 
 ### Rust (backend)
 - `cargo fmt --all` for formatting.
-- `cargo clippy --all-targets --all-features -- -D warnings` for linting.
+- `cargo clippy --all-targets --features serve-dir -- -D warnings` for linting (and
+  `--features embed` separately — `--all-features` would activate both mutex
+  features and trip the `compile_error!`).
 - `cargo test --all` for tests; integration tests live in `backend/tests/`.
 - Follow Microsoft Rust Guidelines (skill `ms-rust`). Public APIs use M-CANONICAL-DOCS doc
   format (summary < 15 words, then Examples / Errors / Panics / Safety as applicable).
@@ -128,25 +132,28 @@ This is for **ONE cluster, ~5 users, internal use. NOT a SaaS.**
 ## Run Commands
 
 ```bash
-# Backend dev (from /backend)
-cargo run                                     # API on :3000, ServeDir on ../frontend/out
-cargo test --all                              # unit + integration
+# Backend dev (from /backend) — pick a static-serve feature flavour
+cargo run --features serve-dir               # API + frontend on :8080, ServeDir on ../frontend/out
+cargo test --all                              # unit + integration (no static serve needed)
 cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets --features serve-dir -- -D warnings
+cargo clippy --all-targets --features embed   -- -D warnings
 
-# Frontend dev (from /frontend)
-pnpm dev                                      # Next dev on :3001, proxies /api → :3000
+# Frontend dev (from /frontend) — single-binary local is the M1 path:
+# build the frontend, then run the backend with --features serve-dir.
+# `pnpm dev` does NOT proxy /api/* to the backend (rewrites are unsupported
+# alongside `output: 'export'` in Next.js 16).
 pnpm build                                    # produces ./out/
 pnpm typecheck                                # tsc --noEmit
 pnpm lint
 
 # Single-binary release build (from repo root)
 cd frontend && pnpm build
-cd ../backend && cargo build --release --features embed-frontend
+cd ../backend && cargo build --release --features embed
 
 # Container
 docker build -t anvil:dev .
-docker run --rm -p 3000:3000 anvil:dev
+docker run --rm -p 8080:8080 anvil:dev
 ```
 
 ---

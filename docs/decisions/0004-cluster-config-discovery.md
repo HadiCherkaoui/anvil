@@ -23,15 +23,16 @@ All cluster-specific values are configured via the **Helm chart's `values.yaml`*
 the backend at startup as **environment variables**. Defaults in `values.yaml` are derived
 from `docs/cluster-profile.md` but commented as overridable.
 
-Initial set:
+Initial set (as wired in M1; M2 lights up the rest):
 
-| Helm value path        | Backend env var          | Default (per cluster profile)                  | Per-server override?         |
-|------------------------|--------------------------|-------------------------------------------------|------------------------------|
-| `mc.namespace`         | `ANVIL_MC_NAMESPACE`     | `mc`                                            | No                           |
-| `mc.storageClassName`  | `ANVIL_MC_STORAGE_CLASS` | `tank` (cluster-default ZFS SC)                | Yes (panel UI)               |
-| `mc.serviceType`       | `ANVIL_MC_SVC_TYPE`      | `LoadBalancer`                                  | Yes (panel UI)               |
-| `mc.defaultMcVersion`  | `ANVIL_DEFAULT_MC_VER`   | latest stable                                   | Yes (per-server)             |
-| `panel.ingressClassName` | `ANVIL_INGRESS_CLASS`  | `traefik`                                       | n/a (panel-level)            |
+| Helm value path                  | Backend env var          | Default (per cluster profile)                  | Per-server override? |
+|----------------------------------|--------------------------|------------------------------------------------|----------------------|
+| `mcNamespace`                    | `ANVIL_MC_NAMESPACE`     | `mc`                                           | No                   |
+| `mcDefaults.storageClassName`    | `ANVIL_MC_STORAGE_CLASS` | (REQUIRED — chart fails if unset; homelab: `tank`) | Yes (panel UI, M2)   |
+| `mcDefaults.serviceType`         | `ANVIL_MC_SVC_TYPE`      | `LoadBalancer`                                 | Yes (panel UI, M2)   |
+| *(future)* `mcDefaults.mcVersion` | `ANVIL_DEFAULT_MC_VER`   | latest stable                                  | Yes (per-server, M2) |
+| `ingress.className`              | (panel chart, no env)    | `traefik`                                      | n/a                  |
+| `logLevel`                       | `ANVIL_LOG_LEVEL`        | `info`                                         | n/a                  |
 
 The backend does **NOT** auto-discover the cluster's default StorageClass at runtime. The
 Helm chart's defaults assume the operator (the human) has determined the right value via the
