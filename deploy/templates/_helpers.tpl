@@ -56,3 +56,29 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- fail "mcDefaults.storageClassName is required (see docs/cluster-profile.md for legal values; e.g. `tank` on the homelab cluster)" -}}
 {{- end -}}
 {{- end -}}
+
+{{/* Hard-fail when oidc is enabled but TLS isn't, or when required OIDC
+     values are missing. The cookie security flags are pointless over plain
+     HTTP and Authentik will reject http:// redirect URIs in any case. */}}
+{{- define "anvil.requireOidc" -}}
+{{- if .Values.oidc.enabled -}}
+  {{- if not .Values.ingress.tls.enabled -}}
+    {{- fail "oidc.enabled requires ingress.tls.enabled (HTTPS is mandatory for the OIDC redirect_uri and Secure cookie flags)." -}}
+  {{- end -}}
+  {{- if not .Values.oidc.issuerUrl -}}
+    {{- fail "oidc.issuerUrl is required when oidc.enabled (e.g. https://authentik.example/application/o/anvil/)" -}}
+  {{- end -}}
+  {{- if not .Values.oidc.clientId -}}
+    {{- fail "oidc.clientId is required when oidc.enabled" -}}
+  {{- end -}}
+  {{- if not .Values.oidc.redirectUrl -}}
+    {{- fail "oidc.redirectUrl is required when oidc.enabled (e.g. https://anvil.example/api/auth/callback)" -}}
+  {{- end -}}
+  {{- if and (not .Values.oidc.existingSecret) (not .Values.oidc.clientSecret) -}}
+    {{- fail "oidc.clientSecret (or oidc.existingSecret) is required when oidc.enabled" -}}
+  {{- end -}}
+  {{- if and (not .Values.oidc.existingSecret) (not .Values.oidc.sessionKey) -}}
+    {{- fail "oidc.sessionKey (or oidc.existingSecret) is required when oidc.enabled — generate with: openssl rand -base64 32" -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}

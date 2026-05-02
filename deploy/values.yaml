@@ -86,3 +86,33 @@ rbac:
 # Backend log filter. Mirrors the ANVIL_LOG_LEVEL env var.
 # Examples: "info" (default), "debug", "info,kube=warn".
 logLevel: info
+
+# Authentik OIDC (M4). When `enabled`, the chart REQUIRES `ingress.tls.enabled`
+# (the cookie security flags are pointless without HTTPS). See
+# docs/authentik-setup.md for the manual Provider/Application setup.
+oidc:
+  enabled: false
+  # Authentik issuer URL — the full provider page, e.g.
+  # https://authentik.cherkaoui.ch/application/o/anvil/
+  issuerUrl: ""
+  # OAuth2 Client ID surfaced by Authentik for the Anvil application.
+  clientId: ""
+  # Public callback URL Authentik redirects to after login. Must equal the
+  # "Redirect URIs" field on the Authentik provider, exactly.
+  redirectUrl: ""
+  # OAuth2 Client Secret. Prefer `existingSecret` in production.
+  clientSecret: ""
+  # 32-byte HMAC key, base64-encoded (`openssl rand -base64 32`). Used to
+  # sign the session JWT and to derive the encrypted OIDC-state cookie key.
+  # Prefer `existingSecret` in production. Rotating this invalidates all
+  # active sessions.
+  sessionKey: ""
+  # Optional comma-separated list of Authentik subject UUIDs allowed to use
+  # the panel. Empty (default) = any user the Authentik application is
+  # bound to is allowed.
+  allowedSubs: ""
+  # Name of an out-of-band Secret carrying ANVIL_OIDC_CLIENT_SECRET +
+  # ANVIL_SESSION_KEY. When set, the chart does NOT manage a Secret;
+  # `clientSecret` and `sessionKey` are ignored. Recommended for production
+  # so Helm rollbacks don't reset secrets.
+  existingSecret: ""

@@ -1,4 +1,5 @@
 {{- include "anvil.requireMcDefaults" . -}}
+{{- include "anvil.requireOidc" . -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,3 +24,10 @@ data:
   ANVIL_NODE_HOST: {{ .Values.mcDefaults.nodeHost | quote }}
   # Whether the cluster has a LoadBalancer provider.
   ANVIL_LB_SUPPORTED: {{ .Values.mcDefaults.loadbalancerSupported | quote }}
+  {{- if .Values.oidc.enabled }}
+  # --- OIDC (M4) -----------------------------------------------------------
+  ANVIL_OIDC_ISSUER_URL: {{ .Values.oidc.issuerUrl | quote }}
+  ANVIL_OIDC_CLIENT_ID: {{ .Values.oidc.clientId | quote }}
+  ANVIL_OIDC_REDIRECT_URL: {{ .Values.oidc.redirectUrl | quote }}
+  ANVIL_ALLOWED_SUBS: {{ .Values.oidc.allowedSubs | quote }}
+  {{- end }}

@@ -40,6 +40,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "anvil.fullname" . }}
+            {{- if .Values.oidc.enabled }}
+            - secretRef:
+                name: {{ default (printf "%s-oidc" (include "anvil.fullname" .)) .Values.oidc.existingSecret }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /api/health
