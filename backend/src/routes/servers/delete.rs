@@ -1,5 +1,6 @@
 //! `DELETE /api/servers/:id` — tear down a managed server in the order
-//! `StatefulSet` → wait for pod gone → PVC → Service → Secret → `SQLite` row.
+//! `StatefulSet` → wait for pod gone → PVC → public Service → headless
+//! Service → Secret → `SQLite` row.
 //!
 //! Wrong order leaks resources; the documented order ensures the PVC
 //! attachment is released before its delete attempt and the `SQLite` row
@@ -41,6 +42,7 @@ pub async fn handle(
     let resource_name = format!("mc-{id}");
     let pod_name = format!("{resource_name}-0");
     let pvc_name = format!("data-{resource_name}-0");
+    let headless_name = format!("{resource_name}-headless");
     let secret_name = format!("{resource_name}-rcon");
 
     let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
@@ -87,17 +89,25 @@ pub async fn handle(
     // 3. PVC
     delete_tolerate_404(pvcs.delete(&pvc_name, &DeleteParams::default()).await)?;
 
-    // 4. Service
+    // 4. Public Service
     delete_tolerate_404(
         services
             .delete(&resource_name, &DeleteParams::default())
             .await,
     )?;
 
-    // 5. Secret
+    // 5. Headless Service (M3 — added alongside the public Service for
+    //    in-cluster RCON DNS).
+    delete_tolerate_404(
+        services
+            .delete(&headless_name, &DeleteParams::default())
+            .await,
+    )?;
+
+    // 6. Secret
     delete_tolerate_404(secrets.delete(&secret_name, &DeleteParams::default()).await)?;
 
-    // 6. SQLite row + audit. The DELETE goes first so a failure of the
+    // 7. SQLite row + audit. The DELETE goes first so a failure of the
     //    audit insert does not leave an orphan log entry referencing a
     //    server whose metadata still exists. Both happen after the k8s
     //    teardown — a retry of a half-failed teardown replays the k8s

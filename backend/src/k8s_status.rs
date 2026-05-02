@@ -11,6 +11,10 @@ use crate::k8s::{Endpoint, ServerStatus};
 /// Minecraft TCP port used by the itzg image.
 pub const MC_PORT: u16 = 25_565;
 
+/// RCON TCP port. Internal-only: published on the per-server headless
+/// Service, never on the public Service.
+pub const RCON_PORT: u16 = 25_575;
+
 /// Container `waiting` reasons that signal a terminal pod failure.
 const ERROR_REASONS: &[&str] = &[
     "CrashLoopBackOff",

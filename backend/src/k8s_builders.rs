@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetSpec};
 use k8s_openapi::api::core::v1::{
     Container, ContainerPort, EnvVar, EnvVarSource, PersistentVolumeClaim,
@@ -17,15 +18,14 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
-use k8s_openapi::ByteString;
-use rand::distr::Alphanumeric;
 use rand::RngExt as _;
+use rand::distr::Alphanumeric;
 
 use crate::k8s::{
     ANNOTATION_CREATED_AT, ANNOTATION_MC_VERSION, ANNOTATION_MEMORY_MI, ANNOTATION_SERVER_NAME,
     LABEL_SERVER, MANAGED_BY_LABEL, MANAGED_BY_VALUE,
 };
-use crate::k8s_status::MC_PORT;
+use crate::k8s_status::{MC_PORT, RCON_PORT};
 
 /// Container image used for managed Minecraft servers.
 ///
@@ -106,12 +106,20 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
         name: "mc".to_owned(),
         image: Some(MC_IMAGE.to_owned()),
         env: Some(env),
-        ports: Some(vec![ContainerPort {
-            container_port: i32::from(MC_PORT),
-            name: Some("mc".to_owned()),
-            protocol: Some("TCP".to_owned()),
-            ..ContainerPort::default()
-        }]),
+        ports: Some(vec![
+            ContainerPort {
+                container_port: i32::from(MC_PORT),
+                name: Some("mc".to_owned()),
+                protocol: Some("TCP".to_owned()),
+                ..ContainerPort::default()
+            },
+            ContainerPort {
+                container_port: i32::from(RCON_PORT),
+                name: Some("rcon".to_owned()),
+                protocol: Some("TCP".to_owned()),
+                ..ContainerPort::default()
+            },
+        ]),
         resources: Some(resources),
         volume_mounts: Some(vec![VolumeMount {
             name: "data".to_owned(),
@@ -157,7 +165,7 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
 
     let spec = StatefulSetSpec {
         replicas: Some(0),
-        service_name: Some(resource_name.clone()),
+        service_name: Some(format!("{resource_name}-headless")),
         selector: LabelSelector {
             match_labels: Some(labels.clone()),
             ..LabelSelector::default()
@@ -226,6 +234,42 @@ pub fn build_service(p: &BuildParams<'_>) -> Service {
             type_: Some(svc_type.to_owned()),
             selector: Some(labels),
             ports: Some(vec![port]),
+            ..ServiceSpec::default()
+        }),
+        status: None,
+    }
+}
+
+/// Builds the headless Service that gives the `StatefulSet` pod stable
+/// per-pod DNS at `<sts>-0.<svc>.<ns>.svc:25575`.
+///
+/// Used exclusively for in-cluster RCON access. `cluster_ip = None` makes
+/// the Service headless; `publish_not_ready_addresses = true` lets DNS
+/// resolve while the pod is still becoming Ready (the RCON handler still
+/// gates on `Running`, but this avoids transient `NXDOMAIN` flakes during
+/// boot).
+#[must_use]
+pub fn build_headless_service(p: &BuildParams<'_>) -> Service {
+    let resource_name = format!("mc-{}-headless", p.id);
+    let labels = server_labels(p.id);
+    Service {
+        metadata: ObjectMeta {
+            name: Some(resource_name),
+            namespace: Some(p.namespace.to_owned()),
+            labels: Some(labels.clone()),
+            ..ObjectMeta::default()
+        },
+        spec: Some(ServiceSpec {
+            cluster_ip: Some("None".to_owned()),
+            publish_not_ready_addresses: Some(true),
+            selector: Some(labels),
+            ports: Some(vec![ServicePort {
+                port: i32::from(RCON_PORT),
+                target_port: Some(IntOrString::Int(i32::from(RCON_PORT))),
+                protocol: Some("TCP".to_owned()),
+                name: Some("rcon".to_owned()),
+                ..ServicePort::default()
+            }]),
             ..ServiceSpec::default()
         }),
         status: None,
@@ -467,6 +511,82 @@ mod tests {
     }
 
     #[test]
+    fn statefulset_service_name_points_at_headless() {
+        let sts = build_statefulset(&params());
+        assert_eq!(
+            sts.spec.as_ref().unwrap().service_name.as_deref(),
+            Some("mc-abcd1234-headless")
+        );
+    }
+
+    #[test]
+    fn statefulset_container_exposes_mc_and_rcon_ports() {
+        let sts = build_statefulset(&params());
+        let ports = sts
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers[0]
+            .ports
+            .as_ref()
+            .unwrap();
+        let by_name: BTreeMap<&str, i32> = ports
+            .iter()
+            .filter_map(|p| p.name.as_deref().map(|n| (n, p.container_port)))
+            .collect();
+        assert_eq!(by_name.get("mc"), Some(&i32::from(MC_PORT)));
+        assert_eq!(by_name.get("rcon"), Some(&i32::from(RCON_PORT)));
+    }
+
+    #[test]
+    fn headless_service_name_uses_headless_suffix() {
+        let svc = build_headless_service(&params());
+        assert_eq!(svc.metadata.name.as_deref(), Some("mc-abcd1234-headless"));
+        assert_eq!(svc.metadata.namespace.as_deref(), Some("mc"));
+    }
+
+    #[test]
+    fn headless_service_is_clusterip_none_with_publish_not_ready() {
+        let svc = build_headless_service(&params());
+        let spec = svc.spec.as_ref().unwrap();
+        assert_eq!(spec.cluster_ip.as_deref(), Some("None"));
+        assert_eq!(spec.publish_not_ready_addresses, Some(true));
+    }
+
+    #[test]
+    fn headless_service_exposes_only_rcon_port() {
+        let svc = build_headless_service(&params());
+        let ports = svc.spec.as_ref().unwrap().ports.as_ref().unwrap();
+        assert_eq!(ports.len(), 1);
+        let port = &ports[0];
+        assert_eq!(port.port, i32::from(RCON_PORT));
+        assert_eq!(
+            port.target_port,
+            Some(IntOrString::Int(i32::from(RCON_PORT)))
+        );
+        assert_eq!(port.name.as_deref(), Some("rcon"));
+        assert_eq!(port.protocol.as_deref(), Some("TCP"));
+    }
+
+    #[test]
+    fn headless_service_selects_managed_pod() {
+        let svc = build_headless_service(&params());
+        let selector = svc.spec.as_ref().unwrap().selector.as_ref().unwrap();
+        assert_eq!(
+            selector.get("app.anvil.io/server").map(String::as_str),
+            Some("abcd1234")
+        );
+        assert_eq!(
+            selector.get("app.anvil.io/managed-by").map(String::as_str),
+            Some("anvil")
+        );
+    }
+
+    #[test]
     fn service_loadbalancer_has_no_nodeport() {
         let svc = build_service(&params());
         let spec = svc.spec.as_ref().unwrap();
@@ -474,6 +594,29 @@ mod tests {
         let port = &spec.ports.as_ref().unwrap()[0];
         assert_eq!(port.port, i32::from(MC_PORT));
         assert_eq!(port.node_port, None);
+    }
+
+    #[test]
+    fn public_service_never_exposes_rcon_port() {
+        for mode in ["loadbalancer", "nodeport", "clusterip"] {
+            let mut p = params();
+            p.exposure_mode = mode;
+            if mode == "nodeport" {
+                p.nodeport = Some(30_005);
+            }
+            let svc = build_service(&p);
+            let ports = svc.spec.as_ref().unwrap().ports.as_ref().unwrap();
+            assert_eq!(
+                ports.len(),
+                1,
+                "{mode}: public Service must have exactly one port"
+            );
+            assert_ne!(
+                ports[0].port,
+                i32::from(RCON_PORT),
+                "{mode}: RCON must never appear on the public Service"
+            );
+        }
     }
 
     #[test]

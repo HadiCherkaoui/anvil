@@ -6,27 +6,28 @@
 //! `202 Accepted` with the new server's id+name. The user must call
 //! `POST /:id/start` afterwards to bring up the pod.
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Secret, Service};
-use kube::Api;
 use kube::api::PostParams;
+use kube::Api;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s_builders::{
-    BuildParams, build_rcon_secret, build_service, build_statefulset, rcon_password,
+    build_headless_service, build_rcon_secret, build_service, build_statefulset, rcon_password,
+    BuildParams,
 };
 use crate::validation::{
     validate_exposure_mode, validate_mc_version, validate_memory_mi, validate_name,
 };
+use crate::AppState;
 
 /// Lowest `NodePort` allocated by the panel.
 const NODEPORT_MIN: i32 = 30_000;
@@ -180,7 +181,8 @@ pub async fn handle(
     .await?;
 
     // Create k8s objects synchronously: Secret first so the StatefulSet's
-    // RCON env var resolves on first scale-up; StatefulSet next; Service
+    // RCON env var resolves on first scale-up; headless Service so STS
+    // gets stable per-pod DNS; StatefulSet (replicas=0); public Service
     // last.
     let build_params = BuildParams {
         id: &id,
@@ -203,6 +205,13 @@ pub async fn handle(
 
     secrets
         .create(&pp, &build_rcon_secret(&id, &state.mc_namespace, &rcon_pwd))
+        .await?;
+    // Headless Service must exist before the StatefulSet for stable per-pod
+    // DNS records to be created. Replicas=0 at create time means there is no
+    // pod yet, so order isn't strictly enforced — but the convention spares
+    // the next operator a confusing missing-record race.
+    services
+        .create(&pp, &build_headless_service(&build_params))
         .await?;
     stsets
         .create(&pp, &build_statefulset(&build_params))
