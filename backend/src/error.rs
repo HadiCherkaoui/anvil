@@ -10,13 +10,13 @@
 //! - `LbUnavailable` → 502 (cluster does not support `LoadBalancer`)
 //! - everything else → 500
 
-use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde_json::json;
 use thiserror::Error;
-use tracing::Level;
 use tracing::event;
+use tracing::Level;
 
 /// All error variants the API handlers return.
 #[derive(Debug, Error)]
@@ -59,6 +59,19 @@ pub enum AppError {
     /// `LoadBalancer` requested but the cluster cannot provide one.
     #[error("LoadBalancer is not supported on this cluster")]
     LbUnavailable,
+
+    /// Missing or invalid session — unauthenticated request.
+    #[error("authentication required")]
+    Unauthorized,
+
+    /// Authenticated but not permitted (e.g. subject not in `ANVIL_ALLOWED_SUBS`).
+    #[error("{message}")]
+    Forbidden {
+        /// Stable kebab-case code surfaced to the client.
+        code: &'static str,
+        /// Human-readable description of the failure.
+        message: String,
+    },
 }
 
 impl AppError {
@@ -69,8 +82,11 @@ impl AppError {
             Self::DbUnavailable(_) => "db_unavailable",
             Self::Internal(_) => "internal",
             Self::NotFound => "not_found",
-            Self::Conflict { code, .. } | Self::BadRequest { code, .. } => code,
+            Self::Conflict { code, .. }
+            | Self::BadRequest { code, .. }
+            | Self::Forbidden { code, .. } => code,
             Self::LbUnavailable => "lb_unavailable",
+            Self::Unauthorized => "unauthorized",
         }
     }
 
@@ -81,6 +97,8 @@ impl AppError {
             Self::BadRequest { .. } => StatusCode::BAD_REQUEST,
             Self::Conflict { .. } => StatusCode::CONFLICT,
             Self::LbUnavailable => StatusCode::BAD_GATEWAY,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden { .. } => StatusCode::FORBIDDEN,
             Self::KubeUnavailable(_) | Self::DbUnavailable(_) | Self::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -117,5 +135,34 @@ impl IntoResponse for AppError {
         }
 
         (status, Json(json!({ "error": message, "code": code }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt as _;
+
+    #[tokio::test]
+    async fn unauthorized_renders_401_json() {
+        let resp = AppError::Unauthorized.into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn forbidden_renders_403_with_code() {
+        let resp = AppError::Forbidden {
+            code: "sub_not_allowed",
+            message: "nope".into(),
+        }
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], "sub_not_allowed");
+        assert_eq!(v["error"], "nope");
     }
 }
