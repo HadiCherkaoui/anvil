@@ -78,6 +78,15 @@ export function classifyLine(line: string): LogLevel {
 	return "info";
 }
 
+// Lines from MC's RCON Listener / Client threads — fires `Thread … started` and
+// `… shutting down` for every panel command. Drowns out signal in the live
+// panel; full fidelity is still in `kubectl logs`.
+const RCON_THREAD = /\[RCON (?:Listener|Client) [^\]]*\]:/;
+
+export function isNoise(line: string): boolean {
+	return RCON_THREAD.test(line);
+}
+
 /// Parses one inbound text frame. Returns null on schema failure so the
 /// caller can decide whether to surface or silently drop.
 export function parseFrame(raw: string): Frame | null {
@@ -169,6 +178,7 @@ export function useLogsStream(
 					}
 					case "log": {
 						const text = stripAnsi(frame.line);
+						if (isNoise(text)) break;
 						append(classifyLine(text), text);
 						break;
 					}

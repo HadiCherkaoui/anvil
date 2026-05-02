@@ -47,6 +47,10 @@ function ServerDetail(): ReactElement {
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
+	// Bumped on every lifecycle action (start/stop/restart) so the live log
+	// panel remounts and the buffer clears — otherwise the next run's boot
+	// logs render appended to the previous run's tail.
+	const [streamKey, setStreamKey] = useState(0);
 	// See app/page.tsx for the rationale on this ref pattern.
 	const triggerReload = useRef<() => void>(() => undefined);
 
@@ -93,6 +97,7 @@ function ServerDetail(): ReactElement {
 		fn()
 			.then(() => {
 				triggerReload.current();
+				setStreamKey((k) => k + 1);
 			})
 			.catch((err: unknown) => {
 				if (err instanceof ApiError) {
@@ -211,7 +216,7 @@ function ServerDetail(): ReactElement {
 					</p>
 				</section>
 
-				<LiveLogPanel serverId={id} />
+				<LiveLogPanel key={streamKey} serverId={id} />
 
 				<RconCommand serverId={id} disabled={detail.status !== "running"} />
 
