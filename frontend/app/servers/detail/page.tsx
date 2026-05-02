@@ -13,10 +13,11 @@ import {
 
 import { Button } from "../../components/Button";
 import { ConfirmDeleteDialog } from "../../components/ConfirmDeleteDialog";
+import { LiveLogPanel } from "../../components/LiveLogPanel";
+import { RconCommand } from "../../components/RconCommand";
 import { StatusBadge } from "../../components/StatusBadge";
 import {
 	ApiError,
-	fetchLogs,
 	fetchServerDetail,
 	restartServer,
 	startServer,
@@ -25,7 +26,6 @@ import {
 } from "../../lib/api";
 
 const DETAIL_POLL_MS = 5_000;
-const LOG_POLL_MS = 15_000;
 
 export default function ServerDetailPage(): ReactElement {
 	return (
@@ -44,7 +44,6 @@ function ServerDetail(): ReactElement {
 
 	const [detail, setDetail] = useState<ServerDetail | null>(null);
 	const [error, setError] = useState<string | null>(null);
-	const [logs, setLogs] = useState<readonly string[]>([]);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
@@ -72,20 +71,6 @@ function ServerDetail(): ReactElement {
 		[id],
 	);
 
-	const reloadLogs = useCallback(
-		async (signal: AbortSignal): Promise<void> => {
-			if (id === null) return;
-			try {
-				const lines = await fetchLogs(id, signal);
-				setLogs(lines);
-			} catch (err: unknown) {
-				if (err instanceof DOMException && err.name === "AbortError") return;
-				void err; // log fetch failures are non-fatal — leave existing tail
-			}
-		},
-		[id],
-	);
-
 	useEffect(() => {
 		if (id === null) return undefined;
 		const ctrl = new AbortController();
@@ -101,20 +86,6 @@ function ServerDetail(): ReactElement {
 			ctrl.abort();
 		};
 	}, [id, reloadDetail]);
-
-	useEffect(() => {
-		if (id === null || detail?.status !== "running") return undefined;
-		const ctrl = new AbortController();
-		// eslint-disable-next-line react-hooks/set-state-in-effect
-		void reloadLogs(ctrl.signal);
-		const handle = setInterval(() => {
-			void reloadLogs(ctrl.signal);
-		}, LOG_POLL_MS);
-		return () => {
-			clearInterval(handle);
-			ctrl.abort();
-		};
-	}, [id, detail?.status, reloadLogs]);
 
 	const runAction = useCallback((fn: () => Promise<unknown>): void => {
 		setActionError(null);
@@ -240,25 +211,9 @@ function ServerDetail(): ReactElement {
 					</p>
 				</section>
 
-				<section className="flex flex-col gap-3 rounded-lg border border-slate-800 p-4">
-					<div className="flex items-baseline justify-between">
-						<h2 className="text-xs uppercase tracking-wide text-slate-400">
-							Recent logs
-						</h2>
-						<button
-							type="button"
-							onClick={() => {
-								void reloadLogs(new AbortController().signal);
-							}}
-							className="text-xs text-slate-400 hover:text-slate-100"
-						>
-							refresh
-						</button>
-					</div>
-					<pre className="max-h-96 overflow-auto rounded-md bg-slate-950 p-3 font-mono text-xs leading-relaxed text-slate-300">
-						{logs.length === 0 ? "(no logs yet)" : logs.join("\n")}
-					</pre>
-				</section>
+				<LiveLogPanel serverId={id} />
+
+				<RconCommand serverId={id} disabled={detail.status !== "running"} />
 
 				<section className="grid grid-cols-2 gap-4 rounded-lg border border-slate-800 p-4 text-sm sm:grid-cols-3">
 					<DetailField label="Server type" value={detail.server_type} />
