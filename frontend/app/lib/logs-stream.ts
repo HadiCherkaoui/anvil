@@ -161,6 +161,10 @@ export function useLogsStream(
 						backoff = BACKOFF_INITIAL_MS;
 						setStatus("live");
 						setLastError(null);
+						// Clear any stale end reason from a previous attach
+						// — otherwise the status dot keeps showing the old
+						// reason after a successful reconnect.
+						setEndedReason(null);
 						break;
 					}
 					case "log": {

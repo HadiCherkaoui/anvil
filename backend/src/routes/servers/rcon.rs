@@ -1,4 +1,4 @@
-//! `POST /api/servers/:id/rcon` — send one RCON command and return its
+//! `POST /api/servers/{id}/rcon` — send one RCON command and return its
 //! response.
 //!
 //! Per-request: open a TCP connection to the in-cluster headless Service
@@ -10,8 +10,8 @@
 
 use std::time::Duration;
 
-use axum::Json;
 use axum::extract::{Path, State};
+use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Secret};
@@ -21,12 +21,12 @@ use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::ServerStatus;
-use crate::k8s_status::{RCON_PORT, derive_status};
+use crate::k8s_status::{derive_status, RCON_PORT};
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
+use crate::AppState;
 
 /// Maximum length of `cmd`, in bytes. Pre-validated before any k8s I/O
 /// to short-circuit obviously-bogus requests.
@@ -37,7 +37,7 @@ const MAX_CMD_LEN: usize = 1024;
 /// the server is wedged and the user should investigate, not retry.
 const RCON_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Request body for `POST /api/servers/:id/rcon`.
+/// Request body for `POST /api/servers/{id}/rcon`.
 #[derive(Debug, Deserialize)]
 pub struct RconRequest {
     /// The command to send, as the user would type it in-game (without the
@@ -45,7 +45,7 @@ pub struct RconRequest {
     pub cmd: String,
 }
 
-/// Response body for `POST /api/servers/:id/rcon`.
+/// Response body for `POST /api/servers/{id}/rcon`.
 #[derive(Debug, Serialize)]
 pub struct RconResponse {
     /// Server-side response. May be empty (e.g. `say` produces no output).
@@ -77,7 +77,7 @@ fn validate_cmd(cmd: &str) -> Result<&str, AppError> {
     Ok(trimmed)
 }
 
-/// Handler for `POST /api/servers/:id/rcon`.
+/// Handler for `POST /api/servers/{id}/rcon`.
 ///
 /// # Errors
 ///

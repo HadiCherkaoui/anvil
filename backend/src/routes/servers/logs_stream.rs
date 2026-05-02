@@ -1,4 +1,4 @@
-//! `GET /api/servers/:id/logs/stream` — live tail of pod logs over WS.
+//! `GET /api/servers/{id}/logs/stream` — live tail of pod logs over WS.
 //!
 //! Per-connection task structure: split the WebSocket into a sender and
 //! a receiver, spawn a small read task that signals client-close via a
@@ -8,6 +8,11 @@
 //! ends (e.g. pod restart). Heartbeat WS Pings every 30 s keep the
 //! connection alive and let us detect client-side disconnects on
 //! networks that quietly drop idle TCP.
+//!
+//! Known behaviour: the 60 s pod-unavailability window resets on every
+//! re-attach, so a pod stuck in `CrashLoopBackOff` will keep this WS
+//! open indefinitely (each crash is a fresh attach + restart cycle).
+//! For the homelab use case this is fine; the user closes the tab.
 
 use std::time::Duration;
 
@@ -16,23 +21,23 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use bytes::Bytes;
 use chrono::Utc;
-use futures_util::AsyncBufReadExt as _;
-use futures_util::TryStreamExt as _;
 use futures_util::sink::SinkExt as _;
 use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
+use futures_util::AsyncBufReadExt as _;
+use futures_util::TryStreamExt as _;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::Pod;
-use kube::Api;
 use kube::api::LogParams;
+use kube::Api;
 use tokio::sync::oneshot;
-use tokio::time::{Instant, MissedTickBehavior, interval};
+use tokio::time::{interval, Instant, MissedTickBehavior};
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::ServerStatus;
 use crate::k8s_status::derive_status;
 use crate::routes::servers::get::fetch_server_row;
 use crate::ws::{EndReason, Frame};
+use crate::AppState;
 
 /// WS Ping interval.
 const HEARTBEAT: Duration = Duration::from_secs(30);
@@ -41,7 +46,7 @@ const POD_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Sleep between pod-status polls while waiting for Running.
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Handler for `GET /api/servers/:id/logs/stream`.
+/// Handler for `GET /api/servers/{id}/logs/stream`.
 ///
 /// The 404 check happens BEFORE upgrade so an unknown server returns a
 /// proper HTTP error rather than an opened-then-closed WebSocket.
@@ -163,6 +168,9 @@ async fn write_loop(
                         return;
                     }
                 }
+                // Not fully cancel-safe: if hb.tick wins while a line is
+                // partially buffered inside the Lines adaptor, that
+                // partial line is dropped. Acceptable for a live tail.
                 next = lines.try_next() => {
                     match next {
                         Ok(Some(line)) => {

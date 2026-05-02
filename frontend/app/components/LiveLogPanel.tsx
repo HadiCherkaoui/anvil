@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 
 import {
 	type ConnectionStatus,
+	type EndReason,
 	type LogLevel,
 	useLogsStream,
 } from "../lib/logs-stream";
@@ -89,7 +90,7 @@ export function LiveLogPanel({ serverId }: LiveLogPanelProps): ReactElement {
 
 interface StatusDotProps {
 	readonly status: ConnectionStatus;
-	readonly endedReason: string | null;
+	readonly endedReason: EndReason | null;
 }
 
 function StatusDot({ status, endedReason }: StatusDotProps): ReactElement {

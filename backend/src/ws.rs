@@ -59,8 +59,8 @@ pub enum EndReason {
 impl Frame {
     /// Serializes the frame and wraps it in an axum WebSocket text
     /// `Message`. Infallible for the concrete fields used here — a
-    /// failure would mean a programming bug (per
-    /// [`M-PANIC-ON-BUG`](ms-rust)).
+    /// failure would mean a programming bug (per ms-rust
+    /// `M-PANIC-ON-BUG`).
     ///
     /// # Panics
     ///
