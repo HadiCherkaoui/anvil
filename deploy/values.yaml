@@ -1,0 +1,65 @@
+# anvil Helm chart values.
+#
+# Defaults below are derived from docs/cluster-profile.md at the time of writing.
+# Override per-deployment in your Helm release values. See ADR 0004 for the design.
+
+image:
+  repository: gitlab.cherkaoui.ch/hadicherkaoui/anvil
+  # Defaults to .Chart.AppVersion if empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Cluster-specific values consumed by anvil at startup, surfaced through env vars.
+mc:
+  # Namespace where managed Minecraft resources are created.
+  # Override if your cluster uses a different namespace convention.
+  namespace: mc
+
+  # StorageClass used for managed-server PVCs.
+  # Cluster default per profile: `tank` (zfs.csi.openebs.io). Override on clusters
+  # without a ZFS-backed default; e.g. `longhorn`, `local-path`, `openebs-hostpath`.
+  storageClassName: tank
+
+  # Service type for managed Minecraft servers.
+  # MUST be a type the cluster can fulfill. Anvil surfaces a clear error if it
+  # cannot — it does NOT silently fall back. Cluster default per profile: LoadBalancer
+  # (Cilium LB IPAM).
+  serviceType: LoadBalancer
+
+  # Default Minecraft server version when one is not supplied at create time.
+  # Empty string means "latest stable known to the panel".
+  defaultMcVersion: ""
+
+# Ingress for the panel itself (M3+).
+ingress:
+  enabled: false
+  className: traefik
+  host: anvil.example.local
+  # TLS via cert-manager. Requires cert-manager to be installed in the cluster
+  # — see docs/cluster-profile.md prereqs.
+  tls:
+    enabled: false
+    issuerName: ""
+
+# Panel resource requests/limits.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# RBAC for kube-rs to manipulate StatefulSets/PVCs/Services in `mc.namespace`.
+# Concrete Role/Binding manifests live in templates/ (added in M1).
+rbac:
+  create: true
+  # Empty means the chart generates one.
+  serviceAccountName: ""
+
+# Persistence for the panel's own SQLite database.
+persistence:
+  enabled: true
+  # Defaults to the cluster's default StorageClass when empty.
+  storageClassName: ""
+  size: 1Gi

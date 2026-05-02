@@ -1,0 +1,88 @@
+# anvil CI/CD — M0 scaffold.
+# Real jobs land in M1 (backend lint/test) and M3 (frontend + docker build).
+# Build pipeline order: frontend (pnpm build) -> backend (cargo build --features embed-frontend) -> runtime image.
+
+stages:
+  - lint
+  - test
+  - build
+
+scaffold:
+  stage: lint
+  image: alpine:3.20
+  script:
+    - echo "anvil M0 scaffold — jobs land in M1 / M3"
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+# ---- M1 plan (uncomment when ready) ----
+#
+# rust-fmt:
+#   stage: lint
+#   image: rust:1
+#   script:
+#     - cd backend && cargo fmt --all -- --check
+#   rules:
+#     - changes: [backend/**/*]
+#
+# rust-clippy:
+#   stage: lint
+#   image: rust:1
+#   cache: &cargo_cache
+#     key: $CI_COMMIT_REF_SLUG
+#     paths: [backend/.cargo/registry/, backend/.cargo/git/]
+#     policy: pull-push
+#   script:
+#     - cd backend && cargo clippy --all-targets --all-features --locked -- -D warnings
+#   rules:
+#     - changes: [backend/**/*]
+#
+# rust-test:
+#   stage: test
+#   image: rust:1
+#   cache:
+#     <<: *cargo_cache
+#     policy: pull
+#   script:
+#     - cd backend && cargo test --locked
+#   rules:
+#     - changes: [backend/**/*]
+#
+# ---- M3 plan (uncomment when ready) ----
+#
+# pnpm-typecheck:
+#   stage: lint
+#   image: node:22-slim
+#   script:
+#     - corepack enable
+#     - cd frontend && pnpm install --frozen-lockfile && pnpm typecheck && pnpm lint
+#   rules:
+#     - changes: [frontend/**/*]
+#
+# pnpm-build:
+#   stage: build
+#   image: node:22-slim
+#   script:
+#     - corepack enable
+#     - cd frontend && pnpm install --frozen-lockfile && pnpm build
+#   artifacts:
+#     paths: [frontend/out/]
+#     expire_in: 1 day
+#   rules:
+#     - changes: [frontend/**/*]
+#
+# docker-build:
+#   stage: build
+#   image: docker:27
+#   services: [docker:27-dind]
+#   variables:
+#     DOCKER_BUILDKIT: "1"
+#   needs: [pnpm-build]
+#   before_script:
+#     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+#   script:
+#     - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE:latest .
+#     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+#     - docker push $CI_REGISTRY_IMAGE:latest
+#   rules:
+#     - if: $CI_COMMIT_BRANCH == "main"

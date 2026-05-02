@@ -1,0 +1,43 @@
+# Rust
+/backend/target/
+target/
+**/*.rs.bk
+*.pdb
+
+# Frontend (Next.js)
+node_modules/
+/frontend/out/
+/frontend/.next/
+/frontend/.pnpm-store/
+/frontend/.turbo/
+/frontend/next-env.d.ts
+
+# Build artefacts
+out/
+dist/
+
+# Test coverage
+coverage/
+*.lcov
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.direnv/
+
+# Secrets / env
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+kubeconfig
+
+# OS
+Thumbs.db
+
+# Misc
+*.log

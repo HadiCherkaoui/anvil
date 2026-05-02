@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "anvil"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+description = "k8s-native Minecraft server panel"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+
+[features]
+default = []
+# embed-frontend bakes ./frontend/out into the release binary via rust-embed.
+# Disabled in dev so tower-http::ServeDir reads from disk (see ADR 0003).
+embed-frontend = []

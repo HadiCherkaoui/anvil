@@ -1,0 +1,31 @@
+# Build artefacts
+**/target/
+**/node_modules/
+**/.next/
+**/out/
+**/dist/
+
+# Local-only state
+.git/
+.gitignore
+.gitlab-ci.yml
+.env
+.env.*
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Documentation — anvil binary embeds none of this
+*.md
+docs/
+LICENSE
+
+# Helm chart — built and shipped separately, not part of the container image
+deploy/
+
+# Scripts — dev-only
+scripts/
