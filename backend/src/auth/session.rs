@@ -2,7 +2,7 @@
 
 use crate::auth::types::SessionClaims;
 use crate::error::AppError;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 
 /// Cookie name for the session JWT.
 pub const SESSION_COOKIE: &str = "anvil_session";

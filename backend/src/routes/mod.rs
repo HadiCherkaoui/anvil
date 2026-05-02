@@ -1,11 +1,11 @@
 //! HTTP route definitions.
 
+use axum::Router;
 use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
-use axum::Router;
 
-use crate::auth::{handlers as auth, require_session};
 use crate::AppState;
+use crate::auth::{handlers as auth, require_session};
 
 pub mod cluster;
 pub mod health;

@@ -137,10 +137,9 @@ impl OidcState {
         {
             return Ok(c.metadata.clone());
         }
-        let metadata =
-            AnvilProviderMetadata::discover_async(self.issuer.clone(), &self.http)
-                .await
-                .map_err(|e| AppError::Internal(anyhow!("OIDC discovery: {e}")))?;
+        let metadata = AnvilProviderMetadata::discover_async(self.issuer.clone(), &self.http)
+            .await
+            .map_err(|e| AppError::Internal(anyhow!("OIDC discovery: {e}")))?;
         *guard = Some(Cached {
             metadata: metadata.clone(),
             refreshed_at: Instant::now(),
@@ -225,7 +224,10 @@ impl OidcState {
             .id_token()
             .ok_or_else(|| AppError::Internal(anyhow!("no id_token in token response")))?;
         let claims = id_token
-            .claims(&client.id_token_verifier(), &Nonce::new(state.nonce.clone()))
+            .claims(
+                &client.id_token_verifier(),
+                &Nonce::new(state.nonce.clone()),
+            )
             .map_err(|_| AppError::Unauthorized)?;
         Ok(extract_identity(claims))
     }
@@ -255,11 +257,7 @@ fn extract_identity(claims: &CoreIdTokenClaims) -> ExchangedIdentity {
         .name()
         .and_then(|n| n.get(None))
         .map(|n| n.as_str().to_owned())
-        .or_else(|| {
-            claims
-                .preferred_username()
-                .map(|p| p.as_str().to_owned())
-        })
+        .or_else(|| claims.preferred_username().map(|p| p.as_str().to_owned()))
         .unwrap_or_else(|| sub.clone());
     let picture = claims
         .picture()

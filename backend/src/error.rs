@@ -10,13 +10,13 @@
 //! - `LbUnavailable` → 502 (cluster does not support `LoadBalancer`)
 //! - everything else → 500
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 use thiserror::Error;
-use tracing::event;
 use tracing::Level;
+use tracing::event;
 
 /// All error variants the API handlers return.
 #[derive(Debug, Error)]

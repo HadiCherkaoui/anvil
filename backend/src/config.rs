@@ -8,7 +8,7 @@
 use std::env;
 use std::net::SocketAddr;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 
 /// Default value for [`Config::bind_addr`].

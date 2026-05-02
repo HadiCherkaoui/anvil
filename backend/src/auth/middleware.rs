@@ -9,10 +9,10 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum_extra::extract::cookie::CookieJar;
 
-use crate::auth::session::{verify, SESSION_COOKIE};
+use crate::AppState;
+use crate::auth::session::{SESSION_COOKIE, verify};
 use crate::auth::types::SessionClaims;
 use crate::error::AppError;
-use crate::AppState;
 
 /// Rejects requests that don't carry a valid session cookie.
 ///

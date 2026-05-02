@@ -6,15 +6,15 @@
 //! tampered signature, expired exp, and `ANVIL_ALLOWED_SUBS` gating.
 
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use axum_extra::extract::cookie::Key;
 use http_body_util::BodyExt as _;
 use tower::ServiceExt as _;
 
-use anvil::auth::session::{mint, SESSION_COOKIE};
-use anvil::auth::types::SessionClaims;
-use anvil::auth::OidcState;
 use anvil::AppState;
+use anvil::auth::OidcState;
+use anvil::auth::session::{SESSION_COOKIE, mint};
+use anvil::auth::types::SessionClaims;
 
 /// Builds a minimal `AppState` for middleware tests. The `kube::Client` is a
 /// `tower_test::mock::Mock` that will hang if any handler tries to use it —
