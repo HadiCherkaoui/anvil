@@ -20,7 +20,7 @@ const ERROR_REASONS: &[&str] = &[
     "RunContainerError",
 ];
 
-/// Derives the live [`ServerStatus`] from the StatefulSet's replicas/ready
+/// Derives the live [`ServerStatus`] from the `StatefulSet`'s replicas/ready
 /// counts plus the optional Pod.
 ///
 /// Truth table (per spec §2.4 + M2 enrichment):
@@ -110,13 +110,7 @@ pub fn derive_endpoint(
             if node_host.is_empty() {
                 return None;
             }
-            let np = svc?
-                .spec
-                .as_ref()?
-                .ports
-                .as_ref()?
-                .first()?
-                .node_port?;
+            let np = svc?.spec.as_ref()?.ports.as_ref()?.first()?.node_port?;
             // node_port is i32 in k8s; clamp into u16 (k8s itself enforces 30000-32767).
             let port = u16::try_from(np).ok()?;
             Some(Endpoint {
@@ -262,8 +256,8 @@ mod tests {
             }),
             ..Service::default()
         };
-        let ep = derive_endpoint(Some(&svc), "nodeport", "node.local", "mc-x", "mc")
-            .expect("endpoint");
+        let ep =
+            derive_endpoint(Some(&svc), "nodeport", "node.local", "mc-x", "mc").expect("endpoint");
         assert_eq!(ep.host, "node.local");
         assert_eq!(ep.port, 30_005);
     }

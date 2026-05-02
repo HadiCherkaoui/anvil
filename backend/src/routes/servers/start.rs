@@ -1,21 +1,21 @@
-//! `POST /api/servers/:id/start` — scale the StatefulSet to 1 replica.
+//! `POST /api/servers/:id/start` — scale the `StatefulSet` to 1 replica.
 //!
 //! Patches the `/scale` subresource (per the M2 task constraint —
 //! never strategic-merge on Spec). Updates `last_started_at` in
-//! SQLite and writes an audit-log entry.
+//! `SQLite` and writes an audit-log entry.
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use kube::api::{Patch, PatchParams};
 use kube::Api;
+use kube::api::{Patch, PatchParams};
 use serde_json::json;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::routes::servers::create::insert_audit;
-use crate::routes::servers::get::{fetch_detail, fetch_server_row, ServerDetail};
-use crate::AppState;
+use crate::routes::servers::get::{ServerDetail, fetch_detail, fetch_server_row};
 
 /// Handler for `POST /api/servers/:id/start`.
 ///

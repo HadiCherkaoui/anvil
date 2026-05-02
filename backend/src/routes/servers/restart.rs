@@ -8,22 +8,22 @@
 
 use std::time::Duration;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Patch, PatchParams};
 use kube::Api;
-use serde_json::{json, Value};
-use tracing::event;
+use kube::api::{Patch, PatchParams};
+use serde_json::{Value, json};
 use tracing::Level;
+use tracing::event;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
-use crate::AppState;
 
 /// Maximum time to wait for the pod to terminate after scale-to-0.
 const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);

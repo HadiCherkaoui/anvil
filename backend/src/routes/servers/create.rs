@@ -1,36 +1,36 @@
 //! `POST /api/servers` — create a managed Minecraft server.
 //!
-//! Validates the request, allocates a NodePort if requested, inserts a
+//! Validates the request, allocates a `NodePort` if requested, inserts a
 //! `servers` row + audit entry inside a transaction, then synchronously
-//! creates the k8s Secret, StatefulSet (replicas=0), and Service. Returns
+//! creates the k8s Secret, `StatefulSet` (replicas=0), and Service. Returns
 //! `202 Accepted` with the new server's id+name. The user must call
 //! `POST /:id/start` afterwards to bring up the pod.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Secret, Service};
-use kube::api::PostParams;
 use kube::Api;
+use kube::api::PostParams;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::k8s_builders::{
-    build_rcon_secret, build_service, build_statefulset, rcon_password, BuildParams,
+    BuildParams, build_rcon_secret, build_service, build_statefulset, rcon_password,
 };
 use crate::validation::{
     validate_exposure_mode, validate_mc_version, validate_memory_mi, validate_name,
 };
-use crate::AppState;
 
-/// Lowest NodePort allocated by the panel.
+/// Lowest `NodePort` allocated by the panel.
 const NODEPORT_MIN: i32 = 30_000;
-/// Highest NodePort allocated by the panel (inclusive).
+/// Highest `NodePort` allocated by the panel (inclusive).
 const NODEPORT_MAX: i32 = 30_099;
 /// Default storage size (GiB) when the request omits the field.
 const DEFAULT_STORAGE_SIZE_GI: i64 = 10;
@@ -50,7 +50,7 @@ pub struct CreateRequest {
     /// configuration in `state.mc_svc_type`.
     #[serde(default)]
     pub exposure_mode: Option<String>,
-    /// PVC StorageClass. `None`/missing => use chart default. Empty string
+    /// PVC `StorageClass`. `None`/missing => use chart default. Empty string
     /// is treated the same as missing.
     #[serde(default)]
     pub storage_class: Option<String>,
@@ -75,8 +75,12 @@ pub struct CreateResponse {
 /// - 502 `lb_unavailable` if `exposure_mode=loadbalancer` and the cluster
 ///   doesn't support it
 /// - 409 `name_taken` if the user-facing name is already in use
-/// - 409 `nodeport_range_exhausted` if all 100 NodePorts are allocated
+/// - 409 `nodeport_range_exhausted` if all 100 `NodePorts` are allocated
 /// - 500 on k8s or DB failure
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear orchestration: validate -> reserve -> persist -> create k8s; splitting it up adds noise"
+)]
 pub async fn handle(
     State(state): State<AppState>,
     Json(request): Json<CreateRequest>,
@@ -217,7 +221,7 @@ async fn name_exists(pool: &SqlitePool, name: &str) -> Result<bool, AppError> {
     Ok(row.is_some())
 }
 
-/// Returns the lowest unused NodePort in the configured range.
+/// Returns the lowest unused `NodePort` in the configured range.
 async fn allocate_nodeport(pool: &SqlitePool) -> Result<i32, AppError> {
     let rows: Vec<i64> = sqlx::query_scalar(
         "SELECT nodeport FROM servers WHERE nodeport IS NOT NULL ORDER BY nodeport ASC",

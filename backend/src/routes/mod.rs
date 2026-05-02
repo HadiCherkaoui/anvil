@@ -1,7 +1,7 @@
 //! HTTP route definitions.
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 
 use crate::AppState;
 
@@ -50,8 +50,12 @@ fn api_routes() -> Router<AppState> {
             "/api/servers",
             get(servers::list).post(servers::create::handle),
         )
-        .route("/api/servers/{id}", get(servers::get::handle))
+        .route(
+            "/api/servers/{id}",
+            get(servers::get::handle).delete(servers::delete::handle),
+        )
         .route("/api/servers/{id}/start", post(servers::start::handle))
         .route("/api/servers/{id}/stop", post(servers::stop::handle))
         .route("/api/servers/{id}/restart", post(servers::restart::handle))
+        .route("/api/servers/{id}/logs", get(servers::logs::handle))
 }

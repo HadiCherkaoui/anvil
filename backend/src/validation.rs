@@ -92,7 +92,7 @@ pub fn validate_mc_version(version: &str) -> Result<(), AppError> {
     }
     Err(AppError::BadRequest {
         code: "mc_version_unknown",
-        message: format!("mc_version {version:?} not in {:?}", KNOWN_MC_VERSIONS),
+        message: format!("mc_version {version:?} not in {KNOWN_MC_VERSIONS:?}"),
     })
 }
 
@@ -107,7 +107,7 @@ pub fn validate_exposure_mode(mode: &str) -> Result<(), AppError> {
     }
     Err(AppError::BadRequest {
         code: "exposure_mode_invalid",
-        message: format!("exposure_mode {mode:?} not in {:?}", KNOWN_EXPOSURE_MODES),
+        message: format!("exposure_mode {mode:?} not in {KNOWN_EXPOSURE_MODES:?}"),
     })
 }
 

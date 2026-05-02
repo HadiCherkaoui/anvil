@@ -2,7 +2,7 @@
 //!
 //! M2 adds four knobs surfacing the cluster contract from `mcDefaults` in
 //! the Helm chart: the storage class for managed PVCs, the default Service
-//! type, the external host used to display NodePort addresses, and the
+//! type, the external host used to display `NodePort` addresses, and the
 //! LoadBalancer-supported flag the create handler honors.
 
 use std::env;
@@ -28,7 +28,7 @@ const DEFAULT_LOG_LEVEL: &str = "info";
 /// Default value for [`Config::mc_svc_type`].
 const DEFAULT_MC_SVC_TYPE: &str = "LoadBalancer";
 
-/// Default value for [`Config::node_host`] (empty = no NodePort host configured).
+/// Default value for [`Config::node_host`] (empty = no `NodePort` host configured).
 const DEFAULT_NODE_HOST: &str = "";
 
 /// Default value for [`Config::loadbalancer_supported`] expressed as a string,
@@ -51,9 +51,9 @@ pub struct Config {
     pub mc_storage_class: String,
     /// Default Service type for managed servers (chart `mcDefaults.serviceType`).
     pub mc_svc_type: String,
-    /// External hostname/IP of any cluster node, used when displaying NodePort addresses.
+    /// External hostname/IP of any cluster node, used when displaying `NodePort` addresses.
     pub node_host: String,
-    /// Whether the cluster has a LoadBalancer provider. When false, requests for
+    /// Whether the cluster has a `LoadBalancer` provider. When false, requests for
     /// `exposure_mode=loadbalancer` are rejected with 502.
     pub loadbalancer_supported: bool,
 }

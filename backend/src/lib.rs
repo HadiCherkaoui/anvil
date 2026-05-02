@@ -39,9 +39,9 @@ pub struct AppState {
     pub mc_storage_class: String,
     /// Default Service type for managed servers.
     pub mc_svc_type: String,
-    /// External hostname/IP of any cluster node (used to display NodePort addresses).
+    /// External hostname/IP of any cluster node (used to display `NodePort` addresses).
     pub node_host: String,
-    /// Whether the cluster has a LoadBalancer provider.
+    /// Whether the cluster has a `LoadBalancer` provider.
     pub loadbalancer_supported: bool,
 }
 

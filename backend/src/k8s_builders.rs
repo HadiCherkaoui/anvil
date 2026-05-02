@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetSpec};
 use k8s_openapi::api::core::v1::{
     Container, ContainerPort, EnvVar, EnvVarSource, PersistentVolumeClaim,
@@ -17,9 +18,8 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
-use k8s_openapi::ByteString;
-use rand::distr::Alphanumeric;
 use rand::RngExt as _;
+use rand::distr::Alphanumeric;
 
 use crate::k8s::{
     ANNOTATION_CREATED_AT, ANNOTATION_MC_VERSION, ANNOTATION_MEMORY_MI, ANNOTATION_SERVER_NAME,
@@ -58,7 +58,7 @@ pub struct BuildParams<'a> {
     pub storage_class: Option<&'a str>,
     /// PVC size in GiB.
     pub storage_size_gi: i64,
-    /// Assigned NodePort. Must be `Some` when `exposure_mode == "nodeport"`.
+    /// Assigned `NodePort`. Must be `Some` when `exposure_mode == "nodeport"`.
     pub nodeport: Option<i32>,
     /// Unix-second creation timestamp.
     pub created_at: i64,
@@ -72,7 +72,7 @@ fn server_labels(id: &str) -> BTreeMap<String, String> {
     labels
 }
 
-/// Returns the standard annotation set on the StatefulSet.
+/// Returns the standard annotation set on the `StatefulSet`.
 fn server_annotations(p: &BuildParams<'_>) -> BTreeMap<String, String> {
     let mut a = BTreeMap::new();
     a.insert(ANNOTATION_SERVER_NAME.to_owned(), p.name.to_owned());
@@ -82,7 +82,7 @@ fn server_annotations(p: &BuildParams<'_>) -> BTreeMap<String, String> {
     a
 }
 
-/// Builds the StatefulSet for a managed server (replicas=0, single
+/// Builds the `StatefulSet` for a managed server (replicas=0, single
 /// container running the itzg/minecraft-server image).
 #[must_use]
 pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
@@ -181,7 +181,7 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
 }
 
 /// Builds the Service for a managed server. Type comes from
-/// `exposure_mode`; for NodePort the assigned port is set from
+/// `exposure_mode`; for `NodePort` the assigned port is set from
 /// `params.nodeport`.
 ///
 /// # Panics
@@ -196,7 +196,8 @@ pub fn build_service(p: &BuildParams<'_>) -> Service {
     let svc_type = match p.exposure_mode {
         "loadbalancer" => "LoadBalancer",
         "nodeport" => "NodePort",
-        "clusterip" => "ClusterIP",
+        // ClusterIP is the safe default if validation has somehow let
+        // an unknown value through.
         _ => "ClusterIP",
     };
 
@@ -231,7 +232,7 @@ pub fn build_service(p: &BuildParams<'_>) -> Service {
     }
 }
 
-/// Builds the Secret holding the RCON password. The StatefulSet env var
+/// Builds the Secret holding the RCON password. The `StatefulSet` env var
 /// `RCON_PASSWORD` references this Secret via `secretKeyRef`.
 #[must_use]
 pub fn build_rcon_secret(id: &str, namespace: &str, password: &str) -> Secret {

@@ -28,7 +28,7 @@ pub const ANNOTATION_MC_VERSION: &str = "app.anvil.io/mc-version";
 pub const ANNOTATION_MEMORY_MI: &str = "app.anvil.io/memory-mi";
 
 /// Annotation key for the user-facing server name (the `servers.name`
-/// column in SQLite). Stable across renames is not required in M2.
+/// column in `SQLite`). Stable across renames is not required in M2.
 pub const ANNOTATION_SERVER_NAME: &str = "app.anvil.io/server-name";
 
 /// Annotation key for the unix-second creation timestamp.
@@ -56,7 +56,7 @@ pub enum ServerStatus {
 pub struct Endpoint {
     /// Hostname or IP the client connects to.
     pub host: String,
-    /// TCP port — `25565` for LB/ClusterIP, the assigned NodePort otherwise.
+    /// TCP port — `25565` for LB/ClusterIP, the assigned `NodePort` otherwise.
     pub port: u16,
 }
 
