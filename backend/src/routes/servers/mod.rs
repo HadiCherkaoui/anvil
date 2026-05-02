@@ -1,9 +1,11 @@
-//! `GET /api/servers` — list managed Minecraft `StatefulSet`s.
+//! Server management handlers.
 //!
-//! Filters by the `app.anvil.io/managed-by=anvil` label so unrelated
-//! `StatefulSet`s in the same namespace are ignored. Task 13 of M2
-//! rewrites this to JOIN SQLite metadata with live k8s status — for
-//! now this is the M1 list shape with M2 column names patched in.
+//! Submodules host one HTTP handler each (create / get / start / stop /
+//! restart / delete / logs). The list handler stays in this `mod.rs`
+//! until Task 13 rewrites it to JOIN SQLite metadata with live k8s
+//! status; until then it returns the M1 shape patched with M2 columns.
+
+pub mod create;
 
 use axum::extract::State;
 use axum::Json;
@@ -14,8 +16,8 @@ use serde::Serialize;
 
 use crate::error::AppError;
 use crate::k8s::{
-    ServerStatus, ServerSummary, ANNOTATION_MC_VERSION, ANNOTATION_MEMORY_MI, LABEL_SERVER,
-    MANAGED_BY_LABEL, MANAGED_BY_VALUE,
+    ServerSummary, ANNOTATION_MC_VERSION, ANNOTATION_MEMORY_MI, LABEL_SERVER, MANAGED_BY_LABEL,
+    MANAGED_BY_VALUE,
 };
 use crate::k8s_status::derive_status;
 use crate::AppState;
@@ -97,6 +99,7 @@ fn to_summary(sts: &StatefulSet) -> ServerSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::k8s::ServerStatus;
     use k8s_openapi::api::apps::v1::{StatefulSetSpec, StatefulSetStatus};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
     use std::collections::BTreeMap;

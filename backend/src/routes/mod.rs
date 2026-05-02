@@ -1,7 +1,7 @@
 //! HTTP route definitions.
 
-use axum::Router;
 use axum::routing::get;
+use axum::Router;
 
 use crate::AppState;
 
@@ -44,7 +44,8 @@ pub fn stateless_router() -> Router {
 
 /// Internal: routes that exercise [`AppState`].
 fn api_routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/health", get(health::get))
-        .route("/api/servers", get(servers::list))
+    Router::new().route("/api/health", get(health::get)).route(
+        "/api/servers",
+        get(servers::list).post(servers::create::handle),
+    )
 }
