@@ -6,27 +6,27 @@
 //! `202 Accepted` with the new server's id+name. The user must call
 //! `POST /:id/start` afterwards to bring up the pod.
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Secret, Service};
-use kube::Api;
 use kube::api::PostParams;
+use kube::Api;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s_builders::{
-    BuildParams, build_rcon_secret, build_service, build_statefulset, rcon_password,
+    build_rcon_secret, build_service, build_statefulset, rcon_password, BuildParams,
 };
 use crate::validation::{
     validate_exposure_mode, validate_mc_version, validate_memory_mi, validate_name,
 };
+use crate::AppState;
 
 /// Lowest `NodePort` allocated by the panel.
 const NODEPORT_MIN: i32 = 30_000;
@@ -244,6 +244,12 @@ async fn allocate_nodeport(pool: &SqlitePool) -> Result<i32, AppError> {
 }
 
 /// Persists a new row in `servers`.
+///
+/// The `name_exists` pre-check is racy with concurrent creates; the
+/// `UNIQUE NOT NULL` constraint on `servers.name` is the durable
+/// guarantee. A UNIQUE violation here is mapped back to
+/// [`AppError::Conflict`] so the client still sees `409 name_taken`
+/// rather than a misleading 500.
 #[allow(clippy::too_many_arguments)]
 async fn insert_server(
     pool: &SqlitePool,
@@ -259,7 +265,7 @@ async fn insert_server(
     nodeport: Option<i32>,
     created_at: i64,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO servers (
             id, name, mc_version, memory_mi, server_type, exposure_mode,
             storage_class, storage_size_gi, source_config, nodeport,
@@ -278,8 +284,16 @@ async fn insert_server(
     .bind(nodeport.map(i64::from))
     .bind(created_at)
     .execute(pool)
-    .await?;
-    Ok(())
+    .await;
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(sqlx::Error::Database(err)) if err.is_unique_violation() => Err(AppError::Conflict {
+            code: "name_taken",
+            message: format!("a server named {name:?} already exists"),
+        }),
+        Err(other) => Err(AppError::DbUnavailable(other)),
+    }
 }
 
 /// Persists an audit log entry. Used by every mutating handler.

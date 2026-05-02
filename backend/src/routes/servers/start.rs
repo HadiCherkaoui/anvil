@@ -4,18 +4,18 @@
 //! never strategic-merge on Spec). Updates `last_started_at` in
 //! `SQLite` and writes an audit-log entry.
 
-use axum::Json;
 use axum::extract::{Path, State};
+use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use kube::Api;
 use kube::api::{Patch, PatchParams};
+use kube::Api;
 use serde_json::json;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::routes::servers::create::insert_audit;
-use crate::routes::servers::get::{ServerDetail, fetch_detail, fetch_server_row};
+use crate::routes::servers::get::{fetch_detail, fetch_server_row, ServerDetail};
+use crate::AppState;
 
 /// Handler for `POST /api/servers/:id/start`.
 ///
@@ -36,7 +36,7 @@ pub async fn handle(
     stsets
         .patch_scale(
             &resource_name,
-            &PatchParams::apply("anvil"),
+            &PatchParams::default(),
             &Patch::Merge(&patch),
         )
         .await?;

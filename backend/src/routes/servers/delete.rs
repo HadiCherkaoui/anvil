@@ -13,13 +13,13 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret, Service};
-use kube::Api;
 use kube::api::DeleteParams;
+use kube::Api;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
+use crate::AppState;
 
 /// Maximum time to wait for the pod to disappear before bailing.
 const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -97,15 +97,17 @@ pub async fn handle(
     // 5. Secret
     delete_tolerate_404(secrets.delete(&secret_name, &DeleteParams::default()).await)?;
 
-    // 6. SQLite row + audit. We delete the row last so a retry of a
-    //    half-failed teardown replays the k8s steps (which are all
-    //    idempotent thanks to the 404 tolerance).
+    // 6. SQLite row + audit. The DELETE goes first so a failure of the
+    //    audit insert does not leave an orphan log entry referencing a
+    //    server whose metadata still exists. Both happen after the k8s
+    //    teardown — a retry of a half-failed teardown replays the k8s
+    //    steps (each is 404-tolerant) and lands here cleanly.
     let now = Utc::now().timestamp();
-    insert_audit(&state.pool, &id, "deleted", None, now).await?;
     sqlx::query("DELETE FROM servers WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)
         .await?;
+    insert_audit(&state.pool, &id, "deleted", None, now).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

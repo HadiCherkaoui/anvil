@@ -8,22 +8,22 @@
 
 use std::time::Duration;
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::Pod;
-use kube::Api;
 use kube::api::{Patch, PatchParams};
-use serde_json::{Value, json};
-use tracing::Level;
+use kube::Api;
+use serde_json::{json, Value};
 use tracing::event;
+use tracing::Level;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
+use crate::AppState;
 
 /// Maximum time to wait for the pod to terminate after scale-to-0.
 const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -72,7 +72,7 @@ async fn restart_inner(state: &AppState, id: &str) -> anyhow::Result<()> {
 
     let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
-    let pp = PatchParams::apply("anvil");
+    let pp = PatchParams::default();
 
     // Stop.
     stsets
