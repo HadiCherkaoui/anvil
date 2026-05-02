@@ -8,7 +8,8 @@
 use std::env;
 use std::net::SocketAddr;
 
-use anyhow::{Context as _, Result};
+use anyhow::{bail, Context as _, Result};
+use base64::Engine as _;
 
 /// Default value for [`Config::bind_addr`].
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
@@ -36,7 +37,7 @@ const DEFAULT_NODE_HOST: &str = "";
 const DEFAULT_LB_SUPPORTED: &str = "true";
 
 /// Resolved process configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     /// Address the HTTP server binds to.
     pub bind_addr: SocketAddr,
@@ -56,6 +57,43 @@ pub struct Config {
     /// Whether the cluster has a `LoadBalancer` provider. When false, requests for
     /// `exposure_mode=loadbalancer` are rejected with 502.
     pub loadbalancer_supported: bool,
+    /// OIDC issuer URL — Authentik's `application/o/<slug>/`.
+    pub oidc_issuer_url: String,
+    /// OIDC client ID issued by Authentik for the Anvil application.
+    pub oidc_client_id: String,
+    /// OIDC client secret. Loaded from `ANVIL_OIDC_CLIENT_SECRET_FILE` (k8s mount)
+    /// when set, falling back to `ANVIL_OIDC_CLIENT_SECRET`.
+    pub oidc_client_secret: String,
+    /// Public callback URL Authentik redirects to after login.
+    pub oidc_redirect_url: String,
+    /// HMAC key for the session JWT and the encrypted OIDC-state cookie.
+    /// Base64-decoded; ≥32 bytes required.
+    pub session_key: Vec<u8>,
+    /// Allowlist of Authentik subject UUIDs. Empty = any authenticated user.
+    pub allowed_subs: Vec<String>,
+}
+
+// `Vec<u8>` for `session_key` would print the raw HMAC key in `Debug`; hand-roll
+// to redact it.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("bind_addr", &self.bind_addr)
+            .field("database_url", &self.database_url)
+            .field("mc_namespace", &self.mc_namespace)
+            .field("log_level", &self.log_level)
+            .field("mc_storage_class", &self.mc_storage_class)
+            .field("mc_svc_type", &self.mc_svc_type)
+            .field("node_host", &self.node_host)
+            .field("loadbalancer_supported", &self.loadbalancer_supported)
+            .field("oidc_issuer_url", &self.oidc_issuer_url)
+            .field("oidc_client_id", &self.oidc_client_id)
+            .field("oidc_client_secret", &"<redacted>")
+            .field("oidc_redirect_url", &self.oidc_redirect_url)
+            .field("session_key", &"<redacted>")
+            .field("allowed_subs", &self.allowed_subs)
+            .finish()
+    }
 }
 
 impl Config {
@@ -95,6 +133,32 @@ impl Config {
             .parse()
             .with_context(|| format!("ANVIL_LB_SUPPORTED={lb_supported_str:?} is not a boolean"))?;
 
+        let oidc_issuer_url =
+            env::var("ANVIL_OIDC_ISSUER_URL").context("ANVIL_OIDC_ISSUER_URL must be set")?;
+        let oidc_client_id =
+            env::var("ANVIL_OIDC_CLIENT_ID").context("ANVIL_OIDC_CLIENT_ID must be set")?;
+        let oidc_client_secret =
+            read_secret("ANVIL_OIDC_CLIENT_SECRET_FILE", "ANVIL_OIDC_CLIENT_SECRET")?;
+        let oidc_redirect_url =
+            env::var("ANVIL_OIDC_REDIRECT_URL").context("ANVIL_OIDC_REDIRECT_URL must be set")?;
+        let session_key_b64 = read_secret("ANVIL_SESSION_KEY_FILE", "ANVIL_SESSION_KEY")?;
+        let session_key = base64::engine::general_purpose::STANDARD
+            .decode(session_key_b64.trim())
+            .context("ANVIL_SESSION_KEY must be standard base64")?;
+        if session_key.len() < 32 {
+            bail!(
+                "ANVIL_SESSION_KEY is {} bytes after base64-decode; need at least 32",
+                session_key.len()
+            );
+        }
+        let allowed_subs = env::var("ANVIL_ALLOWED_SUBS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+
         Ok(Self {
             bind_addr,
             database_url,
@@ -104,6 +168,22 @@ impl Config {
             mc_svc_type,
             node_host,
             loadbalancer_supported,
+            oidc_issuer_url,
+            oidc_client_id,
+            oidc_client_secret,
+            oidc_redirect_url,
+            session_key,
+            allowed_subs,
         })
     }
+}
+
+/// Reads a secret value from a k8s-mounted file path or, failing that, an env var.
+fn read_secret(file_var: &str, value_var: &str) -> Result<String> {
+    if let Ok(path) = env::var(file_var) {
+        return std::fs::read_to_string(&path)
+            .with_context(|| format!("{file_var}={path:?} could not be read"))
+            .map(|s| s.trim_end_matches(['\n', '\r']).to_owned());
+    }
+    env::var(value_var).with_context(|| format!("{value_var} (or {file_var}) must be set"))
 }
