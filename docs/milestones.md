@@ -113,15 +113,33 @@ specified the host pattern.
 
 ## M4 — Authentication (Authentik OIDC)
 
+**Status:** complete (tagged v0.4.0). The panel is no longer open; every
+`/api/*` request except `/api/health` and the public auth routes requires a
+valid session cookie. Manual setup steps live in `docs/authentik-setup.md`.
+
 **Goal:** Lock the panel behind Authentik SSO.
 
 Deliverables:
-- OIDC authorization-code flow against Authentik
-- JWT validation middleware in axum
-- Frontend redirects unauthenticated users to Authentik
-- Friends gain access via Authentik group membership
+- [x] OIDC authorization-code-with-PKCE flow against Authentik (openidconnect 4)
+- [x] HS256 session JWT in an `HttpOnly; Secure; SameSite=Lax` cookie, signed
+      with `ANVIL_SESSION_KEY`; provider metadata cached for 1h
+- [x] `require_session` middleware on all `/api/*` except `/api/health`,
+      `/api/auth/login`, and `/api/auth/callback`
+- [x] `GET /api/auth/login` (302 to Authentik), `GET /api/auth/callback`
+      (mints session JWT), `GET /api/auth/me`, `POST /api/auth/logout`
+      (returns Authentik end-session URL)
+- [x] `ANVIL_ALLOWED_SUBS` allowlist (empty = any authenticated Authentik
+      user with the application bound)
+- [x] Frontend: 401-redirect chokepoint in `app/lib/api.ts`; floating
+      `<UserBadge>` widget (avatar + name + sign-out)
+- [x] Helm chart: `oidc.*` values, chart-managed Secret (or `existingSecret`),
+      `anvil.requireOidc` validator that fails the render when oidc-on
+      without TLS-on
+- [x] `docs/authentik-setup.md` runbook
+- [x] v0.4.0 tag
 
-**Not in M4:** per-user ACLs (YAGNI), role hierarchies beyond Authentik groups
+**Not in M4:** per-user ACLs (YAGNI), role hierarchies beyond Authentik groups,
+revocation lists (sessions live for 8h or until `ANVIL_SESSION_KEY` rotates)
 
 ---
 
