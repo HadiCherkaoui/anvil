@@ -12,21 +12,25 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# Ingress for the panel itself. Disabled by default — enable + set host + tls
-# when fronting the panel with traefik (see cluster-profile.md).
+# Traefik IngressRoute for the panel. Disabled by default — turn on once
+# DNS for `host` resolves to the cluster's traefik LoadBalancer IP. Mirrors
+# the IngressRoute pattern in homelab-k8s-fluxcd/apps/{uptime-kuma,...}/.
 ingress:
   enabled: false
-  className: traefik
+  # Traefik entryPoint name. The homelab traefik install uses "websecure"
+  # (TLS-terminating) and "web" (plain HTTP). websecure is the right pick
+  # when tls.enabled.
+  entryPoint: websecure
+  # FQDN that traefik should route to the panel.
   host: anvil.example.local
+  # Optional list of Traefik middleware refs (e.g. security-headers, auth).
+  # Example: [{ name: security-headers, namespace: traefik }]
+  middlewares: []
   tls:
     enabled: false
-    # cert-manager Issuer reference. Required when tls.enabled. cluster-profile.md
-    # marks cert-manager as a M3 prereq — install before turning TLS on.
-    # NOTE: the chart annotates the Ingress with `cert-manager.io/issuer`
-    # (namespace-scoped Issuer). For a ClusterIssuer setup, the annotation
-    # would need to be `cert-manager.io/cluster-issuer` — revisit when M3
-    # actually wires TLS.
-    issuerName: ""
+    # Name of the Traefik certResolver to issue/renew the cert. The homelab
+    # traefik chart configures `letsencrypt`; see infrastructure/traefik/.
+    certResolver: letsencrypt
 
 # Namespace where managed Minecraft resources live. Created out-of-band
 # (Flux owns it on the homelab cluster — commit e244686 in homelab-k8s-fluxcd);

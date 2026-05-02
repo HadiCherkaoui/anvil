@@ -1,0 +1,36 @@
+{{- if .Values.ingress.enabled -}}
+{{- /* Traefik-native IngressRoute (CRD: traefik.io/v1alpha1). The homelab
+       cluster fronts every web app with Traefik + cert-manager's letsencrypt
+       cert resolver — see apps/{uptime-kuma,changedetection}/ in
+       homelab-k8s-fluxcd for the canonical pattern this mirrors. */ -}}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "anvil.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "anvil.labels" . | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ .Values.ingress.entryPoint | quote }}
+    {{- if .Values.ingress.tls.enabled }}
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.certresolver: {{ .Values.ingress.tls.certResolver | quote }}
+    {{- end }}
+spec:
+  entryPoints:
+    - {{ .Values.ingress.entryPoint }}
+  routes:
+    - match: Host(`{{ .Values.ingress.host }}`)
+      kind: Rule
+      {{- with .Values.ingress.middlewares }}
+      middlewares:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      services:
+        - name: {{ include "anvil.fullname" . }}
+          port: 8080
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    certResolver: {{ .Values.ingress.tls.certResolver | quote }}
+  {{- end }}
+{{- end }}
