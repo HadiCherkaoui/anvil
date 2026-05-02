@@ -174,3 +174,22 @@ docker-build:
         - frontend/**/*
         - Dockerfile
         - .gitlab-ci.yml
+
+# Publish the Helm chart as an OCI artifact in the project's container
+# registry. Flux's HelmRepository (kind: oci) then pulls it without needing
+# a git source. Chart version comes from deploy/Chart.yaml — bump that
+# field on each release.
+helm-publish:
+  stage: image
+  image: alpine/helm:3
+  before_script:
+    - helm registry login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - set -euo pipefail
+    - helm package deploy/ --destination /tmp/
+    - helm push /tmp/anvil-*.tgz "oci://$CI_REGISTRY_IMAGE"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - deploy/**/*
+        - .gitlab-ci.yml
