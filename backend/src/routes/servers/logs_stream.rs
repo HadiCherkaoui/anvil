@@ -16,23 +16,23 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use bytes::Bytes;
 use chrono::Utc;
-use futures_util::sink::SinkExt as _;
-use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
 use futures_util::AsyncBufReadExt as _;
 use futures_util::TryStreamExt as _;
+use futures_util::sink::SinkExt as _;
+use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::LogParams;
 use kube::Api;
+use kube::api::LogParams;
 use tokio::sync::oneshot;
-use tokio::time::{interval, Instant, MissedTickBehavior};
+use tokio::time::{Instant, MissedTickBehavior, interval};
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::ServerStatus;
 use crate::k8s_status::derive_status;
 use crate::routes::servers::get::fetch_server_row;
 use crate::ws::{EndReason, Frame};
-use crate::AppState;
 
 /// WS Ping interval.
 const HEARTBEAT: Duration = Duration::from_secs(30);

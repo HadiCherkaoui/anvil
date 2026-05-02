@@ -3,7 +3,7 @@ resolver = "3"
 
 [package]
 name = "anvil"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "k8s-native Minecraft server panel"
 license = "AGPL-3.0-or-later"
