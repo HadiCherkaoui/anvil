@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "anvil.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "anvil.labels" . | nindent 4 }}
+spec:
+  # ClusterIP — the panel is fronted by Ingress, not exposed directly.
+  # Managed-server Services (M2) get LoadBalancer IPs from the Cilium pool.
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "anvil.selectorLabels" . | nindent 4 }}

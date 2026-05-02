@@ -1,0 +1,17 @@
+{{- include "anvil.requireMcDefaults" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "anvil.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "anvil.labels" . | nindent 4 }}
+data:
+  # Bind address inside the Pod. The Service targets containerPort 8080.
+  ANVIL_BIND_ADDR: "0.0.0.0:8080"
+  # SQLite path inside the mounted PVC.
+  ANVIL_DATABASE_URL: "sqlite:///var/lib/anvil/anvil.db?mode=rwc"
+  # Namespace the panel reads/writes managed Minecraft resources in.
+  ANVIL_MC_NAMESPACE: {{ .Values.mcNamespace | quote }}
+  # `tracing` filter directive.
+  ANVIL_LOG_LEVEL: {{ .Values.logLevel | quote }}

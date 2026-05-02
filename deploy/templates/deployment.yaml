@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "anvil.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "anvil.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate so the old Pod releases the RWO PVC before the new one binds it.
+  # rolling updates would deadlock on the single-attach SQLite volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "anvil.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "anvil.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "anvil.serviceAccountName" . }}
+      securityContext:
+        # Aligns with the `:nonroot` distroless tag (uid 65532). fsGroup makes
+        # the mounted PVC writable by that uid without an initContainer chown.
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: anvil
+          image: {{ include "anvil.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "anvil.fullname" . }}
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/anvil
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "anvil.fullname" . }}-data
+      {{- end }}

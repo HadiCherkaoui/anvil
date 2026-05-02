@@ -1,0 +1,35 @@
+{{- if .Values.ingress.enabled -}}
+{{- if and .Values.ingress.tls.enabled (not .Values.ingress.tls.issuerName) -}}
+{{- fail "ingress.tls.issuerName is required when ingress.tls.enabled (see docs/cluster-profile.md — cert-manager Issuer ref)" -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "anvil.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "anvil.labels" . | nindent 4 }}
+  {{- if .Values.ingress.tls.enabled }}
+  annotations:
+    cert-manager.io/issuer: {{ .Values.ingress.tls.issuerName | quote }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "anvil.fullname" . }}
+                port:
+                  number: 8080
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ printf "%s-tls" (include "anvil.fullname" .) | quote }}
+  {{- end }}
+{{- end }}

@@ -1,47 +1,59 @@
 # anvil Helm chart values.
 #
-# Defaults below are derived from docs/cluster-profile.md at the time of writing.
-# Override per-deployment in your Helm release values. See ADR 0004 for the design.
+# Defaults below are derived from docs/cluster-profile.md at the time of
+# writing. Override per-deployment in your Helm release values; legal values
+# are documented in docs/cluster-profile.md and ADR 0004.
 
 image:
-  repository: gitlab.cherkaoui.ch/hadicherkaoui/anvil
-  # Defaults to .Chart.AppVersion if empty.
+  # Container registry path. The default points at the GitLab project's
+  # container registry; CI publishes :<commit-sha> and :latest there.
+  repo: gitlab.cherkaoui.ch/hadicherkaoui/anvil
+  # Empty string falls back to .Chart.AppVersion in the deployment template.
   tag: ""
   pullPolicy: IfNotPresent
 
-# Cluster-specific values consumed by anvil at startup, surfaced through env vars.
-mc:
-  # Namespace where managed Minecraft resources are created.
-  # Override if your cluster uses a different namespace convention.
-  namespace: mc
-
-  # StorageClass used for managed-server PVCs.
-  # Cluster default per profile: `tank` (zfs.csi.openebs.io). Override on clusters
-  # without a ZFS-backed default; e.g. `longhorn`, `local-path`, `openebs-hostpath`.
-  storageClassName: tank
-
-  # Service type for managed Minecraft servers.
-  # MUST be a type the cluster can fulfill. Anvil surfaces a clear error if it
-  # cannot — it does NOT silently fall back. Cluster default per profile: LoadBalancer
-  # (Cilium LB IPAM).
-  serviceType: LoadBalancer
-
-  # Default Minecraft server version when one is not supplied at create time.
-  # Empty string means "latest stable known to the panel".
-  defaultMcVersion: ""
-
-# Ingress for the panel itself (M3+).
+# Ingress for the panel itself. Disabled by default — enable + set host + tls
+# when fronting the panel with traefik (see cluster-profile.md).
 ingress:
   enabled: false
   className: traefik
   host: anvil.example.local
-  # TLS via cert-manager. Requires cert-manager to be installed in the cluster
-  # — see docs/cluster-profile.md prereqs.
   tls:
     enabled: false
+    # cert-manager Issuer reference. Required when tls.enabled. cluster-profile.md
+    # marks cert-manager as a M3 prereq — install before turning TLS on.
+    # NOTE: the chart annotates the Ingress with `cert-manager.io/issuer`
+    # (namespace-scoped Issuer). For a ClusterIssuer setup, the annotation
+    # would need to be `cert-manager.io/cluster-issuer` — revisit when M3
+    # actually wires TLS.
     issuerName: ""
 
-# Panel resource requests/limits.
+# Namespace where managed Minecraft resources live. Created out-of-band
+# (Flux owns it on the homelab cluster — commit e244686 in homelab-k8s-fluxcd);
+# the chart does NOT include a Namespace template.
+mcNamespace: mc
+
+# Defaults applied to *new* managed Minecraft servers at create time (M2).
+# Surfaced now so the chart contract is stable through M2.
+mcDefaults:
+  # REQUIRED. The Helm template fails to render if unset, forcing the
+  # operator to confirm the right StorageClass for their cluster. Homelab
+  # default per cluster-profile.md: `tank` (zfs.csi.openebs.io).
+  storageClassName: ""
+  # Cluster-wide default for managed-server Services. Overridable per-server
+  # in the panel UI (M2). On the homelab cluster, LoadBalancer is fulfilled
+  # by Cilium LB IPAM (default-pool, see cluster-profile.md).
+  serviceType: LoadBalancer
+
+# Persistence for the panel's own SQLite database. The PVC mounts at
+# /var/lib/anvil; ANVIL_DATABASE_URL points the backend at that path.
+persistence:
+  enabled: true
+  # Empty string => cluster default StorageClass.
+  storageClassName: ""
+  size: 1Gi
+
+# Pod resource budget. M1 is light; bump in M2/M3 as the workload grows.
 resources:
   requests:
     cpu: 100m
@@ -50,16 +62,14 @@ resources:
     cpu: 500m
     memory: 512Mi
 
-# RBAC for kube-rs to manipulate StatefulSets/PVCs/Services in `mc.namespace`.
-# Concrete Role/Binding manifests live in templates/ (added in M1).
+# RBAC for kube-rs to manipulate the managed Minecraft resources in
+# `mcNamespace`. Verbs are M2-ready (create/update/patch/delete) — surfaced
+# now to avoid re-deploying the Role/RoleBinding when M2 lands.
 rbac:
   create: true
-  # Empty means the chart generates one.
+  # Empty string => the chart generates a SA named after the release.
   serviceAccountName: ""
 
-# Persistence for the panel's own SQLite database.
-persistence:
-  enabled: true
-  # Defaults to the cluster's default StorageClass when empty.
-  storageClassName: ""
-  size: 1Gi
+# Backend log filter. Mirrors the ANVIL_LOG_LEVEL env var.
+# Examples: "info" (default), "debug", "info,kube=warn".
+logLevel: info

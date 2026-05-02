@@ -1,0 +1,20 @@
+{{- if .Values.rbac.create -}}
+{{- /* RoleBinding lives in `mcNamespace` (where the Role is) but references
+       the SA in the release namespace, granting it the Role's verbs against
+       managed Minecraft resources. */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "anvil.fullname" . }}-mc
+  namespace: {{ .Values.mcNamespace }}
+  labels:
+    {{- include "anvil.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "anvil.fullname" . }}-mc
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "anvil.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

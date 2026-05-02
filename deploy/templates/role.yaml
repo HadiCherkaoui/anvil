@@ -1,0 +1,33 @@
+{{- if .Values.rbac.create -}}
+{{- /* Cross-namespace: the Role lives in `mcNamespace`, not the release ns. */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "anvil.fullname" . }}-mc
+  namespace: {{ .Values.mcNamespace }}
+  labels:
+    {{- include "anvil.labels" . | nindent 4 }}
+rules:
+  # Lifecycle of managed servers (apps/StatefulSet + scale subresource).
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets/scale"]
+    verbs: ["get", "update", "patch"]
+  # Storage and networking primitives co-created with each StatefulSet.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims", "services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pod inspection + log streaming.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  # RCON Secrets land in M5; surface RBAC now so the chart contract is stable.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- end }}
