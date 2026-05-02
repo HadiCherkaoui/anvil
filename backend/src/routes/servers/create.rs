@@ -299,3 +299,99 @@ pub(crate) async fn insert_audit(
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+
+    async fn insert_dummy(pool: &SqlitePool, id: &str, name: &str, nodeport: Option<i32>) {
+        insert_server(
+            pool,
+            id,
+            name,
+            "1.21.4",
+            4096,
+            SERVER_TYPE_VANILLA,
+            "nodeport",
+            None,
+            10,
+            "{}",
+            nodeport,
+            0,
+        )
+        .await
+        .expect("insert");
+    }
+
+    #[tokio::test]
+    async fn name_exists_returns_false_on_empty_db() {
+        let pool = db::init("sqlite::memory:").await.unwrap();
+        assert!(!name_exists(&pool, "smp").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn name_exists_returns_true_after_insert() {
+        let pool = db::init("sqlite::memory:").await.unwrap();
+        insert_dummy(&pool, "id-1", "smp", None).await;
+        assert!(name_exists(&pool, "smp").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn allocate_nodeport_picks_lowest_on_empty_db() {
+        let pool = db::init("sqlite::memory:").await.unwrap();
+        let port = allocate_nodeport(&pool).await.unwrap();
+        assert_eq!(port, 30_000);
+    }
+
+    #[tokio::test]
+    async fn allocate_nodeport_skips_used_ports() {
+        let pool = db::init("sqlite::memory:").await.unwrap();
+        insert_dummy(&pool, "id-a", "a", Some(30_000)).await;
+        insert_dummy(&pool, "id-b", "b", Some(30_001)).await;
+        insert_dummy(&pool, "id-d", "d", Some(30_003)).await;
+        let port = allocate_nodeport(&pool).await.unwrap();
+        assert_eq!(port, 30_002);
+    }
+
+    #[tokio::test]
+    async fn allocate_nodeport_exhausted_returns_conflict() {
+        let pool = db::init("sqlite::memory:").await.unwrap();
+        // Fill the entire 30_000..=30_099 range.
+        for (i, port) in (NODEPORT_MIN..=NODEPORT_MAX).enumerate() {
+            insert_dummy(&pool, &format!("id-{i}"), &format!("s{i}"), Some(port)).await;
+        }
+        let err = allocate_nodeport(&pool).await.expect_err("must fail");
+        match err {
+            AppError::Conflict { code, .. } => assert_eq!(code, "nodeport_range_exhausted"),
+            other => panic!("expected Conflict, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_audit_round_trips_details() {
+        let pool = db::init("sqlite::memory:").await.unwrap();
+        insert_audit(
+            &pool,
+            "srv-1",
+            "created",
+            Some(serde_json::json!({ "name": "smp", "memory_mi": 4096 })),
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+
+        let row: (i64, String, String, Option<String>) = sqlx::query_as(
+            "SELECT ts, server_id, action, details FROM audit_log WHERE server_id = ?",
+        )
+        .bind("srv-1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, 1_700_000_000);
+        assert_eq!(row.1, "srv-1");
+        assert_eq!(row.2, "created");
+        let details = row.3.expect("details");
+        assert!(details.contains("\"memory_mi\":4096"));
+    }
+}
