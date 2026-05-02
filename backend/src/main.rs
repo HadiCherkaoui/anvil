@@ -5,29 +5,27 @@
 //! SIGTERM / Ctrl-C trigger graceful shutdown so in-flight requests finish.
 
 use anvil::config::Config;
-use anvil::{AppState, db, k8s, router};
+use anvil::{db, k8s, router, AppState};
 use anyhow::{Context as _, Result};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
-use tracing::Level;
 use tracing::event;
-use tracing_subscriber::EnvFilter;
+use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::from_env().context("loading configuration")?;
     init_tracing(&config.log_level);
 
-    // Open the SQLite pool and run migrations. No M1 handler reads from the
-    // pool yet; we still hold the binding for the lifetime of `main` so the
-    // connections stay open and a misconfigured PVC mount fails the process
-    // immediately instead of on the first M2 query. The leading underscore
-    // suppresses the `unused_variables` warning without dropping the value.
-    let _pool = db::init(&config.database_url)
+    // Open the SQLite pool and run migrations. The pool is now exposed via
+    // AppState so M2 handlers can read/write the `servers` and `audit_log`
+    // tables.
+    let pool = db::init(&config.database_url)
         .await
         .context("initializing database")?;
 
@@ -36,7 +34,12 @@ async fn main() -> Result<()> {
         .context("initializing kube client")?;
     let state = AppState {
         kube,
+        pool,
         mc_namespace: config.mc_namespace.clone(),
+        mc_storage_class: config.mc_storage_class.clone(),
+        mc_svc_type: config.mc_svc_type.clone(),
+        node_host: config.node_host.clone(),
+        loadbalancer_supported: config.loadbalancer_supported,
     };
 
     let app = router(state)

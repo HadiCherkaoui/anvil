@@ -7,6 +7,7 @@
 use std::fmt;
 
 use kube::Client;
+use sqlx::SqlitePool;
 
 pub mod config;
 pub mod db;
@@ -20,14 +21,25 @@ pub use routes::{router, stateless_router};
 
 /// State shared across handlers.
 ///
-/// Cheap to clone — `Client` and `String` both wrap reference-counted
-/// internals — so axum's `State` extractor is fine to use everywhere.
+/// Cheap to clone — `Client`, `SqlitePool`, and `String` all wrap
+/// reference-counted internals — so axum's `State` extractor is fine to
+/// use everywhere.
 #[derive(Clone)]
 pub struct AppState {
     /// Live Kubernetes client (in-cluster SA token *or* local kubeconfig).
     pub kube: Client,
+    /// Connection pool for the panel's `SQLite` database.
+    pub pool: SqlitePool,
     /// Namespace where managed Minecraft resources live.
     pub mc_namespace: String,
+    /// Default `StorageClass` for managed-server PVCs.
+    pub mc_storage_class: String,
+    /// Default Service type for managed servers.
+    pub mc_svc_type: String,
+    /// External hostname/IP of any cluster node (used to display NodePort addresses).
+    pub node_host: String,
+    /// Whether the cluster has a LoadBalancer provider.
+    pub loadbalancer_supported: bool,
 }
 
 // `kube::Client` doesn't impl `Debug`, so the derive on `AppState` would
@@ -37,7 +49,12 @@ impl fmt::Debug for AppState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppState")
             .field("kube", &"<kube::Client>")
+            .field("pool", &"<SqlitePool>")
             .field("mc_namespace", &self.mc_namespace)
+            .field("mc_storage_class", &self.mc_storage_class)
+            .field("mc_svc_type", &self.mc_svc_type)
+            .field("node_host", &self.node_host)
+            .field("loadbalancer_supported", &self.loadbalancer_supported)
             .finish()
     }
 }
