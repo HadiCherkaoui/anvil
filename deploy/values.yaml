@@ -48,6 +48,15 @@ mcDefaults:
   # in the panel UI (M2). On the homelab cluster, LoadBalancer is fulfilled
   # by Cilium LB IPAM (default-pool, see cluster-profile.md).
   serviceType: LoadBalancer
+  # External hostname or IP of any cluster node, used by the panel to
+  # display NodePort server addresses (host:nodePort). Leave empty to
+  # display "<unset>" — the panel will not auto-discover Node IPs.
+  nodeHost: ""
+  # Whether the cluster has a LoadBalancer provider (Cilium LB-IPAM,
+  # MetalLB, cloud LB, …). When false, requests for
+  # exposure_mode=loadbalancer are rejected with 502 lb_unavailable.
+  # Homelab default per cluster-profile.md: true.
+  loadbalancerSupported: true
 
 # Persistence for the panel's own SQLite database. The PVC mounts at
 # /var/lib/anvil; ANVIL_DATABASE_URL points the backend at that path.

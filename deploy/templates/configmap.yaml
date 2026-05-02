@@ -15,3 +15,11 @@ data:
   ANVIL_MC_NAMESPACE: {{ .Values.mcNamespace | quote }}
   # `tracing` filter directive.
   ANVIL_LOG_LEVEL: {{ .Values.logLevel | quote }}
+  # Default StorageClass for managed-server PVCs. Required.
+  ANVIL_MC_STORAGE_CLASS: {{ .Values.mcDefaults.storageClassName | quote }}
+  # Default Service type for managed servers (overridable per server).
+  ANVIL_MC_SVC_TYPE: {{ .Values.mcDefaults.serviceType | quote }}
+  # Hostname/IP used to display NodePort server addresses. Empty = "<unset>".
+  ANVIL_NODE_HOST: {{ .Values.mcDefaults.nodeHost | quote }}
+  # Whether the cluster has a LoadBalancer provider.
+  ANVIL_LB_SUPPORTED: {{ .Values.mcDefaults.loadbalancerSupported | quote }}

@@ -1,0 +1,18 @@
+{{- if .Values.rbac.create -}}
+{{- /* Cluster-scoped read on StorageClass / IngressClass resources.
+       Used by GET /api/cluster/capabilities (see ADR 0005) so the
+       panel can list available StorageClasses without forcing the
+       operator to maintain the list in values.yaml.
+
+       Read-only. The panel never creates/updates/deletes these. */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "anvil.fullname" . }}-cluster-read
+  labels:
+    {{- include "anvil.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+{{- end }}
