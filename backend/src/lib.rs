@@ -13,6 +13,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod k8s;
+pub mod k8s_builders;
 pub mod k8s_status;
 pub mod routes;
 #[cfg(any(feature = "serve-dir", feature = "embed"))]
