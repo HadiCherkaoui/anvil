@@ -57,8 +57,10 @@ mod embed_impl {
 
     /// Embedded copy of the Next.js static export. The path is evaluated
     /// relative to `CARGO_MANIFEST_DIR` at compile time, so the directory
-    /// **must exist** when building the release binary — even if empty,
-    /// hence the placeholder `frontend/out/.gitkeep` in the repo.
+    /// **must exist** when this feature is active — `pnpm build` populates
+    /// it before any `cargo build --features embed` invocation. The CI
+    /// pipeline and Dockerfile encode that ordering; locally the dev
+    /// workflow is the same (`pnpm build` then `cargo run/build`).
     #[derive(Embed)]
     #[folder = "../frontend/out"]
     struct Assets;

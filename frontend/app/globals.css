@@ -1,1 +1,8 @@
 @import "tailwindcss";
+
+@theme {
+  /* Hook the next/font CSS variables (set in app/layout.tsx) into Tailwind's
+     font-sans / font-mono utility classes so the entire UI picks them up. */
+  --font-sans: var(--font-fira-sans), system-ui, sans-serif;
+  --font-mono: var(--font-fira-code), ui-monospace, "SFMono-Regular", monospace;
+}
