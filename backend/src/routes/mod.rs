@@ -59,6 +59,10 @@ fn api_routes() -> Router<AppState> {
         .route("/api/servers/{id}/stop", post(servers::stop::handle))
         .route("/api/servers/{id}/restart", post(servers::restart::handle))
         .route("/api/servers/{id}/logs", get(servers::logs::handle))
+        .route(
+            "/api/servers/{id}/logs/stream",
+            get(servers::logs_stream::handle),
+        )
         .route("/api/servers/{id}/rcon", post(servers::rcon::handle))
         .route("/api/cluster/capabilities", get(cluster::handle))
 }

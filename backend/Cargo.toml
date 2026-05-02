@@ -24,8 +24,9 @@ embed = ["dep:rust-embed", "dep:mime_guess"]
 [dependencies]
 anyhow = "1.0.102"
 axum = { version = "0.8.9", features = ["macros", "ws"] }
+bytes = "1.11.1"
 chrono = { version = "0.4.44", default-features = false, features = ["serde", "clock"] }
-futures-util = "0.3.32"
+futures-util = { version = "0.3.32", features = ["io"] }
 k8s-openapi = { version = "0.27.1", features = ["v1_31"] }
 kube = { version = "3.1.0", default-features = false, features = ["client", "ring", "rustls-tls"] }
 mime_guess = { version = "2.0.5", optional = true }

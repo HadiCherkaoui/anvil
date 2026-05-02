@@ -13,8 +13,6 @@ use axum::extract::ws::{Message, Utf8Bytes};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::error::AppError;
-
 /// One frame sent server -> client over `/api/servers/{id}/logs/stream`.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -60,17 +58,20 @@ pub enum EndReason {
 
 impl Frame {
     /// Serializes the frame and wraps it in an axum WebSocket text
-    /// `Message`.
+    /// `Message`. Infallible for the concrete fields used here — a
+    /// failure would mean a programming bug (per
+    /// [`M-PANIC-ON-BUG`](ms-rust)).
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Returns [`AppError::Internal`] if `serde_json` cannot serialize the
-    /// frame. In practice this is impossible for our concrete fields, so
-    /// callers can `?` the result.
-    pub fn into_message(self) -> Result<Message, AppError> {
-        let payload = serde_json::to_string(&self)
-            .map_err(|err| AppError::Internal(anyhow::anyhow!("frame serialization: {err}")))?;
-        Ok(Message::Text(Utf8Bytes::from(payload)))
+    /// If `serde_json::to_string` fails. This is unreachable for the
+    /// fields the enum actually holds (`String`, `&'static str`,
+    /// `DateTime<Utc>`, `EndReason`).
+    #[must_use]
+    pub fn into_message(self) -> Message {
+        let payload =
+            serde_json::to_string(&self).expect("Frame serialization is infallible for our types");
+        Message::Text(Utf8Bytes::from(payload))
     }
 }
 
@@ -133,10 +134,10 @@ mod tests {
 
     #[test]
     fn into_message_yields_text_with_serialized_payload() {
-        let f = Frame::Log {
+        let msg = Frame::Log {
             line: "hi".to_owned(),
-        };
-        let msg = f.into_message().unwrap();
+        }
+        .into_message();
         match msg {
             Message::Text(t) => {
                 assert_eq!(t.as_str(), r#"{"type":"log","line":"hi"}"#);
