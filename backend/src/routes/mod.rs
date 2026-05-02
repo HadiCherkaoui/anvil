@@ -1,8 +1,10 @@
 //! HTTP route definitions.
 
-use axum::Router;
+use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
+use axum::Router;
 
+use crate::auth::{handlers as auth, require_session};
 use crate::AppState;
 
 pub mod cluster;
@@ -13,13 +15,15 @@ pub mod servers;
 ///
 /// Mounts every `/api/*` route, attaches the static-frontend fallback
 /// (when a static-serve feature is active), and binds the supplied
-/// [`AppState`] to the handlers that need it.
+/// [`AppState`] to the handlers that need it. The auth middleware is
+/// applied to all `/api/*` routes except `/api/health`, `/api/auth/login`,
+/// and `/api/auth/callback`.
 pub fn router(state: AppState) -> Router {
     #[allow(
         unused_mut,
         reason = "mutated only when a static-serve feature is enabled"
     )]
-    let mut api = api_routes().with_state(state);
+    let mut api = api_routes(state.clone()).with_state(state);
 
     // Both-features-on is a hard error in `static_serve.rs`; this guard
     // ensures we don't *also* trip a missing-symbol error from the merge.
@@ -44,9 +48,15 @@ pub fn stateless_router() -> Router {
 }
 
 /// Internal: routes that exercise [`AppState`].
-fn api_routes() -> Router<AppState> {
-    Router::new()
+fn api_routes(state: AppState) -> Router<AppState> {
+    let public = Router::new()
         .route("/api/health", get(health::get))
+        .route("/api/auth/login", get(auth::login))
+        .route("/api/auth/callback", get(auth::callback));
+
+    let protected = Router::new()
+        .route("/api/auth/me", get(auth::me))
+        .route("/api/auth/logout", post(auth::logout))
         .route(
             "/api/servers",
             get(servers::list).post(servers::create::handle),
@@ -65,4 +75,7 @@ fn api_routes() -> Router<AppState> {
         )
         .route("/api/servers/{id}/rcon", post(servers::rcon::handle))
         .route("/api/cluster/capabilities", get(cluster::handle))
+        .route_layer(from_fn_with_state(state, require_session));
+
+    public.merge(protected)
 }
