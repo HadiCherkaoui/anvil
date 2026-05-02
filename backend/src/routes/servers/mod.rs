@@ -15,19 +15,19 @@ pub mod stop;
 
 use std::collections::HashMap;
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Service};
-use kube::api::ListParams;
 use kube::Api;
+use kube::api::ListParams;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::error::AppError;
-use crate::k8s::{ServerStatus, ServerSummary, LABEL_SERVER, MANAGED_BY_LABEL, MANAGED_BY_VALUE};
-use crate::k8s_status::{derive_endpoint, derive_status};
 use crate::AppState;
+use crate::error::AppError;
+use crate::k8s::{LABEL_SERVER, MANAGED_BY_LABEL, MANAGED_BY_VALUE, ServerStatus, ServerSummary};
+use crate::k8s_status::{derive_endpoint, derive_status};
 
 /// Body of `GET /api/servers` (spec §2.2).
 #[derive(Debug, Serialize)]

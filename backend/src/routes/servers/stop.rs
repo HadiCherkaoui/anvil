@@ -2,18 +2,18 @@
 //!
 //! Same shape as `start.rs` but no `last_started_at` update.
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use kube::api::{Patch, PatchParams};
 use kube::Api;
+use kube::api::{Patch, PatchParams};
 use serde_json::json;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::routes::servers::create::insert_audit;
-use crate::routes::servers::get::{fetch_detail, fetch_server_row, ServerDetail};
-use crate::AppState;
+use crate::routes::servers::get::{ServerDetail, fetch_detail, fetch_server_row};
 
 /// Handler for `POST /api/servers/:id/stop`.
 ///
