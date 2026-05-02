@@ -6,6 +6,7 @@
 //! status; until then it returns the M1 shape patched with M2 columns.
 
 pub mod create;
+pub mod get;
 
 use axum::extract::State;
 use axum::Json;

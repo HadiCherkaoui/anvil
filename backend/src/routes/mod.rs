@@ -44,8 +44,11 @@ pub fn stateless_router() -> Router {
 
 /// Internal: routes that exercise [`AppState`].
 fn api_routes() -> Router<AppState> {
-    Router::new().route("/api/health", get(health::get)).route(
-        "/api/servers",
-        get(servers::list).post(servers::create::handle),
-    )
+    Router::new()
+        .route("/api/health", get(health::get))
+        .route(
+            "/api/servers",
+            get(servers::list).post(servers::create::handle),
+        )
+        .route("/api/servers/{id}", get(servers::get::handle))
 }
