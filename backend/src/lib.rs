@@ -21,6 +21,7 @@ pub mod routes;
 #[cfg(any(feature = "serve-dir", feature = "embed"))]
 pub mod static_serve;
 pub mod validation;
+pub mod ws;
 
 pub use routes::{router, stateless_router};
 
