@@ -7,6 +7,9 @@
 
 pub mod create;
 pub mod get;
+pub mod restart;
+pub mod start;
+pub mod stop;
 
 use axum::extract::State;
 use axum::Json;
