@@ -32,6 +32,8 @@ const errorResponseSchema = z.object({
 
 // --- list -----------------------------------------------------------------
 
+export const sourceKindSchema = z.enum(["vanilla", "curseforge"]);
+
 export const serverSummarySchema = z.object({
 	id: z.string().uuid(),
 	name: z.string(),
@@ -41,6 +43,12 @@ export const serverSummarySchema = z.object({
 	exposure_mode: exposureModeSchema,
 	endpoint: endpointSchema.nullable(),
 	created_at: z.number().int(),
+	// M5: modpack provenance + update awareness. Defaults keep existing
+	// vanilla rows shaped the same as before for callers that ignore them.
+	source_kind: sourceKindSchema.default("vanilla"),
+	update_available: z.boolean().default(false),
+	latest_version_name: z.string().nullable().default(null),
+	update_in_progress: z.boolean().default(false),
 });
 
 export const serversResponseSchema = z.object({
@@ -55,6 +63,11 @@ export const serverDetailSchema = serverSummarySchema.extend({
 	storage_size_gi: z.number().int().nonnegative(),
 	nodeport: z.number().int().nullable(),
 	last_started_at: z.number().int().nullable(),
+	// M5: parsed provider config (passthrough JSON value) and the latest
+	// cached upstream version, when any.
+	source_config: z.unknown().default(null),
+	latest_version_id: z.number().int().nullable().default(null),
+	latest_changelog_excerpt: z.string().nullable().default(null),
 });
 
 // --- capabilities ---------------------------------------------------------
@@ -65,6 +78,8 @@ export const clusterCapabilitiesSchema = z.object({
 	clusterip: z.boolean(),
 	available_storage_classes: z.array(z.string()),
 	default_storage_class: z.string().nullable(),
+	// M5: gates the CurseForge option in the New Server modal.
+	cf_api_key_present: z.boolean().default(false),
 });
 
 // --- logs -----------------------------------------------------------------
@@ -94,15 +109,27 @@ const logoutResponseSchema = z.object({ logoutUrl: z.string() });
 
 const NAME_REGEX = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
+export const cfChannelSchema = z.enum(["release", "beta", "alpha"]);
+
+export const curseforgeCreateSchema = z.object({
+	project_id: z.number().int().positive(),
+	channel: cfChannelSchema,
+});
+
 export const createServerRequestSchema = z.object({
 	name: z
 		.string()
 		.regex(NAME_REGEX, "lowercase letters, digits, '-' (1-63 chars)"),
-	mc_version: z.string(),
+	// Optional: omitted for CurseForge servers (the chosen file's display name
+	// is stored as the version label by the backend).
+	mc_version: z.string().optional(),
 	memory_mi: z.number().int().min(1024).max(16_384),
 	exposure_mode: exposureModeSchema.optional(),
 	storage_class: z.string().optional(),
 	storage_size_gi: z.number().int().min(1).max(500).optional(),
+	// M5: server_type discriminator + sub-config for curseforge.
+	server_type: sourceKindSchema.optional(),
+	curseforge: curseforgeCreateSchema.optional(),
 });
 
 export const createServerResponseSchema = z.object({
@@ -117,6 +144,28 @@ const restartResponseSchema = z.object({
 	status: z.string(),
 });
 
+// --- modpack --------------------------------------------------------------
+
+export const updateResolveResponseSchema = z.object({
+	project_id: z.number().int().positive(),
+	name: z.string(),
+	slug: z.string(),
+});
+
+export const updateStartResponseSchema = z.object({
+	status: z.string(),
+	server_id: z.string(),
+	target_version_id: z.number().int().positive(),
+});
+
+export const autoUpdateModeSchema = z.enum(["never", "notify", "apply"]);
+
+export const settingsRequestSchema = z.object({
+	auto_update_mode: autoUpdateModeSchema.optional(),
+	version_skip: z.array(z.string()).optional(),
+	force_version: z.string().nullable().optional(),
+});
+
 // --- inferred types -------------------------------------------------------
 
 export type ServerSummary = z.infer<typeof serverSummarySchema>;
@@ -126,6 +175,12 @@ export type CreateServerRequest = z.infer<typeof createServerRequestSchema>;
 export type ServerStatus = z.infer<typeof serverStatusSchema>;
 export type ExposureMode = z.infer<typeof exposureModeSchema>;
 export type Me = z.infer<typeof meSchema>;
+export type SourceKind = z.infer<typeof sourceKindSchema>;
+export type CfChannel = z.infer<typeof cfChannelSchema>;
+export type AutoUpdateMode = z.infer<typeof autoUpdateModeSchema>;
+export type SettingsRequest = z.infer<typeof settingsRequestSchema>;
+export type UpdateResolveResponse = z.infer<typeof updateResolveResponseSchema>;
+export type UpdateStartResponse = z.infer<typeof updateStartResponseSchema>;
 
 // --- typed error wrapper --------------------------------------------------
 
@@ -292,4 +347,53 @@ export async function logout(): Promise<string> {
 	const res = await fetch("/api/auth/logout", { method: "POST" });
 	const body = await jsonOrThrow(res, logoutResponseSchema);
 	return body.logoutUrl;
+}
+
+// --- modpack endpoints ----------------------------------------------------
+
+/// Resolves a CurseForge URL slug to a project id via the backend (which
+/// holds the API key — never exposed to the browser).
+export async function resolveCurseForgeSlug(
+	slug: string,
+	signal?: AbortSignal,
+): Promise<UpdateResolveResponse> {
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch(
+		`/api/modpack/curseforge/resolve?slug=${encodeURIComponent(slug)}`,
+		init,
+	);
+	return jsonOrThrow(res, updateResolveResponseSchema);
+}
+
+/// Kicks off an update for a CF-backed server. `versionId` omits to use the
+/// poller's cached latest.
+export async function applyUpdate(
+	id: string,
+	versionId?: number,
+): Promise<UpdateStartResponse> {
+	const body =
+		versionId !== undefined
+			? JSON.stringify({ version_id: versionId })
+			: JSON.stringify({});
+	const res = await fetch(`/api/servers/${encodeURIComponent(id)}/update`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body,
+	});
+	return jsonOrThrow(res, updateStartResponseSchema);
+}
+
+/// PATCHes per-server modpack settings (auto_update_mode, version_skip,
+/// force_version). Only the fields supplied are updated.
+export async function updateServerSettings(
+	id: string,
+	patch: SettingsRequest,
+): Promise<void> {
+	const validated = settingsRequestSchema.parse(patch);
+	const res = await fetch(`/api/servers/${encodeURIComponent(id)}/settings`, {
+		method: "PATCH",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(validated),
+	});
+	await noContentOrThrow(res);
 }
