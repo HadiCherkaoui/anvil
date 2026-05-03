@@ -12,19 +12,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 // Handler-only imports (uncommented in Tasks 5 + 6):
-// use axum::Json;
-// use axum::extract::{Path, State};
+use axum::Json;
+use axum::extract::{Path, State};
 // use axum::http::StatusCode;
 // use chrono::Utc;
-// use k8s_openapi::api::core::v1::Pod;
-// use kube::Api;
-// use kube::api::LogParams;
-// use crate::AppState;
-// use crate::players::{
-//     self, BanEntry, BanIpEntry, OnlinePlayers, PlayerEvent, PlayerEventKind,
-// };
+use crate::AppState;
+use crate::players::{self, BanEntry, BanIpEntry, OnlinePlayers, PlayerEvent, PlayerEventKind};
+use k8s_openapi::api::core::v1::Pod;
+use kube::Api;
+use kube::api::LogParams;
 // use crate::routes::servers::create::insert_audit;
-// use crate::routes::servers::rcon::{run_rcon_batch, run_rcon_one};
+use crate::routes::servers::rcon::run_rcon_batch;
+// use crate::routes::servers::rcon::run_rcon_one;
 
 use crate::error::AppError;
 use crate::validation::{
@@ -81,39 +80,48 @@ pub struct PlayersResponse {
 }
 
 // `From` conversions — wired up when the handler imports the parsing types
-// in Tasks 5 + 6. Defined as standalone fns below to avoid importing the
-// parsing module here (where it would be dead code until then).
-//
-// impl From<OnlinePlayers> for OnlinePlayersDto {
-//     fn from(o: OnlinePlayers) -> Self {
-//         Self { count: o.count, max: o.max, players: o.players }
-//     }
-// }
-//
-// impl From<BanEntry> for BanEntryDto {
-//     fn from(b: BanEntry) -> Self {
-//         Self { name: b.name, reason: b.reason }
-//     }
-// }
-//
-// impl From<BanIpEntry> for BanIpEntryDto {
-//     fn from(b: BanIpEntry) -> Self {
-//         Self { ip: b.ip, reason: b.reason }
-//     }
-// }
-//
-// impl From<PlayerEvent> for PlayerEventDto {
-//     fn from(e: PlayerEvent) -> Self {
-//         Self {
-//             kind: match e.kind {
-//                 PlayerEventKind::Joined => "joined",
-//                 PlayerEventKind::Left => "left",
-//             },
-//             player: e.player,
-//             ts_ms: e.ts_ms,
-//         }
-//     }
-// }
+// in Tasks 5 + 6.
+
+impl From<OnlinePlayers> for OnlinePlayersDto {
+    fn from(o: OnlinePlayers) -> Self {
+        Self {
+            count: o.count,
+            max: o.max,
+            players: o.players,
+        }
+    }
+}
+
+impl From<BanEntry> for BanEntryDto {
+    fn from(b: BanEntry) -> Self {
+        Self {
+            name: b.name,
+            reason: b.reason,
+        }
+    }
+}
+
+impl From<BanIpEntry> for BanIpEntryDto {
+    fn from(b: BanIpEntry) -> Self {
+        Self {
+            ip: b.ip,
+            reason: b.reason,
+        }
+    }
+}
+
+impl From<PlayerEvent> for PlayerEventDto {
+    fn from(e: PlayerEvent) -> Self {
+        Self {
+            kind: match e.kind {
+                PlayerEventKind::Joined => "joined",
+                PlayerEventKind::Left => "left",
+            },
+            player: e.player,
+            ts_ms: e.ts_ms,
+        }
+    }
+}
 
 // --- action enum --------------------------------------------------------------
 
@@ -313,11 +321,87 @@ fn build_action(
     }
 }
 
-// Suppress dead-code warnings on constants used by handlers not yet written.
-const _: () = {
-    let _ = HISTORY_TAIL_LINES;
-    let _ = HISTORY_MAX_EVENTS;
-};
+// --- bulk-read handler -------------------------------------------------------
+
+/// Handler for `GET /api/servers/{id}/players`.
+///
+/// Runs four RCON commands on one connection (`list`, `whitelist list`,
+/// `banlist players`, `banlist ips`), parses each, and best-effort
+/// scrapes the last ~2000 pod log lines for join/leave events.
+///
+/// # Errors
+///
+/// - 404 if the server is not in the panel database (via `run_rcon_batch`).
+/// - 409 `server_not_running` if the `StatefulSet` is scaled down or the
+///   pod is not Running.
+/// - 500 on RCON / k8s failures.
+pub async fn handle_get(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<PlayersResponse>, AppError> {
+    let outs = run_rcon_batch(
+        &state,
+        &id,
+        &["list", "whitelist list", "banlist players", "banlist ips"],
+    )
+    .await?;
+
+    // run_rcon_batch contractually returns 4 outputs in the requested
+    // order. Defensively guard against a future API change.
+    let online = outs.first().map(String::as_str).unwrap_or_default();
+    let whitelist = outs.get(1).map(String::as_str).unwrap_or_default();
+    let banlist_p = outs.get(2).map(String::as_str).unwrap_or_default();
+    let banlist_i = outs.get(3).map(String::as_str).unwrap_or_default();
+
+    let online_dto: OnlinePlayersDto = players::parse_list_output(online).into();
+    let whitelist_v: Vec<String> = players::parse_whitelist_output(whitelist);
+    let banlist_dto = BanlistDto {
+        players: players::parse_banlist_players_output(banlist_p)
+            .into_iter()
+            .map(BanEntryDto::from)
+            .collect(),
+        ips: players::parse_banlist_ips_output(banlist_i)
+            .into_iter()
+            .map(BanIpEntryDto::from)
+            .collect(),
+    };
+
+    let history = scrape_history(&state, &id).await;
+
+    Ok(Json(PlayersResponse {
+        online: online_dto,
+        whitelist: whitelist_v,
+        banlist: banlist_dto,
+        history,
+    }))
+}
+
+/// Best-effort: pull the last `HISTORY_TAIL_LINES` lines of pod logs,
+/// parse each as a join/leave event, return the latest
+/// `HISTORY_MAX_EVENTS` sorted desc by ts.
+///
+/// Errors are swallowed — the bulk read still succeeds with an empty
+/// history.
+async fn scrape_history(state: &AppState, id: &str) -> Vec<PlayerEventDto> {
+    let pod_name = format!("mc-{id}-0");
+    let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
+    let params = LogParams {
+        tail_lines: Some(HISTORY_TAIL_LINES),
+        ..LogParams::default()
+    };
+    let Ok(text) = pods.logs(&pod_name, &params).await else {
+        return Vec::new();
+    };
+    let now = players::now_ms();
+    let mut evs: Vec<PlayerEvent> = text
+        .lines()
+        .filter_map(|line| players::parse_log_join_leave(line, now))
+        .collect();
+    // Latest first, capped.
+    evs.reverse();
+    evs.truncate(HISTORY_MAX_EVENTS);
+    evs.into_iter().map(PlayerEventDto::from).collect()
+}
 
 #[cfg(test)]
 mod cmd_builder_tests {
