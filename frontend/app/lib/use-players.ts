@@ -27,10 +27,17 @@ export function usePlayers(
 	const [data, setData] = useState<PlayersResponse | null>(null);
 	const [status, setStatus] = useState<PlayersStatus>("loading");
 	const [lastError, setLastError] = useState<string | null>(null);
-	const tickRef = useRef<number>(0);
+	const dataRef = useRef<PlayersResponse | null>(null);
+	const doFetchRef = useRef<(() => void) | null>(null);
+
+	// Keep dataRef in sync so the polling effect can read the latest value
+	// without depending on `data` (which would restart the polling interval).
+	useEffect(() => {
+		dataRef.current = data;
+	}, [data]);
 
 	const refresh = useCallback((): void => {
-		tickRef.current += 1;
+		doFetchRef.current?.();
 	}, []);
 
 	useEffect(() => {
@@ -62,11 +69,15 @@ export function usePlayers(
 					setLastError(null);
 					return;
 				}
-				setStatus(data === null ? "error" : "stale");
+				setStatus(dataRef.current === null ? "error" : "stale");
 				setLastError(
 					err instanceof Error ? err.message : "unknown players-fetch error",
 				);
 			}
+		};
+
+		doFetchRef.current = (): void => {
+			void doFetch();
 		};
 
 		const start = (): void => {
@@ -97,14 +108,14 @@ export function usePlayers(
 
 		return (): void => {
 			cancelled = true;
+			doFetchRef.current = null;
 			document.removeEventListener("visibilitychange", onVisibilityChange);
 			stop();
 		};
-		// `tickRef.current` is read inside doFetch via the refresh() trigger.
-		// We deliberately leave it out of deps; the effect restarts on
-		// (serverId, enabled) and `refresh()` causes an inline re-fetch via
-		// the next interval tick or visibilitychange.
-		// eslint-disable-next-line react-hooks/exhaustive-deps
+		// The effect restarts only on (serverId, enabled) changes. The polling
+		// interval and visibility listener own their own re-fetch cadence via
+		// doFetch. `data` is intentionally absent from deps — it is read through
+		// `dataRef` to avoid restarting the interval on every successful fetch.
 	}, [serverId, enabled]);
 
 	// When disabled, derive the stopped snapshot at render time rather than
