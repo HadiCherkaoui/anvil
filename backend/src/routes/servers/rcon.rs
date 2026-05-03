@@ -77,26 +77,27 @@ fn validate_cmd(cmd: &str) -> Result<&str, AppError> {
     Ok(trimmed)
 }
 
-/// Handler for `POST /api/servers/{id}/rcon`.
+/// Runs one or more RCON commands on a single auth'd connection.
+///
+/// Opens a fresh TCP+RCON session, sends each `cmd` in order, and
+/// returns the outputs in the same order. Errors are mapped through
+/// [`map_rcon_error`]. The full sequence runs under a single
+/// [`RCON_TIMEOUT`] — 5 s total for connect + auth + every command.
 ///
 /// # Errors
 ///
-/// - 400 `cmd_empty` / `cmd_too_long` on a malformed body.
 /// - 404 if the server is not in the panel database.
-/// - 409 `server_not_running` if the `StatefulSet` is scaled down or the
-///   pod is not in `Running` state.
-/// - 500 on any other failure (k8s, DB, auth, I/O, timeout). The RCON
-///   password is never echoed in the error message.
-pub async fn handle(
-    Path(id): Path<String>,
-    State(state): State<AppState>,
-    Json(request): Json<RconRequest>,
-) -> Result<Json<RconResponse>, AppError> {
-    let cmd = validate_cmd(&request.cmd)?.to_owned();
+/// - 409 `server_not_running` if the `StatefulSet` is scaled down or
+///   the pod is not Running.
+/// - 500 on k8s, secret, or RCON failures (timeout, auth, IO).
+pub async fn run_rcon_batch(
+    state: &AppState,
+    server_id: &str,
+    cmds: &[&str],
+) -> Result<Vec<String>, AppError> {
+    let _row = fetch_server_row(&state.pool, server_id).await?;
 
-    let _row = fetch_server_row(&state.pool, &id).await?;
-
-    let resource_name = format!("mc-{id}");
+    let resource_name = format!("mc-{server_id}");
     let pod_name = format!("{resource_name}-0");
     let secret_name = format!("{resource_name}-rcon");
     let headless_dns = format!(
@@ -109,9 +110,6 @@ pub async fn handle(
     let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let secrets: Api<Secret> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
 
-    // Status gate: only Running servers accept RCON. Mirrors the
-    // derive_status truth table used by the list/detail handlers so
-    // status semantics stay in one place.
     let (replicas, ready) = stsets.get_opt(&resource_name).await?.map_or((0, 0), |s| {
         let r = s.spec.as_ref().and_then(|sp| sp.replicas).unwrap_or(0);
         let ready = s
@@ -129,9 +127,6 @@ pub async fn handle(
         });
     }
 
-    // Read the RCON password. Surface a clear internal error if the
-    // Secret is missing or malformed — this should not happen unless
-    // someone deleted it out-of-band.
     let secret = secrets.get(&secret_name).await?;
     let password = secret
         .data
@@ -149,14 +144,54 @@ pub async fn handle(
         ))
     })?;
 
-    // Connect, send, receive, close — all under one timeout.
-    let output = timeout(RCON_TIMEOUT, async {
+    let outputs = timeout(RCON_TIMEOUT, async {
         let mut conn = <rcon::Connection<TcpStream>>::connect(&headless_dns, &password).await?;
-        conn.cmd(&cmd).await
+        let mut outs = Vec::with_capacity(cmds.len());
+        for cmd in cmds {
+            outs.push(conn.cmd(cmd).await?);
+        }
+        Ok::<_, rcon::Error>(outs)
     })
     .await
     .map_err(|_| AppError::Internal(anyhow::anyhow!("rcon timed out after {RCON_TIMEOUT:?}")))?
     .map_err(map_rcon_error)?;
+
+    Ok(outputs)
+}
+
+/// Runs a single RCON command. Convenience wrapper over
+/// [`run_rcon_batch`].
+///
+/// # Errors
+///
+/// Same as [`run_rcon_batch`].
+pub async fn run_rcon_one(
+    state: &AppState,
+    server_id: &str,
+    cmd: &str,
+) -> Result<String, AppError> {
+    let mut outs = run_rcon_batch(state, server_id, &[cmd]).await?;
+    Ok(outs.pop().unwrap_or_default())
+}
+
+/// Handler for `POST /api/servers/{id}/rcon`.
+///
+/// # Errors
+///
+/// - 400 `cmd_empty` / `cmd_too_long` on a malformed body.
+/// - 404 if the server is not in the panel database.
+/// - 409 `server_not_running` if the `StatefulSet` is scaled down or the
+///   pod is not in `Running` state.
+/// - 500 on any other failure (k8s, DB, auth, I/O, timeout). The RCON
+///   password is never echoed in the error message.
+pub async fn handle(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(request): Json<RconRequest>,
+) -> Result<Json<RconResponse>, AppError> {
+    let cmd = validate_cmd(&request.cmd)?.to_owned();
+
+    let output = run_rcon_one(&state, &id, &cmd).await?;
 
     let now = Utc::now().timestamp();
     insert_audit(&state.pool, &id, "rcon", Some(json!({ "cmd": cmd })), now).await?;
