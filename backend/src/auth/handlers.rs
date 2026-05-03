@@ -5,22 +5,22 @@
 //! - `GET  /api/auth/me`       → JSON body from request-extension claims
 //! - `POST /api/auth/logout`   → clear cookie, return Authentik end-session URL
 
-use axum::extract::{Query, State};
-use axum::response::Redirect;
 use axum::Extension;
 use axum::Json;
+use axum::extract::{Query, State};
+use axum::response::Redirect;
 use axum_extra::extract::cookie::{Cookie, CookieJar, PrivateCookieJar, SameSite};
 use serde::Deserialize;
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
 
+use crate::AppState;
 use crate::auth::oidc::ExchangedIdentity;
 use crate::auth::session::{
-    mint, OIDC_STATE_COOKIE, OIDC_STATE_TTL_SECS, SESSION_COOKIE, SESSION_TTL_SECS,
+    OIDC_STATE_COOKIE, OIDC_STATE_TTL_SECS, SESSION_COOKIE, SESSION_TTL_SECS, mint,
 };
 use crate::auth::types::{MeResponse, OidcStateCookie, SessionClaims};
 use crate::error::AppError;
-use crate::AppState;
 
 fn session_cookie(value: String) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE, value))
