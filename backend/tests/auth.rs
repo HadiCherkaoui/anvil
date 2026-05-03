@@ -49,10 +49,14 @@ fn test_state(allowed: Vec<String>) -> AppState {
         cookie_key,
         allowed_subs: allowed,
         oidc,
-        // M5 modpack fields — none of the auth-middleware tests exercise
-        // them, so all-disabled / empty defaults are fine.
+        // M5/B modpack fields — none of the auth-middleware tests exercise
+        // them, so all-disabled / empty defaults are fine. Modrinth is API-
+        // key-free so the client is always present.
         cf_client: None,
-        snapshots_pvc: None,
+        mr_client: std::sync::Arc::new(
+            anvil::modpack::ModrinthClient::new().expect("test Modrinth client"),
+        ),
+        snapshots_pvc: std::sync::Arc::new("mc-snapshots".to_owned()),
         modpack_poll_interval: std::time::Duration::from_secs(3600),
         update_locks: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         update_phase_buses: std::sync::Arc::new(std::sync::Mutex::new(

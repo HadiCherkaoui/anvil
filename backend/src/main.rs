@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anvil::auth::OidcState;
 use anvil::config::Config;
-use anvil::modpack::{self, CurseForgeClient};
+use anvil::modpack::{self, CurseForgeClient, ModrinthClient};
 use anvil::{AppState, db, k8s, router};
 use anyhow::{Context as _, Result};
 use axum_extra::extract::cookie::Key;
@@ -49,16 +49,16 @@ async fn main() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("OIDC client init: {e}"))?;
     let cookie_key = Key::derive_from(&config.session_key);
 
-    // CurseForge client is only constructed when both the API key AND the
-    // snapshots PVC are configured; the poll interval is read regardless so
-    // it has a stable value even when modpack support is off.
+    // CurseForge client is constructed only when CF_API_KEY is set; CF
+    // support stays optional. Modrinth is API-key-free and always-on.
     let cf_client = match config.cf_api_key.as_deref() {
         Some(key) => Some(Arc::new(
             CurseForgeClient::new(key).context("constructing CurseForge client")?,
         )),
         None => None,
     };
-    let snapshots_pvc = config.modpack_snapshots_pvc.clone().map(Arc::new);
+    let mr_client = Arc::new(ModrinthClient::new().context("constructing Modrinth client")?);
+    let snapshots_pvc = Arc::new(config.modpack_snapshots_pvc.clone());
 
     let state = AppState {
         kube,
@@ -75,6 +75,7 @@ async fn main() -> Result<()> {
         allowed_subs: config.allowed_subs.clone(),
         oidc,
         cf_client,
+        mr_client,
         snapshots_pvc,
         modpack_poll_interval: Duration::from_secs(config.modpack_poll_interval_minutes * 60),
         update_locks: Arc::new(Mutex::new(HashSet::new())),
@@ -82,9 +83,9 @@ async fn main() -> Result<()> {
         snapshot_pvc_lock: Arc::new(AsyncMutex::new(())),
     };
 
-    // Hourly poller — only when modpack support is enabled. Runs for the
-    // process lifetime; no shutdown handle (process exit terminates it).
-    if state.cf_client.is_some() {
+    // Hourly poller — covers both CF and Modrinth modpack rows. Skips CF
+    // rows in-loop when cf_client is None.
+    {
         let poller_state = state.clone();
         tokio::spawn(async move {
             modpack::poller::run(poller_state).await;

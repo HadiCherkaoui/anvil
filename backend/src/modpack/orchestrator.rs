@@ -182,11 +182,9 @@ async fn run_inner(
 
     let http = ModpackHttp {
         cf: state.cf_client.as_deref(),
+        mr: state.mr_client.as_ref(),
     };
-    let snapshots_pvc = state
-        .snapshots_pvc
-        .as_ref()
-        .ok_or_else(|| anyhow!("snapshots PVC not configured"))?;
+    let snapshots_pvc = state.snapshots_pvc.as_ref();
 
     let version = pick_target_version(&*provider, &http, target_version_id).await?;
 
@@ -602,10 +600,7 @@ async fn persist_new_version(
 ///
 /// The orchestrator owns the snapshot lock again here for the restore Job.
 async fn rollback(state: &AppState, server_id: &str, _guard: &UpdateGuard) -> Result<()> {
-    let snapshots_pvc = state
-        .snapshots_pvc
-        .as_ref()
-        .ok_or_else(|| anyhow!("snapshots PVC not configured"))?;
+    let snapshots_pvc = state.snapshots_pvc.as_ref();
     let permit = state.snapshot_pvc_lock.lock().await;
 
     // Stop again (the failed run may have left replicas=1 if it failed

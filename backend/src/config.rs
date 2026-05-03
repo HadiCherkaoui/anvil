@@ -77,9 +77,10 @@ pub struct Config {
     /// `CurseForge` API key (M5). When unset / empty, modpack support is disabled
     /// and the New Server modal hides the `CurseForge` option.
     pub cf_api_key: Option<String>,
-    /// Name of the PVC mounted by backup/swap Jobs. Required iff `cf_api_key`
-    /// is set; the chart's modpack.snapshotsPvc.enabled value gates this.
-    pub modpack_snapshots_pvc: Option<String>,
+    /// Name of the PVC mounted by backup/swap/sync Jobs. Required — Modrinth
+    /// (always-on) needs the snapshots PVC for the mod-sync FSM. The chart's
+    /// modpack.snapshotsPvc value gates this.
+    pub modpack_snapshots_pvc: String,
     /// Hourly poll interval for `modpack_versions` updates.
     pub modpack_poll_interval_minutes: u64,
 }
@@ -179,12 +180,16 @@ impl Config {
             .map(str::to_owned)
             .collect();
 
-        // CF_API_KEY may live in a file (k8s secret mount) or directly in env;
-        // either being unset means modpack support stays disabled.
+        // CF_API_KEY is optional (CF disabled if unset). The snapshots PVC is
+        // mandatory because Modrinth (always-on) and modded servers both need
+        // it for the mod-sync / pack-swap FSMs.
         let cf_api_key = optional_secret("CF_API_KEY_FILE", "CF_API_KEY")?;
-        let modpack_snapshots_pvc = env::var("ANVIL_MODPACK_SNAPSHOTS_PVC")
-            .ok()
-            .filter(|s| !s.is_empty());
+        let modpack_snapshots_pvc = env::var("ANVIL_MODPACK_SNAPSHOTS_PVC").context(
+            "ANVIL_MODPACK_SNAPSHOTS_PVC must be set — modpack/modded updates need a snapshots PVC",
+        )?;
+        if modpack_snapshots_pvc.is_empty() {
+            bail!("ANVIL_MODPACK_SNAPSHOTS_PVC must not be empty");
+        }
         let modpack_poll_interval_minutes_str = env::var("ANVIL_MODPACK_POLL_MINUTES")
             .unwrap_or_else(|_| DEFAULT_MODPACK_POLL_MINUTES.to_owned());
         let modpack_poll_interval_minutes: u64 =
@@ -195,12 +200,6 @@ impl Config {
             })?;
         if modpack_poll_interval_minutes == 0 {
             bail!("ANVIL_MODPACK_POLL_MINUTES must be > 0");
-        }
-
-        if cf_api_key.is_some() && modpack_snapshots_pvc.is_none() {
-            bail!(
-                "CF_API_KEY is set but ANVIL_MODPACK_SNAPSHOTS_PVC is not — modpack updates need a snapshots PVC"
-            );
         }
 
         Ok(Self {

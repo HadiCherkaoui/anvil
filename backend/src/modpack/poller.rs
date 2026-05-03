@@ -43,6 +43,7 @@ pub async fn run(state: AppState) {
 async fn tick(state: &AppState) -> anyhow::Result<()> {
     let http = ModpackHttp {
         cf: state.cf_client.as_deref(),
+        mr: state.mr_client.as_ref(),
     };
 
     let rows = sqlx::query(

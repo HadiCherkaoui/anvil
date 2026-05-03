@@ -16,7 +16,7 @@ use sqlx::SqlitePool;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use crate::auth::OidcState;
-use crate::modpack::{CurseForgeClient, orchestrator::UpdatePhase};
+use crate::modpack::{CurseForgeClient, ModrinthClient, orchestrator::UpdatePhase};
 use crate::routes::cluster::CapabilitiesCache;
 use crate::routes::mc_versions::McVersionsCache;
 
@@ -69,12 +69,13 @@ pub struct AppState {
     pub allowed_subs: Vec<String>,
     /// OIDC client + cached provider metadata.
     pub oidc: Arc<OidcState>,
-    /// `CurseForge` HTTP client. `None` when `CF_API_KEY` is unset — modpack
-    /// support is then disabled across all handlers.
+    /// `CurseForge` HTTP client. `None` when `CF_API_KEY` is unset — CF
+    /// modpack support is then disabled, but Modrinth still works.
     pub cf_client: Option<Arc<CurseForgeClient>>,
-    /// Name of the shared snapshots PVC mounted by backup/swap Jobs.
-    /// `None` when modpack support is disabled.
-    pub snapshots_pvc: Option<Arc<String>>,
+    /// Modrinth HTTP client. Always present (no API key required).
+    pub mr_client: Arc<ModrinthClient>,
+    /// Name of the shared snapshots PVC mounted by backup/swap/sync Jobs.
+    pub snapshots_pvc: Arc<String>,
     /// How often the modpack poller refreshes `modpack_versions`.
     pub modpack_poll_interval: Duration,
     /// Server ids with an update orchestrator currently running.
@@ -106,6 +107,7 @@ impl fmt::Debug for AppState {
             .field("allowed_subs", &self.allowed_subs)
             .field("oidc", &self.oidc)
             .field("cf_client", &self.cf_client.as_ref().map(|_| "<cf>"))
+            .field("mr_client", &"<mr>")
             .field("snapshots_pvc", &self.snapshots_pvc)
             .field("modpack_poll_interval", &self.modpack_poll_interval)
             .field("update_locks", &"<lock>")

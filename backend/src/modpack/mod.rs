@@ -20,12 +20,14 @@ pub mod cf_client;
 pub mod curseforge;
 pub mod guard;
 pub mod jobs;
+pub mod mr_client;
 pub mod orchestrator;
 pub mod poller;
 pub mod vanilla;
 
 pub use cf_client::CurseForgeClient;
 pub use curseforge::{Channel, CurseForgeServerPack};
+pub use mr_client::ModrinthClient;
 pub use vanilla::VanillaProvider;
 
 /// Context the per-server `StatefulSet` builder hands to the provider so
@@ -57,10 +59,11 @@ pub struct VersionInfo {
 /// HTTP context handed to provider methods so they can reach the right upstream.
 ///
 /// `cf` is `None` when `CF_API_KEY` is unset — providers that need it must
-/// surface a clear error. `mr` is grown in Phase 2 once `mr_client` lands.
+/// surface a clear error. `mr` is always available (Modrinth is API-key-free).
 #[derive(Debug)]
 pub struct ModpackHttp<'a> {
     pub cf: Option<&'a CurseForgeClient>,
+    pub mr: &'a ModrinthClient,
 }
 
 /// One provider per server source. Vanilla + `CurseForge` in M5; Modrinth later.
