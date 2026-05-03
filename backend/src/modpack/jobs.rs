@@ -181,6 +181,99 @@ pub fn build_swap_job(
     )
 }
 
+/// Builds the mod-sync Job.
+///
+/// Wipes any `/data/mods/*.jar` not in `keep_filenames`, then downloads any
+/// `desired_urls` line whose filename isn't yet present. Verifies sha512 when
+/// supplied. The data PVC is the only mount; no snapshots PVC needed.
+#[must_use]
+pub fn build_mod_sync_job(
+    server_id: &str,
+    ts: i64,
+    namespace: &str,
+    keep_filenames: &[&str],
+    desired_urls: &[(&str, &str, Option<&str>)],
+) -> Job {
+    let resource_name = format!("mc-{server_id}");
+    let pvc_name = format!("data-{resource_name}-0");
+    let job_name = format!("mod-sync-{resource_name}-{ts}");
+
+    let keep = keep_filenames.join("\n");
+    let desired = desired_urls
+        .iter()
+        .map(|(filename, url, sha)| format!("{filename}\t{url}\t{}", sha.unwrap_or("")))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let env = vec![
+        env_kv("KEEP_FILENAMES", &keep),
+        env_kv("DESIRED_URLS", &desired),
+    ];
+
+    let container = Container {
+        name: "sync".to_owned(),
+        image: Some(ALPINE_IMAGE.to_owned()),
+        command: Some(vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            MOD_SYNC_SCRIPT.to_owned(),
+        ]),
+        env: Some(env),
+        volume_mounts: Some(vec![VolumeMount {
+            name: "data".to_owned(),
+            mount_path: "/data".to_owned(),
+            ..VolumeMount::default()
+        }]),
+        ..Container::default()
+    };
+
+    job(
+        &job_name,
+        namespace,
+        labels(server_id, "mod-sync"),
+        container,
+        vec![data_volume(&pvc_name)],
+    )
+}
+
+/// Inline shell script the mod-sync container runs.
+const MOD_SYNC_SCRIPT: &str = r#"
+set -eu
+apk add --no-cache curl >/dev/null
+
+mkdir -p /data/mods
+
+# 1. Build the keep-set in a temp file.
+echo "$KEEP_FILENAMES" > /tmp/keep.txt
+
+# 2. Remove any jar in /data/mods/ that isn't in the keep set.
+for jar in /data/mods/*.jar; do
+  [ -e "$jar" ] || continue
+  base=$(basename "$jar")
+  if ! grep -qxF "$base" /tmp/keep.txt; then
+    echo "removing $base"
+    rm -f "$jar"
+  fi
+done
+
+# 3. Download every DESIRED_URLS line whose filename isn't yet present.
+echo "$DESIRED_URLS" | while IFS="$(printf '\t')" read -r filename url sha; do
+  [ -z "$filename" ] && continue
+  target="/data/mods/$filename"
+  if [ -e "$target" ]; then
+    continue
+  fi
+  echo "fetching $filename"
+  curl -fL "$url" -o "$target.tmp"
+  if [ -n "$sha" ]; then
+    echo "$sha  $target.tmp" | sha512sum -c -
+  fi
+  mv "$target.tmp" "$target"
+done
+
+echo "mod-sync complete"
+"#;
+
 /// Inline shell script the swap container runs.
 ///
 /// Exit-on-error (`set -eu`); preserve / wipe / download / unpack / restore /
@@ -436,5 +529,50 @@ mod tests {
         let script = cmd.last().unwrap();
         assert!(script.contains("find /data -mindepth 1 -delete"));
         assert!(script.contains("tar xzf"));
+    }
+
+    #[test]
+    fn mod_sync_job_carries_keep_and_desired_in_env() {
+        let j = build_mod_sync_job(
+            "abc",
+            1,
+            "mc",
+            &["sodium.jar", "lithium.jar"],
+            &[("iris.jar", "https://example/iris.jar", Some("ffff"))],
+        );
+        let env = j.spec.unwrap().template.spec.unwrap().containers[0]
+            .env
+            .clone()
+            .unwrap();
+        let keep = env.iter().find(|e| e.name == "KEEP_FILENAMES").unwrap();
+        let desired = env.iter().find(|e| e.name == "DESIRED_URLS").unwrap();
+        assert!(keep.value.as_deref().unwrap().contains("sodium.jar"));
+        assert!(keep.value.as_deref().unwrap().contains("lithium.jar"));
+        assert!(
+            desired
+                .value
+                .as_deref()
+                .unwrap()
+                .contains("iris.jar\thttps://example/iris.jar\tffff")
+        );
+    }
+
+    #[test]
+    fn mod_sync_job_uses_data_pvc_only() {
+        let j = build_mod_sync_job("abc", 1, "mc", &[], &[]);
+        let v = j.spec.unwrap().template.spec.unwrap().volumes.unwrap();
+        assert_eq!(v.len(), 1);
+        let data = v.iter().find(|x| x.name == "data").unwrap();
+        let pvc = data.persistent_volume_claim.as_ref().unwrap();
+        assert_eq!(pvc.claim_name, "data-mc-abc-0");
+    }
+
+    #[test]
+    fn mod_sync_job_name_includes_server_id_and_ts() {
+        let j = build_mod_sync_job("abc", 1_700_000_000, "mc", &[], &[]);
+        assert_eq!(
+            j.metadata.name.as_deref(),
+            Some("mod-sync-mc-abc-1700000000")
+        );
     }
 }

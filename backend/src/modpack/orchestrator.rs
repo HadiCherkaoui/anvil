@@ -388,7 +388,7 @@ async fn pick_target_version(
 }
 
 /// Best-effort RCON announce + save-all so the world flushes before stop.
-async fn announce_and_save(state: &AppState, server_id: &str) -> Result<()> {
+pub(crate) async fn announce_and_save(state: &AppState, server_id: &str) -> Result<()> {
     let resource_name = format!("mc-{server_id}");
     let pod_name = format!("{resource_name}-0");
     let secret_name = format!("{resource_name}-rcon");
@@ -426,7 +426,12 @@ async fn announce_and_save(state: &AppState, server_id: &str) -> Result<()> {
 }
 
 /// `kubectl scale --replicas=N statefulset/mc-{id}`.
-async fn scale_to(client: &kube::Client, ns: &str, server_id: &str, replicas: i32) -> Result<()> {
+pub(crate) async fn scale_to(
+    client: &kube::Client,
+    ns: &str,
+    server_id: &str,
+    replicas: i32,
+) -> Result<()> {
     let stsets: Api<StatefulSet> = Api::namespaced(client.clone(), ns);
     stsets
         .patch_scale(
@@ -440,7 +445,7 @@ async fn scale_to(client: &kube::Client, ns: &str, server_id: &str, replicas: i3
 }
 
 /// Polls `mc-{id}-0` until it disappears or the deadline elapses.
-async fn wait_pod_gone(
+pub(crate) async fn wait_pod_gone(
     client: &kube::Client,
     ns: &str,
     server_id: &str,
@@ -461,7 +466,7 @@ async fn wait_pod_gone(
 }
 
 /// Polls `mc-{id}-0` until its phase reaches `Running`.
-async fn wait_pod_running(
+pub(crate) async fn wait_pod_running(
     client: &kube::Client,
     ns: &str,
     server_id: &str,
@@ -492,7 +497,7 @@ async fn wait_pod_running(
 }
 
 /// Creates a Job (best-effort delete-and-recreate if a stale one with the same name lingers).
-async fn spawn_job(client: &kube::Client, ns: &str, job: &Job) -> Result<()> {
+pub(crate) async fn spawn_job(client: &kube::Client, ns: &str, job: &Job) -> Result<()> {
     let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
     let name = job
         .metadata
@@ -511,7 +516,7 @@ async fn spawn_job(client: &kube::Client, ns: &str, job: &Job) -> Result<()> {
 }
 
 /// Polls a Job's status until succeeded > 0 (Ok), failed > 0 (Err), or deadline.
-async fn wait_job(
+pub(crate) async fn wait_job(
     client: &kube::Client,
     ns: &str,
     name: &str,
@@ -541,7 +546,7 @@ async fn wait_job(
 
 /// Tails the pod logs until the canonical `Done (` boot marker appears or
 /// the deadline elapses.
-async fn wait_for_done_marker(
+pub(crate) async fn wait_for_done_marker(
     client: &kube::Client,
     ns: &str,
     server_id: &str,

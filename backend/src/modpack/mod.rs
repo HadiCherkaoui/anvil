@@ -22,6 +22,7 @@ pub mod guard;
 pub mod jobs;
 pub mod modded;
 pub mod modrinth;
+pub mod mods_apply;
 pub mod mr_client;
 pub mod orchestrator;
 pub mod paper;

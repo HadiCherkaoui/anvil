@@ -90,6 +90,16 @@ fn api_routes(state: AppState) -> Router<AppState> {
             "/api/servers/{id}/settings",
             axum::routing::patch(servers::settings::handle),
         )
+        .route("/api/servers/{id}/mods", post(servers::mods::add_pending))
+        .route(
+            "/api/servers/{id}/mods/pending/{idx}",
+            axum::routing::delete(servers::mods::remove_pending),
+        )
+        .route("/api/servers/{id}/mods/apply", post(servers::mods::apply))
+        .route(
+            "/api/servers/{id}/mods/apply/stream",
+            get(servers::mods::apply_stream),
+        )
         .route("/api/cluster/capabilities", get(cluster::handle))
         .route("/api/cluster/mc-versions", get(mc_versions::handle))
         .route(
