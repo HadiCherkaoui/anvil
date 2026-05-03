@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import {
 	useCallback,
 	useEffect,
@@ -9,8 +10,9 @@ import {
 } from "react";
 
 import { Button } from "./components/Button";
-import { NewServerModal } from "./components/NewServerModal";
-import { ServerTable } from "./components/ServerTable";
+import { Card } from "./components/Card";
+import { ServerList } from "./components/ServerList";
+import { Skeleton } from "./components/Skeleton";
 import { ApiError, fetchServers, type ServerSummary } from "./lib/api";
 
 const POLL_INTERVAL_MS = 5_000;
@@ -21,12 +23,8 @@ type LoadState =
 	| { kind: "error"; message: string };
 
 export default function HomePage(): ReactElement {
+	const router = useRouter();
 	const [state, setState] = useState<LoadState>({ kind: "loading" });
-	const [modalOpen, setModalOpen] = useState(false);
-	// Holds the latest "trigger reload" closure so action handlers (and
-	// the modal's onCreated) can re-fetch using the same AbortController
-	// the polling effect set up. Aborting on unmount cancels both the
-	// in-flight poll and any user-triggered reloads.
 	const triggerReload = useRef<() => void>(() => undefined);
 
 	const reload = useCallback(async (signal: AbortSignal): Promise<void> => {
@@ -47,15 +45,29 @@ export default function HomePage(): ReactElement {
 
 	useEffect(() => {
 		const ctrl = new AbortController();
+		let timer: number | undefined;
 		triggerReload.current = (): void => {
 			void reload(ctrl.signal);
 		};
-		triggerReload.current();
-		const handle = setInterval(() => {
-			triggerReload.current();
-		}, POLL_INTERVAL_MS);
+
+		const tick = (): void => {
+			if (document.visibilityState === "visible") {
+				triggerReload.current();
+			}
+			timer = window.setTimeout(tick, POLL_INTERVAL_MS);
+		};
+		tick();
+
+		const onVisibility = (): void => {
+			if (document.visibilityState === "visible") {
+				triggerReload.current();
+			}
+		};
+		document.addEventListener("visibilitychange", onVisibility);
+
 		return () => {
-			clearInterval(handle);
+			if (timer !== undefined) window.clearTimeout(timer);
+			document.removeEventListener("visibilitychange", onVisibility);
 			ctrl.abort();
 		};
 	}, [reload]);
@@ -64,46 +76,61 @@ export default function HomePage(): ReactElement {
 		triggerReload.current();
 	}, []);
 
-	const onCreated = useCallback((): void => {
-		setModalOpen(false);
-		triggerReload.current();
-	}, []);
+	const summary = state.kind === "ready" ? buildSummary(state.servers) : null;
 
 	return (
-		<main className="min-h-screen px-6 py-12">
-			<header className="mx-auto mb-12 flex max-w-5xl items-baseline justify-between">
-				<h1 className="text-2xl font-semibold tracking-tight">anvil</h1>
-				<Button
-					variant="primary"
-					onClick={() => {
-						setModalOpen(true);
-					}}
-				>
-					+ new server
-				</Button>
-			</header>
-			<section className="mx-auto max-w-5xl">
+		<div className="px-6 py-8">
+			<section className="mx-auto max-w-6xl">
+				<header className="mb-6 flex items-baseline justify-between">
+					<p className="font-mono text-[12px] text-text-muted">
+						{summary ?? <Skeleton variant="text" className="h-3 w-64" />}
+					</p>
+					<Button
+						variant="primary"
+						onClick={() => {
+							router.push("/servers/new");
+						}}
+					>
+						+ new
+					</Button>
+				</header>
+
 				{state.kind === "loading" && (
-					<p className="text-sm text-slate-400">loading servers…</p>
+					<div className="flex flex-col gap-1 rounded-md border border-border bg-surface p-1">
+						<Skeleton variant="row" />
+						<Skeleton variant="row" />
+						<Skeleton variant="row" />
+					</div>
 				)}
 				{state.kind === "error" && (
-					<p className="text-sm text-red-400">
-						failed to load servers: {state.message}
-					</p>
+					<Card>
+						<p className="font-mono text-[12px] text-state-error">
+							failed to load servers · {state.message}
+						</p>
+					</Card>
 				)}
 				{state.kind === "ready" && (
-					<ServerTable servers={state.servers} onActionDone={onActionDone} />
+					<ServerList servers={state.servers} onActionDone={onActionDone} />
 				)}
 			</section>
-			{modalOpen && (
-				<NewServerModal
-					open={modalOpen}
-					onClose={() => {
-						setModalOpen(false);
-					}}
-					onCreated={onCreated}
-				/>
-			)}
-		</main>
+		</div>
 	);
+}
+
+function buildSummary(servers: readonly ServerSummary[]): string {
+	const total = servers.length;
+	const running = servers.filter((s) => s.status === "running").length;
+	const stopped = servers.filter((s) => s.status === "stopped").length;
+	const updates = servers.filter((s) => s.update_available).length;
+	const parts = [
+		`${total.toString()} ${total === 1 ? "server" : "servers"}`,
+		`${running.toString()} running`,
+		`${stopped.toString()} stopped`,
+	];
+	if (updates > 0) {
+		parts.push(
+			`${updates.toString()} ${updates === 1 ? "update" : "updates"} available`,
+		);
+	}
+	return parts.join(" · ");
 }
