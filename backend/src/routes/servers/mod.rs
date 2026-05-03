@@ -11,6 +11,7 @@ pub mod get;
 pub mod logs;
 pub mod logs_stream;
 pub mod mods;
+pub mod players;
 pub mod rcon;
 pub mod restart;
 pub mod settings;
