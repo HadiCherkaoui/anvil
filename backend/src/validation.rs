@@ -56,6 +56,17 @@ const SEARCH_QUERY_MAX_LEN: usize = 100;
 /// Maximum length of a mod jar filename.
 const MOD_FILENAME_MAX_LEN: usize = 200;
 
+/// Minimum Mojang username length. The official rule is 3..=16 ASCII.
+const MC_USERNAME_MIN: usize = 3;
+/// Maximum Mojang username length.
+const MC_USERNAME_MAX: usize = 16;
+/// Maximum kick / ban reason length, bytes.
+const REASON_MAX_LEN: usize = 100;
+/// Maximum chat message / broadcast length, bytes.
+const CHAT_MAX_LEN: usize = 256;
+/// Allowed gamemode discriminators.
+const KNOWN_GAMEMODES: &[&str] = &["survival", "creative", "adventure", "spectator"];
+
 /// Validates a server name against RFC 1123 label rules.
 ///
 /// # Errors
@@ -354,6 +365,104 @@ pub fn validate_exposure_mode(mode: &str) -> Result<(), AppError> {
     })
 }
 
+/// Validates a Mojang username (3–16 ASCII chars from `[A-Za-z0-9_]`).
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "username_invalid"`.
+pub fn validate_mc_username(s: &str) -> Result<&str, AppError> {
+    let len = s.len();
+    if !(MC_USERNAME_MIN..=MC_USERNAME_MAX).contains(&len)
+        || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(AppError::BadRequest {
+            code: "username_invalid",
+            message: format!(
+                "username must be {MC_USERNAME_MIN}..={MC_USERNAME_MAX} chars from [A-Za-z0-9_]"
+            ),
+        });
+    }
+    Ok(s)
+}
+
+/// Validates a kick / ban reason. Empty is allowed (caller may omit
+/// the reason). Rejects any control char (0x00..0x1F or 0x7F).
+///
+/// # Errors
+///
+/// `AppError::BadRequest` with `code = "reason_too_long"` or
+/// `code = "reason_has_control_char"`.
+pub fn validate_kick_reason(s: &str) -> Result<&str, AppError> {
+    if s.len() > REASON_MAX_LEN {
+        return Err(AppError::BadRequest {
+            code: "reason_too_long",
+            message: format!("reason must be ≤ {REASON_MAX_LEN} chars"),
+        });
+    }
+    if s.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
+        return Err(AppError::BadRequest {
+            code: "reason_has_control_char",
+            message: "reason must not contain control characters".to_owned(),
+        });
+    }
+    Ok(s)
+}
+
+/// Validates a chat message / broadcast body. Same shape as
+/// [`validate_kick_reason`] with the chat-length cap.
+///
+/// # Errors
+///
+/// `AppError::BadRequest` with `code = "message_too_long"` or
+/// `code = "message_has_control_char"`.
+pub fn validate_chat_message(s: &str) -> Result<&str, AppError> {
+    if s.len() > CHAT_MAX_LEN {
+        return Err(AppError::BadRequest {
+            code: "message_too_long",
+            message: format!("message must be ≤ {CHAT_MAX_LEN} chars"),
+        });
+    }
+    if s.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
+        return Err(AppError::BadRequest {
+            code: "message_has_control_char",
+            message: "message must not contain control characters".to_owned(),
+        });
+    }
+    Ok(s)
+}
+
+/// Validates a gamemode discriminator.
+///
+/// # Errors
+///
+/// `AppError::BadRequest` with `code = "gamemode_invalid"`.
+pub fn validate_gamemode(s: &str) -> Result<&str, AppError> {
+    if KNOWN_GAMEMODES.contains(&s) {
+        Ok(s)
+    } else {
+        Err(AppError::BadRequest {
+            code: "gamemode_invalid",
+            message: format!("gamemode {s:?} not in {KNOWN_GAMEMODES:?}"),
+        })
+    }
+}
+
+/// Validates that `s` parses as either an IPv4 or IPv6 literal.
+///
+/// # Errors
+///
+/// `AppError::BadRequest` with `code = "ip_invalid"`.
+pub fn validate_ip_v4_or_v6(s: &str) -> Result<&str, AppError> {
+    if s.parse::<std::net::IpAddr>().is_ok() {
+        Ok(s)
+    } else {
+        Err(AppError::BadRequest {
+            code: "ip_invalid",
+            message: format!("{s:?} is not a valid IPv4 or IPv6 address"),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,5 +629,66 @@ mod tests {
         assert!(validate_mod_filename("sodium.zip").is_err());
         assert!(validate_mod_filename("").is_err());
         assert!(validate_mod_filename(&format!("{}.jar", "a".repeat(200))).is_err());
+    }
+
+    #[test]
+    fn mc_username_accepts_real_examples() {
+        for n in ["alice", "Bob_42", "x_y_z", "AAA", "abcdefghijklmnop"] {
+            assert!(validate_mc_username(n).is_ok(), "expected {n:?} to pass");
+        }
+    }
+
+    #[test]
+    fn mc_username_rejects_bad_examples() {
+        let too_long = "a".repeat(17);
+        for n in [
+            "",
+            "ab",
+            "has space",
+            "has-dash",
+            too_long.as_str(),
+            "tab\there",
+        ] {
+            assert!(validate_mc_username(n).is_err(), "expected {n:?} to fail");
+        }
+    }
+
+    #[test]
+    fn kick_reason_bounds_and_chars() {
+        assert!(validate_kick_reason("").is_ok());
+        assert!(validate_kick_reason("legit reason").is_ok());
+        assert!(validate_kick_reason(&"r".repeat(100)).is_ok());
+        assert!(validate_kick_reason(&"r".repeat(101)).is_err());
+        assert!(validate_kick_reason("with\nnewline").is_err());
+        assert!(validate_kick_reason("with\rcarriage").is_err());
+        assert!(validate_kick_reason("with\ttab").is_err());
+    }
+
+    #[test]
+    fn chat_message_bounds_and_chars() {
+        assert!(validate_chat_message("hi friends").is_ok());
+        assert!(validate_chat_message(&"x".repeat(256)).is_ok());
+        assert!(validate_chat_message(&"x".repeat(257)).is_err());
+        assert!(validate_chat_message("with\nnewline").is_err());
+    }
+
+    #[test]
+    fn gamemode_validator() {
+        for m in ["survival", "creative", "adventure", "spectator"] {
+            assert!(validate_gamemode(m).is_ok());
+        }
+        for m in ["", "Survival", "creative ", "spec", "0"] {
+            assert!(validate_gamemode(m).is_err(), "expected {m:?} to fail");
+        }
+    }
+
+    #[test]
+    fn ip_validator() {
+        for ip in ["10.0.0.5", "127.0.0.1", "::1", "2001:db8::1"] {
+            assert!(validate_ip_v4_or_v6(ip).is_ok());
+        }
+        for ip in ["", "not.an.ip", "999.999.999.999", "10.0.0.0/24"] {
+            assert!(validate_ip_v4_or_v6(ip).is_err());
+        }
     }
 }
