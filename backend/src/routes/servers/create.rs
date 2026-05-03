@@ -31,10 +31,16 @@ use crate::k8s_builders::{
     rcon_password,
 };
 use crate::modpack::curseforge::{AutoUpdateMode, Channel, Config as CfConfig};
-use crate::modpack::{CurseForgeServerPack, ModpackProvider, ProviderContext, VanillaProvider};
+use crate::modpack::modded::{Config as ModdedConfig, ModEntry, ModdedRuntime, PendingOp, Runtime};
+use crate::modpack::modrinth::{Config as MrPackConfig, ModrinthServerPack};
+use crate::modpack::paper::{Config as PaperConfig, PaperServerProvider};
+use crate::modpack::{
+    CurseForgeServerPack, ModpackHttp, ModpackProvider, ProviderContext, VanillaProvider,
+};
 use crate::validation::{
     validate_cpu_millicores, validate_exposure_mode, validate_mc_version, validate_memory_mi,
-    validate_name, validate_storage_size_gi,
+    validate_mod_filename, validate_modrinth_id_or_slug, validate_name, validate_runtime,
+    validate_storage_size_gi,
 };
 
 /// Lowest `NodePort` allocated by the panel.
@@ -47,6 +53,12 @@ const DEFAULT_STORAGE_SIZE_GI: i64 = 10;
 const SERVER_TYPE_VANILLA: &str = "vanilla";
 /// Source kind discriminator for `CurseForge` `ServerFiles` servers.
 const SERVER_TYPE_CURSEFORGE: &str = "curseforge";
+/// Source kind discriminator for Modrinth `.mrpack` servers.
+const SERVER_TYPE_MODRINTH: &str = "modrinth";
+/// Source kind discriminator for `modded` (Fabric/Forge/NeoForge) servers.
+const SERVER_TYPE_MODDED: &str = "modded";
+/// Source kind discriminator for Paper servers (Bukkit-API plugin host).
+const SERVER_TYPE_PAPER: &str = "paper";
 
 /// Request body for `POST /api/servers`.
 #[derive(Debug, Deserialize)]
@@ -72,12 +84,37 @@ pub struct CreateRequest {
     /// PVC size in GiB. Defaults to 10.
     #[serde(default)]
     pub storage_size_gi: Option<i64>,
-    /// `vanilla` (default) | `curseforge`.
+    /// `vanilla` (default) | `curseforge` | `modrinth` | `modded` | `paper`.
     #[serde(default)]
     pub server_type: Option<String>,
     /// Required when `server_type == "curseforge"`.
     #[serde(default)]
     pub curseforge: Option<CurseForgeCreateConfig>,
+    /// Required when `server_type == "modrinth"`.
+    #[serde(default)]
+    pub modrinth: Option<ModrinthCreateConfig>,
+    /// Required when `server_type == "modded"`.
+    #[serde(default)]
+    pub modded: Option<ModdedCreateConfig>,
+}
+
+/// Sub-form fields for the Modrinth modpack path.
+#[derive(Debug, Deserialize)]
+pub struct ModrinthCreateConfig {
+    /// Modrinth project id (8-char base62) or slug.
+    pub project_id: String,
+    pub channel: Channel,
+}
+
+/// Sub-form fields for the modded (runtime + manual modlist) path.
+#[derive(Debug, Deserialize)]
+pub struct ModdedCreateConfig {
+    /// `fabric` | `forge` | `neoforge`.
+    pub runtime: String,
+    /// Initial mod selection picked at create-time. Folded into `pending`
+    /// as Add ops so the Mods tab shows "N pending — apply now" on first load.
+    #[serde(default)]
+    pub initial_mods: Vec<ModEntry>,
 }
 
 /// Sub-form fields for the `CurseForge` path.
@@ -127,16 +164,25 @@ pub async fn handle(
         storage_size_gi,
         server_type,
         curseforge,
+        modrinth,
+        modded,
     } = request;
     validate_name(&name)?;
     validate_memory_mi(memory_mi)?;
     validate_cpu_millicores(cpu_millicores)?;
 
     let server_type = server_type.unwrap_or_else(|| SERVER_TYPE_VANILLA.to_owned());
-    if server_type != SERVER_TYPE_VANILLA && server_type != SERVER_TYPE_CURSEFORGE {
+    if !matches!(
+        server_type.as_str(),
+        SERVER_TYPE_VANILLA
+            | SERVER_TYPE_CURSEFORGE
+            | SERVER_TYPE_MODRINTH
+            | SERVER_TYPE_MODDED
+            | SERVER_TYPE_PAPER
+    ) {
         return Err(AppError::BadRequest {
             code: "server_type_invalid",
-            message: format!("server_type must be vanilla or curseforge, got {server_type:?}"),
+            message: format!("server_type {server_type:?} not supported"),
         });
     }
 
@@ -194,6 +240,9 @@ pub async fn handle(
             }
         }
         SERVER_TYPE_CURSEFORGE => resolve_curseforge(&state, curseforge).await?,
+        SERVER_TYPE_MODRINTH => resolve_modrinth(&state, modrinth).await?,
+        SERVER_TYPE_MODDED => resolve_modded(mc_version, modded)?,
+        SERVER_TYPE_PAPER => resolve_paper(&state, mc_version).await?,
         _ => unreachable!("validated above"),
     };
 
@@ -351,6 +400,137 @@ async fn resolve_curseforge(
         provider: Box::new(CurseForgeServerPack::new(stored_cfg)),
         mc_version: pick.name,
         source_kind: SERVER_TYPE_CURSEFORGE,
+        source_config,
+    })
+}
+
+/// Validates the Modrinth sub-form and resolves the latest matching version.
+async fn resolve_modrinth(
+    state: &AppState,
+    cfg: Option<ModrinthCreateConfig>,
+) -> Result<ResolvedSource, AppError> {
+    let cfg = cfg.ok_or(AppError::BadRequest {
+        code: "modrinth_config_missing",
+        message: "modrinth.{project_id, channel} required for server_type=modrinth".to_owned(),
+    })?;
+    validate_modrinth_id_or_slug(&cfg.project_id)?;
+
+    let provisional = ModrinthServerPack::new(MrPackConfig {
+        project_id: cfg.project_id.clone(),
+        channel: cfg.channel,
+        version_skip: Vec::new(),
+        force_version: None,
+        current_version_id: String::new(),
+        current_version_name: String::new(),
+        auto_update_mode: AutoUpdateMode::Notify,
+    });
+    let http = ModpackHttp {
+        cf: state.cf_client.as_deref(),
+        mr: state.mr_client.as_ref(),
+    };
+    let pick = provisional
+        .latest(&http)
+        .await
+        .map_err(|e| AppError::BadRequest {
+            code: "modrinth_unavailable",
+            message: format!("modrinth lookup: {e}"),
+        })?
+        .ok_or(AppError::BadRequest {
+            code: "no_modpack_versions",
+            message: format!("project {:?} has no matching versions", cfg.project_id),
+        })?;
+
+    let stored_cfg = MrPackConfig {
+        project_id: cfg.project_id,
+        channel: cfg.channel,
+        version_skip: Vec::new(),
+        force_version: None,
+        current_version_id: pick.id.clone(),
+        current_version_name: pick.name.clone(),
+        auto_update_mode: AutoUpdateMode::Notify,
+    };
+    let source_config =
+        serde_json::to_string(&stored_cfg).map_err(|e| AppError::Internal(e.into()))?;
+
+    Ok(ResolvedSource {
+        provider: Box::new(ModrinthServerPack::new(stored_cfg)),
+        mc_version: pick.name,
+        source_kind: SERVER_TYPE_MODRINTH,
+        source_config,
+    })
+}
+
+/// Builds a modded `ResolvedSource`. Initial mods are folded into `pending`
+/// as Add ops so the Mods tab shows "N pending — apply now" on first load.
+fn resolve_modded(
+    mc_version: Option<String>,
+    cfg: Option<ModdedCreateConfig>,
+) -> Result<ResolvedSource, AppError> {
+    let cfg = cfg.ok_or(AppError::BadRequest {
+        code: "modded_config_missing",
+        message: "modded.{runtime} required for server_type=modded".to_owned(),
+    })?;
+    validate_runtime(&cfg.runtime)?;
+    let runtime = match cfg.runtime.as_str() {
+        "fabric" => Runtime::Fabric,
+        "forge" => Runtime::Forge,
+        "neoforge" => Runtime::NeoForge,
+        other => {
+            return Err(AppError::BadRequest {
+                code: "runtime_invalid",
+                message: format!("runtime {other:?} not allowed for modded servers"),
+            });
+        }
+    };
+    let mc_v = mc_version.ok_or(AppError::BadRequest {
+        code: "mc_version_required",
+        message: "mc_version is required for modded servers".to_owned(),
+    })?;
+    for m in &cfg.initial_mods {
+        validate_mod_filename(&m.filename)?;
+    }
+    let pending: Vec<PendingOp> = cfg
+        .initial_mods
+        .iter()
+        .map(|m| PendingOp::Add {
+            mod_entry: m.clone(),
+        })
+        .collect();
+    let stored = ModdedConfig {
+        runtime,
+        mc_version: mc_v.clone(),
+        mods: Vec::new(),
+        pending,
+    };
+    let source_config = serde_json::to_string(&stored).map_err(|e| AppError::Internal(e.into()))?;
+    Ok(ResolvedSource {
+        provider: Box::new(ModdedRuntime::new(stored)),
+        mc_version: mc_v,
+        source_kind: SERVER_TYPE_MODDED,
+        source_config,
+    })
+}
+
+/// Builds a Paper `ResolvedSource`. Paper-build pin is left to itzg's default
+/// (latest stable) for B; the catalog UI can offer a picker in a follow-up.
+async fn resolve_paper(
+    state: &AppState,
+    mc_version: Option<String>,
+) -> Result<ResolvedSource, AppError> {
+    let mc_v = mc_version.ok_or(AppError::BadRequest {
+        code: "mc_version_required",
+        message: "mc_version is required for paper servers".to_owned(),
+    })?;
+    validate_mc_version(state, &mc_v).await?;
+    let stored = PaperConfig {
+        mc_version: mc_v.clone(),
+        paper_build: None,
+    };
+    let source_config = serde_json::to_string(&stored).map_err(|e| AppError::Internal(e.into()))?;
+    Ok(ResolvedSource {
+        provider: Box::new(PaperServerProvider::new(stored)),
+        mc_version: mc_v,
+        source_kind: SERVER_TYPE_PAPER,
         source_config,
     })
 }
