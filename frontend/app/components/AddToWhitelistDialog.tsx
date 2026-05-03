@@ -30,11 +30,17 @@ export function AddToWhitelistDialog({
 
 	const valid = NAME_REGEX.test(name);
 
+	const handleClose = (): void => {
+		setName("");
+		setError(null);
+		onClose();
+	};
+
 	const onSubmit = (): void => {
 		if (!valid) return;
 		setError(null);
 		setBusy(true);
-		runPlayerAction(serverId, { action: "whitelist-add", player: name })
+		void runPlayerAction(serverId, { action: "whitelist-add", player: name })
 			.then(() => {
 				toast.push(`whitelisted ${name}`, "success");
 				onDone();
@@ -56,7 +62,12 @@ export function AddToWhitelistDialog({
 	};
 
 	return (
-		<Modal open={open} onClose={onClose} title="add to whitelist" maxWidth="sm">
+		<Modal
+			open={open}
+			onClose={handleClose}
+			title="add to whitelist"
+			maxWidth="sm"
+		>
 			<div className="flex flex-col gap-4 font-mono text-[13px]">
 				<label className="flex flex-col gap-1.5">
 					<span className="text-[11px] uppercase tracking-wider text-text-muted">
@@ -78,7 +89,7 @@ export function AddToWhitelistDialog({
 				</label>
 				{error !== null && <p className="text-state-error">{error}</p>}
 				<div className="mt-2 flex justify-end gap-2">
-					<Button onClick={onClose} disabled={busy}>
+					<Button onClick={handleClose} disabled={busy}>
 						cancel
 					</Button>
 					<Button
