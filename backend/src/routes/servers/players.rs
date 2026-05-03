@@ -84,10 +84,36 @@ pub struct PlayersResponse {
 // in Tasks 5 + 6. Defined as standalone fns below to avoid importing the
 // parsing module here (where it would be dead code until then).
 //
-// impl From<OnlinePlayers> for OnlinePlayersDto { ... }
-// impl From<BanEntry> for BanEntryDto { ... }
-// impl From<BanIpEntry> for BanIpEntryDto { ... }
-// impl From<PlayerEvent> for PlayerEventDto { ... }
+// impl From<OnlinePlayers> for OnlinePlayersDto {
+//     fn from(o: OnlinePlayers) -> Self {
+//         Self { count: o.count, max: o.max, players: o.players }
+//     }
+// }
+//
+// impl From<BanEntry> for BanEntryDto {
+//     fn from(b: BanEntry) -> Self {
+//         Self { name: b.name, reason: b.reason }
+//     }
+// }
+//
+// impl From<BanIpEntry> for BanIpEntryDto {
+//     fn from(b: BanIpEntry) -> Self {
+//         Self { ip: b.ip, reason: b.reason }
+//     }
+// }
+//
+// impl From<PlayerEvent> for PlayerEventDto {
+//     fn from(e: PlayerEvent) -> Self {
+//         Self {
+//             kind: match e.kind {
+//                 PlayerEventKind::Joined => "joined",
+//                 PlayerEventKind::Left => "left",
+//             },
+//             player: e.player,
+//             ts_ms: e.ts_ms,
+//         }
+//     }
+// }
 
 // --- action enum --------------------------------------------------------------
 
@@ -159,6 +185,9 @@ const HISTORY_MAX_EVENTS: usize = 50;
 /// Returns [`AppError::BadRequest`] if any of the variant's fields fails
 /// its validator (`validate_mc_username`, `validate_kick_reason`,
 /// `validate_chat_message`, `validate_gamemode`, `validate_ip_v4_or_v6`).
+// `dead_code` here is removed by Task 6 once handle_action() consumes
+// build_action(). `clippy::too_many_lines` stays — the 11-variant match
+// is inherently > 100 lines and shouldn't be split for the sake of it.
 #[allow(dead_code, clippy::too_many_lines)]
 fn build_action(
     action: &PlayerAction,
