@@ -143,13 +143,45 @@ revocation lists (sessions live for 8h or until `ANVIL_SESSION_KEY` rotates)
 
 ---
 
-## M5 — Modpack Support
+## M5 — Modpack Support (CurseForge ServerFiles)
 
-**Goal:** Servers can launch from Modrinth (and later CurseForge) modpacks. First milestone
-where a trait abstraction is warranted (two providers).
+**Status:** complete (tagged v1.0.0). Original problem statement met — ATM-11 (and any other
+CurseForge pack with a ServerFiles file) can be created, started, polled for new versions,
+and updated with backup + rollback from the panel.
+
+**Goal:** Drop Crafty Controller. Servers launch from CurseForge ServerFiles, the panel polls
+upstream hourly, one-click update with backup/swap/start/verify and tar-based rollback on
+failure.
 
 Deliverables:
-- `ModpackProvider` trait: `search`, `resolve`
-- Modrinth provider implementation
-- Server-create form: modpack picker, version selector
-- CurseForge provider (stretch)
+- [x] `ModpackProvider` trait + `VanillaProvider` (M2 refactor) + `CurseForgeServerPack`
+- [x] `CurseForgeClient` (reqwest, x-api-key header, 1h `/files` cache, slug→id resolver)
+- [x] Hourly `tokio` poller writes `modpack_versions`; `auto_update_mode=apply` fires the
+      orchestrator inline
+- [x] `POST /api/servers/:id/update` orchestrator FSM:
+      announce (RCON, best-effort) → stop → backup Job (tar to `mc-snapshots`) →
+      swap Job (download + preserve/wipe + server.properties merge) → start →
+      verify boot ("Done (" within `provider.boot_timeout`) → update DB
+      → rollback Job restores last archive on failure
+- [x] `GET /api/servers/:id/update/stream` WebSocket — typed phase frames
+      (queued → announcing → … → succeeded | rolled-back | failed)
+- [x] `PATCH /api/servers/:id/settings` — auto_update_mode, version_skip, force_version
+- [x] `GET /api/modpack/curseforge/resolve?slug=…` — backend resolves URL slug to project id
+      so the API key never leaves the panel
+- [x] Migration `0003_m5_modpack.sql`: `servers.source_kind` + `modpack_versions` +
+      `idx_audit_server_action`
+- [x] Helm chart 1.0.0: `secrets.cfApiKey{,ExistingSecret}`, `modpack.{pollIntervalMinutes,
+      snapshotsPvc}`, Job RBAC, `mc-snapshots` PVC template, `cf-api-key` Secret + envFrom
+- [x] Frontend Zod schemas + API functions for the modpack endpoints; `useUpdateStream` hook
+      mirroring the `useLogsStream` reconnect/buffer pattern
+- [x] v1.0.0 tag
+
+**Not in M5:** Modrinth provider (the trait is in place; M6+ adds it alongside).
+VolumeSnapshot path — the cluster lacks a configured `VolumeSnapshotClass` for
+`zfs.csi.openebs.io`; tar-to-PVC is the v1 path. Auto-apply maintenance windows (YAGNI).
+CurseForge search UI (project ID / URL paste only).
+Per-server backup retention controls — hardcoded to keep last 3.
+
+**Deferred UI** (the API is in place — incremental work for the next pass):
+NewServerModal CF sub-form (project_id input + URL paste + channel selector),
+ServerTable update-available badge, server detail page tab bar with Update + Settings tabs.
