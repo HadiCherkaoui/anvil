@@ -40,6 +40,7 @@ export const serverSummarySchema = z.object({
 	status: serverStatusSchema,
 	mc_version: z.string(),
 	memory_mi: z.number().int().nonnegative(),
+	cpu_millicores: z.number().int().nonnegative(),
 	exposure_mode: exposureModeSchema,
 	endpoint: endpointSchema.nullable(),
 	created_at: z.number().int(),
@@ -67,7 +68,6 @@ export const serverDetailSchema = serverSummarySchema.extend({
 	// cached upstream version, when any.
 	source_config: z.unknown().default(null),
 	latest_version_id: z.number().int().nullable().default(null),
-	latest_changelog_excerpt: z.string().nullable().default(null),
 });
 
 // --- capabilities ---------------------------------------------------------
@@ -80,6 +80,13 @@ export const clusterCapabilitiesSchema = z.object({
 	default_storage_class: z.string().nullable(),
 	// M5: gates the CurseForge option in the New Server modal.
 	cf_api_key_present: z.boolean().default(false),
+	// M6: sum of allocatable CPU across schedulable nodes (cores).
+	available_cpu_cores: z.number().nonnegative().default(0),
+});
+
+export const mcVersionsResponseSchema = z.object({
+	versions: z.array(z.string()).min(1),
+	source: z.enum(["mojang", "fallback"]),
 });
 
 // --- logs -----------------------------------------------------------------
@@ -124,9 +131,10 @@ export const createServerRequestSchema = z.object({
 	// is stored as the version label by the backend).
 	mc_version: z.string().optional(),
 	memory_mi: z.number().int().min(1024).max(16_384),
+	cpu_millicores: z.number().int().min(250).max(16_000),
 	exposure_mode: exposureModeSchema.optional(),
 	storage_class: z.string().optional(),
-	storage_size_gi: z.number().int().min(1).max(500).optional(),
+	storage_size_gi: z.number().int().min(10).max(500).optional(),
 	// M5: server_type discriminator + sub-config for curseforge.
 	server_type: sourceKindSchema.optional(),
 	curseforge: curseforgeCreateSchema.optional(),
@@ -161,6 +169,8 @@ export const updateStartResponseSchema = z.object({
 export const autoUpdateModeSchema = z.enum(["never", "notify", "apply"]);
 
 export const settingsRequestSchema = z.object({
+	memory_mi: z.number().int().min(1024).max(16_384).optional(),
+	cpu_millicores: z.number().int().min(250).max(16_000).optional(),
 	auto_update_mode: autoUpdateModeSchema.optional(),
 	version_skip: z.array(z.string()).optional(),
 	force_version: z.string().nullable().optional(),
@@ -181,6 +191,7 @@ export type AutoUpdateMode = z.infer<typeof autoUpdateModeSchema>;
 export type SettingsRequest = z.infer<typeof settingsRequestSchema>;
 export type UpdateResolveResponse = z.infer<typeof updateResolveResponseSchema>;
 export type UpdateStartResponse = z.infer<typeof updateStartResponseSchema>;
+export type McVersionsResponse = z.infer<typeof mcVersionsResponseSchema>;
 
 // --- typed error wrapper --------------------------------------------------
 
@@ -270,6 +281,14 @@ export async function fetchCapabilities(
 ): Promise<ClusterCapabilities> {
 	const res = await fetch("/api/cluster/capabilities", { signal });
 	return jsonOrThrow(res, clusterCapabilitiesSchema);
+}
+
+export async function fetchMcVersions(
+	signal?: AbortSignal,
+): Promise<McVersionsResponse> {
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch("/api/cluster/mc-versions", init);
+	return jsonOrThrow(res, mcVersionsResponseSchema);
 }
 
 export async function fetchLogs(

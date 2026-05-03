@@ -102,6 +102,10 @@ export function NewServerModal({
 			name: form.name,
 			mc_version: form.mcVersion,
 			memory_mi: form.memoryMi,
+			// M6 bridge: legacy modal hardcodes 1 core; full create page in
+			// /servers/new (Section 5) collects this from a slider. The modal
+			// itself is deleted once the new page lands.
+			cpu_millicores: 1000,
 			exposure_mode: form.exposureMode,
 			...(form.storageClass !== "" && { storage_class: form.storageClass }),
 		};
