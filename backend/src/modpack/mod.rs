@@ -51,8 +51,6 @@ pub struct VersionInfo {
     pub name: String,
     /// HTTPS URL the swap Job downloads. May expire — refresh per update.
     pub download_url: String,
-    /// First few lines of the changelog (Markdown), shown in the update banner.
-    pub changelog_excerpt: Option<String>,
 }
 
 /// One provider per server source. Vanilla + `CurseForge` in M5; Modrinth later.
@@ -60,6 +58,12 @@ pub struct VersionInfo {
 pub trait ModpackProvider: Send + Sync + std::fmt::Debug {
     /// Discriminator persisted as `servers.source_kind` (`"vanilla"` | `"curseforge"`).
     fn kind(&self) -> &'static str;
+
+    /// Numeric upstream project id when the provider has one (`CurseForge`,
+    /// Modrinth eventually). Returns `None` for providers without — vanilla.
+    fn project_id(&self) -> Option<u32> {
+        None
+    }
 
     /// Container image the per-server `StatefulSet` runs.
     fn pod_image(&self) -> &str;

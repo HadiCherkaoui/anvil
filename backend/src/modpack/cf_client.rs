@@ -198,24 +198,40 @@ impl CurseForgeClient {
     }
 
     async fn fetch_files(&self, project_id: u32) -> Result<Vec<CfFile>> {
+        const PAGE_SIZE: u32 = 50;
+        const MAX_FILES: usize = 500;
+
         let url = format!("{CF_API}/mods/{project_id}/files");
-        let resp = self
-            .inner
-            .http
-            .get(&url)
-            // CurseForge paginates; ask for the maximum page size so we
-            // see all server-pack files in one call. 50 is the API ceiling.
-            .query(&[("pageSize", "50")])
-            .send()
-            .await?;
-        let status = resp.status();
-        if status.as_u16() == 404 {
-            bail!("CurseForge project {project_id} not found");
+        let mut all: Vec<CfFile> = Vec::new();
+        let mut index: u32 = 0;
+        loop {
+            let resp = self
+                .inner
+                .http
+                .get(&url)
+                .query(&[
+                    ("pageSize", PAGE_SIZE.to_string().as_str()),
+                    ("index", index.to_string().as_str()),
+                ])
+                .send()
+                .await?;
+            let status = resp.status();
+            if status.as_u16() == 404 {
+                bail!("CurseForge project {project_id} not found");
+            }
+            if !status.is_success() {
+                bail!("CurseForge GET {url} failed: HTTP {status}");
+            }
+            let wrap: Envelope<Vec<CfFile>> =
+                resp.json().await.context("decoding /mods/{id}/files")?;
+            let n = wrap.data.len();
+            all.extend(wrap.data);
+            if n < PAGE_SIZE as usize || all.len() >= MAX_FILES {
+                break;
+            }
+            index += PAGE_SIZE;
         }
-        if !status.is_success() {
-            bail!("CurseForge GET {url} failed: HTTP {status}");
-        }
-        let wrap: Envelope<Vec<CfFile>> = resp.json().await.context("decoding /mods/{id}/files")?;
-        Ok(wrap.data)
+        all.truncate(MAX_FILES);
+        Ok(all)
     }
 }

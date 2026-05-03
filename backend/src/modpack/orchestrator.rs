@@ -27,7 +27,6 @@ use tracing::{Level, event};
 use crate::AppState;
 use crate::k8s_status::RCON_PORT;
 use crate::modpack::cf_client::CurseForgeClient;
-use crate::modpack::curseforge::Config as CfConfig;
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::jobs::{build_backup_job, build_restore_job, build_swap_job};
 use crate::modpack::{ModpackProvider, VersionInfo, from_db};
@@ -346,8 +345,9 @@ async fn pick_target_version(
         return Ok(latest);
     }
     // Otherwise, look up by id from the cached file list.
-    let project_id =
-        serde_project_id(provider).ok_or_else(|| anyhow!("provider has no project id"))?;
+    let project_id = provider
+        .project_id()
+        .ok_or_else(|| anyhow!("provider {} has no project id", provider.kind()))?;
     let files = cf.list_files(project_id).await?;
     let f = files
         .iter()
@@ -357,30 +357,7 @@ async fn pick_target_version(
         id: f.id,
         name: f.display_name.clone(),
         download_url: f.download_url.clone().unwrap_or_default(),
-        changelog_excerpt: None,
     })
-}
-
-/// Pulls `project_id` out of a provider's persisted config without exposing
-/// a method on the trait. Returns `None` for vanilla / unparseable configs.
-fn serde_project_id(provider: &dyn ModpackProvider) -> Option<u32> {
-    if provider.kind() != "curseforge" {
-        return None;
-    }
-    // Round-trip through serde so we don't depend on a downcasting layer.
-    let cfg = serde_json::to_value(provider_to_config(provider)?).ok()?;
-    cfg.get("project_id")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|u| u32::try_from(u).ok())
-}
-
-/// Best-effort extractor for the persisted config inside a CF provider.
-/// Implemented via debug-formatted JSON so the trait stays opaque.
-fn provider_to_config(_provider: &dyn ModpackProvider) -> Option<CfConfig> {
-    // The orchestrator already loaded the source_config text from SQLite via
-    // `fetch_source`; it can pass that through if needed. Here we return
-    // None — callers fall back to the SQLite value.
-    None
 }
 
 /// Best-effort RCON announce + save-all so the world flushes before stop.

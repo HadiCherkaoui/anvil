@@ -127,14 +127,13 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         let now = chrono::Utc::now().timestamp();
         let _ = sqlx::query(
             "INSERT OR REPLACE INTO modpack_versions
-             (server_id, latest_id, latest_name, latest_download_url, changelog_excerpt, checked_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             (server_id, latest_id, latest_name, latest_download_url, checked_at)
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(i64::from(latest.id))
         .bind(&latest.name)
         .bind(&latest.download_url)
-        .bind(latest.changelog_excerpt.as_deref())
         .bind(now)
         .execute(&state.pool)
         .await;

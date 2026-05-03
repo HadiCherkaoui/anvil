@@ -142,7 +142,6 @@ impl CurseForgeServerPack {
             id: f.id,
             name: f.display_name.clone(),
             download_url: f.download_url.clone().unwrap_or_default(),
-            changelog_excerpt: None,
         })
     }
 }
@@ -151,6 +150,10 @@ impl CurseForgeServerPack {
 impl ModpackProvider for CurseForgeServerPack {
     fn kind(&self) -> &'static str {
         "curseforge"
+    }
+
+    fn project_id(&self) -> Option<u32> {
+        Some(self.config.project_id)
     }
 
     fn pod_image(&self) -> &str {
