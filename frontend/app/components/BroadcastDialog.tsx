@@ -27,7 +27,8 @@ export function BroadcastDialog({
 	const [error, setError] = useState<string | null>(null);
 	const toast = useToast();
 
-	const tooLong = msg.length > MSG_MAX;
+	const byteLen = new TextEncoder().encode(msg).byteLength;
+	const tooLong = byteLen > MSG_MAX;
 	const hasControl = CONTROL.test(msg);
 	const valid = msg.length > 0 && !tooLong && !hasControl;
 
@@ -76,7 +77,10 @@ export function BroadcastDialog({
 					<textarea
 						value={msg}
 						onChange={(e) => {
-							setMsg(e.target.value);
+							// Strip newlines — the broadcast endpoint rejects control chars,
+							// and /say is single-line by nature. Pressing Enter shouldn't
+							// produce a confusing validation error.
+							setMsg(e.target.value.replace(/[\n\r]/g, ""));
 						}}
 						autoFocus
 						rows={3}
@@ -86,7 +90,7 @@ export function BroadcastDialog({
 					<div className="flex justify-between text-[11px] text-text-dim">
 						<span>broadcasts to all online players via /say</span>
 						<span className={tooLong ? "text-state-error" : "text-text-dim"}>
-							{msg.length} / {MSG_MAX}
+							{byteLen} / {MSG_MAX}
 						</span>
 					</div>
 					{hasControl && (
