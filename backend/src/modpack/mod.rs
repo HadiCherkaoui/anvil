@@ -20,14 +20,20 @@ pub mod cf_client;
 pub mod curseforge;
 pub mod guard;
 pub mod jobs;
+pub mod modded;
+pub mod modrinth;
 pub mod mr_client;
 pub mod orchestrator;
+pub mod paper;
 pub mod poller;
 pub mod vanilla;
 
 pub use cf_client::CurseForgeClient;
 pub use curseforge::{Channel, CurseForgeServerPack};
+pub use modded::{ModdedRuntime, Runtime as ModdedRuntimeKind};
+pub use modrinth::ModrinthServerPack;
 pub use mr_client::ModrinthClient;
+pub use paper::PaperServerProvider;
 pub use vanilla::VanillaProvider;
 
 /// Context the per-server `StatefulSet` builder hands to the provider so
@@ -129,6 +135,21 @@ pub fn from_db(source_kind: &str, source_config: &str) -> Result<Provider> {
                 .map_err(|e| anyhow::anyhow!("source_config not valid CurseForge JSON: {e}"))?;
             Ok(Box::new(CurseForgeServerPack::new(cfg)))
         }
+        "modrinth" => {
+            let cfg: modrinth::Config = serde_json::from_str(source_config)
+                .map_err(|e| anyhow::anyhow!("source_config not valid Modrinth JSON: {e}"))?;
+            Ok(Box::new(ModrinthServerPack::new(cfg)))
+        }
+        "modded" => {
+            let cfg: modded::Config = serde_json::from_str(source_config)
+                .map_err(|e| anyhow::anyhow!("source_config not valid modded JSON: {e}"))?;
+            Ok(Box::new(ModdedRuntime::new(cfg)))
+        }
+        "paper" => {
+            let cfg: paper::Config = serde_json::from_str(source_config)
+                .map_err(|e| anyhow::anyhow!("source_config not valid paper JSON: {e}"))?;
+            Ok(Box::new(PaperServerProvider::new(cfg)))
+        }
         other => Err(anyhow::anyhow!("unknown source_kind {other:?}")),
     }
 }
@@ -153,5 +174,31 @@ mod tests {
     fn from_db_rejects_curseforge_with_bad_json() {
         let err = from_db("curseforge", "not json").expect_err("must reject");
         assert!(err.to_string().contains("source_config"));
+    }
+
+    #[test]
+    fn from_db_returns_modrinth() {
+        let cfg = r#"{
+            "project_id": "AANobbMI",
+            "channel": "release",
+            "current_version_id": "",
+            "current_version_name": ""
+        }"#;
+        let p = from_db("modrinth", cfg).expect("modrinth provider");
+        assert_eq!(p.kind(), "modrinth");
+    }
+
+    #[test]
+    fn from_db_returns_modded() {
+        let cfg = r#"{"runtime": "fabric", "mc_version": "1.21.1"}"#;
+        let p = from_db("modded", cfg).expect("modded provider");
+        assert_eq!(p.kind(), "modded");
+    }
+
+    #[test]
+    fn from_db_returns_paper() {
+        let cfg = r#"{"mc_version": "1.21.1"}"#;
+        let p = from_db("paper", cfg).expect("paper provider");
+        assert_eq!(p.kind(), "paper");
     }
 }

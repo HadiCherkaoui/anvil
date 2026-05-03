@@ -372,7 +372,17 @@ async fn pick_target_version(
                 download_url: f.download_url.clone().unwrap_or_default(),
             })
         }
-        // Modrinth path lands in Phase 4 once ModpackHttp.mr is wired.
+        "modrinth" => {
+            let v = http.mr.version(target_version_id).await?;
+            let primary = v.files.iter().find(|f| f.primary).ok_or_else(|| {
+                anyhow!("Modrinth version {target_version_id} has no primary file")
+            })?;
+            Ok(VersionInfo {
+                id: v.id.clone(),
+                name: v.name.clone(),
+                download_url: primary.url.clone(),
+            })
+        }
         other => bail!("unsupported provider for target lookup: {other}"),
     }
 }
