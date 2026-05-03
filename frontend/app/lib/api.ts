@@ -32,7 +32,13 @@ const errorResponseSchema = z.object({
 
 // --- list -----------------------------------------------------------------
 
-export const sourceKindSchema = z.enum(["vanilla", "curseforge"]);
+export const sourceKindSchema = z.enum([
+	"vanilla",
+	"curseforge",
+	"modrinth",
+	"modded",
+	"paper",
+]);
 
 export const serverSummarySchema = z.object({
 	id: z.string().uuid(),
@@ -80,6 +86,8 @@ export const clusterCapabilitiesSchema = z.object({
 	default_storage_class: z.string().nullable(),
 	// M5: gates the CurseForge option in the New Server modal.
 	cf_api_key_present: z.boolean().default(false),
+	// B: Modrinth is API-key-free; flag exists for symmetry / future failure surfaces.
+	modrinth_enabled: z.boolean().default(true),
 	// M6: sum of allocatable CPU across schedulable nodes (cores).
 	available_cpu_cores: z.number().nonnegative().default(0),
 });
@@ -123,21 +131,45 @@ export const curseforgeCreateSchema = z.object({
 	channel: cfChannelSchema,
 });
 
+export const modrinthCreateSchema = z.object({
+	project_id: z.string().min(1).max(40),
+	channel: cfChannelSchema,
+});
+
+export const runtimeSchema = z.enum(["fabric", "forge", "neoforge"]);
+
+export const modEntrySchema = z.object({
+	provider: z.enum(["curseforge", "modrinth"]),
+	project_id: z.string(),
+	project_slug: z.string(),
+	project_name: z.string(),
+	version_id: z.string(),
+	version_name: z.string(),
+	filename: z.string(),
+	download_url: z.string(),
+	sha512: z.string().nullable().default(null),
+});
+
+export const moddedCreateSchema = z.object({
+	runtime: runtimeSchema,
+	initial_mods: z.array(modEntrySchema).default([]),
+});
+
 export const createServerRequestSchema = z.object({
 	name: z
 		.string()
 		.regex(NAME_REGEX, "lowercase letters, digits, '-' (1-63 chars)"),
-	// Optional: omitted for CurseForge servers (the chosen file's display name
-	// is stored as the version label by the backend).
 	mc_version: z.string().optional(),
 	memory_mi: z.number().int().min(1024).max(16_384),
 	cpu_millicores: z.number().int().min(250).max(16_000),
 	exposure_mode: exposureModeSchema.optional(),
 	storage_class: z.string().optional(),
 	storage_size_gi: z.number().int().min(10).max(500).optional(),
-	// M5: server_type discriminator + sub-config for curseforge.
+	// B: server_type discriminator widens to 5; sub-configs for cf/modrinth/modded.
 	server_type: sourceKindSchema.optional(),
 	curseforge: curseforgeCreateSchema.optional(),
+	modrinth: modrinthCreateSchema.optional(),
+	modded: moddedCreateSchema.optional(),
 });
 
 export const createServerResponseSchema = z.object({
@@ -163,7 +195,7 @@ export const updateResolveResponseSchema = z.object({
 export const updateStartResponseSchema = z.object({
 	status: z.string(),
 	server_id: z.string(),
-	target_version_id: z.number().int().positive(),
+	target_version_id: z.string(),
 });
 
 export const autoUpdateModeSchema = z.enum(["never", "notify", "apply"]);
@@ -394,11 +426,11 @@ export async function resolveCurseForgeSlug(
 	return jsonOrThrow(res, updateResolveResponseSchema);
 }
 
-/// Kicks off an update for a CF-backed server. `versionId` omits to use the
-/// poller's cached latest.
+/// Kicks off an update for a modpack-backed server. `versionId` omits to use
+/// the poller's cached latest.
 export async function applyUpdate(
 	id: string,
-	versionId?: number,
+	versionId?: string,
 ): Promise<UpdateStartResponse> {
 	const body =
 		versionId !== undefined
@@ -425,4 +457,166 @@ export async function updateServerSettings(
 		body: JSON.stringify(validated),
 	});
 	await noContentOrThrow(res);
+}
+
+// --- catalog --------------------------------------------------------------
+
+export const catalogProviderSchema = z.enum(["curseforge", "modrinth"]);
+
+export const catalogHitSchema = z.object({
+	provider: catalogProviderSchema,
+	project_id: z.string(),
+	slug: z.string(),
+	name: z.string(),
+	summary: z.string().default(""),
+	icon_url: z.string().nullable(),
+	downloads: z.number().int().nonnegative(),
+	follows: z.number().int().nonnegative(),
+	project_type: z.string(),
+	loaders: z.array(z.string()).default([]),
+	game_versions: z.array(z.string()).default([]),
+	author: z.string().nullable().default(null),
+	updated: z.string().default(""),
+});
+
+export const catalogSearchResponseSchema = z.object({
+	results: z.array(catalogHitSchema),
+});
+
+export const catalogVersionSchema = z.object({
+	version_id: z.string(),
+	version_name: z.string(),
+	channel: z.string(),
+	loaders: z.array(z.string()).default([]),
+	game_versions: z.array(z.string()).default([]),
+	date_published: z.string(),
+	primary_filename: z.string(),
+	primary_url: z.string(),
+	primary_sha512: z.string().nullable().default(null),
+});
+
+export const catalogVersionsResponseSchema = z.object({
+	versions: z.array(catalogVersionSchema),
+});
+
+export type CatalogHit = z.infer<typeof catalogHitSchema>;
+export type CatalogVersion = z.infer<typeof catalogVersionSchema>;
+export type CatalogProvider = z.infer<typeof catalogProviderSchema>;
+export type Runtime = z.infer<typeof runtimeSchema>;
+export type ModEntry = z.infer<typeof modEntrySchema>;
+
+export interface CatalogSearchParams {
+	type: "mod" | "modpack";
+	q: string;
+	loader?: "fabric" | "forge" | "neoforge" | "paper";
+	mc?: string;
+	limit?: number;
+	offset?: number;
+}
+
+/// Searches the unified catalog. Modpack queries hit CF + Modrinth; mod
+/// queries hit Modrinth only.
+export async function searchCatalog(
+	params: CatalogSearchParams,
+	signal?: AbortSignal,
+): Promise<readonly CatalogHit[]> {
+	const sp = new URLSearchParams({ type: params.type, q: params.q });
+	if (params.loader !== undefined) sp.set("loader", params.loader);
+	if (params.mc !== undefined) sp.set("mc", params.mc);
+	if (params.limit !== undefined) sp.set("limit", params.limit.toString());
+	if (params.offset !== undefined) sp.set("offset", params.offset.toString());
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch(`/api/catalog/search?${sp.toString()}`, init);
+	const body = await jsonOrThrow(res, catalogSearchResponseSchema);
+	return body.results;
+}
+
+/// Lists installable versions of one project, filtered by loader/mc.
+export async function fetchCatalogVersions(
+	provider: CatalogProvider,
+	id: string,
+	opts: { loader?: string; mc?: string } = {},
+	signal?: AbortSignal,
+): Promise<readonly CatalogVersion[]> {
+	const sp = new URLSearchParams();
+	if (opts.loader !== undefined) sp.set("loader", opts.loader);
+	if (opts.mc !== undefined) sp.set("mc", opts.mc);
+	const qs = sp.toString();
+	const url = `/api/catalog/projects/${encodeURIComponent(provider)}/${encodeURIComponent(id)}/versions${qs.length > 0 ? `?${qs}` : ""}`;
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch(url, init);
+	const body = await jsonOrThrow(res, catalogVersionsResponseSchema);
+	return body.versions;
+}
+
+// --- modlist (modded servers) --------------------------------------------
+
+export const modPendingOpSchema = z.discriminatedUnion("op", [
+	z.object({ op: z.literal("add"), mod_entry: modEntrySchema }),
+	z.object({ op: z.literal("remove"), filename: z.string() }),
+	z.object({
+		op: z.literal("bump"),
+		filename: z.string(),
+		to_version_id: z.string(),
+		to_version_name: z.string(),
+		to_filename: z.string(),
+		to_download_url: z.string(),
+		to_sha512: z.string().nullable().default(null),
+	}),
+]);
+
+export const moddedConfigSchema = z.object({
+	runtime: runtimeSchema,
+	mc_version: z.string(),
+	mods: z.array(modEntrySchema).default([]),
+	pending: z.array(modPendingOpSchema).default([]),
+});
+
+export type ModPendingOp = z.infer<typeof modPendingOpSchema>;
+export type ModdedConfig = z.infer<typeof moddedConfigSchema>;
+
+export const modsApplyResponseSchema = z.object({
+	status: z.string(),
+	server_id: z.string(),
+	pending_count: z.number().int().nonnegative(),
+});
+
+/// Appends a pending op to a modded server's modlist draft.
+export async function addPendingMod(
+	serverId: string,
+	op: ModPendingOp,
+): Promise<void> {
+	const validated = modPendingOpSchema.parse(op);
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/mods`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(validated),
+		},
+	);
+	await noContentOrThrow(res);
+}
+
+/// Drops a pending op by index.
+export async function removePendingMod(
+	serverId: string,
+	idx: number,
+): Promise<void> {
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/mods/pending/${idx.toString()}`,
+		{ method: "DELETE" },
+	);
+	await noContentOrThrow(res);
+}
+
+/// Kicks the mod-sync FSM. WebSocket at /mods/apply/stream surfaces phases.
+export async function applyMods(
+	serverId: string,
+): Promise<{ status: string; server_id: string; pending_count: number }> {
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/mods/apply`,
+		{ method: "POST" },
+	);
+	return jsonOrThrow(res, modsApplyResponseSchema);
 }

@@ -40,6 +40,9 @@ function formatEndpoint(endpoint: ServerSummary["endpoint"]): string {
 const SOURCE_BAR: Record<SourceKind, string | null> = {
 	vanilla: null,
 	curseforge: "bg-source-curseforge",
+	modrinth: "bg-source-modrinth",
+	modded: "bg-source-modrinth",
+	paper: "bg-source-local",
 };
 
 const STATUS_VARIANT: Record<ServerSummary["status"], BadgeVariant> = {
