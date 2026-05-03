@@ -2,41 +2,64 @@
 
 import type { ButtonHTMLAttributes, ReactElement, ReactNode } from "react";
 
-type Variant = "primary" | "secondary" | "danger";
+import { cn } from "../lib/cn";
+
+type Variant = "primary" | "secondary" | "danger" | "ghost";
+type Size = "sm" | "md";
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 	variant?: Variant;
+	size?: Size;
 	children: ReactNode;
 }
 
-const VARIANT_CLASSES: Record<Variant, string> = {
+const BASE =
+	"inline-flex items-center gap-2 rounded-md font-mono uppercase tracking-wide " +
+	"transition-colors disabled:opacity-40 disabled:cursor-not-allowed " +
+	"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+
+const SIZES: Record<Size, string> = {
+	sm: "px-2 py-1 text-[11px]",
+	md: "px-3 py-1.5 text-xs",
+};
+
+const VARIANTS: Record<Variant, string> = {
 	primary:
-		"bg-green-500/20 text-green-300 hover:bg-green-500/30 disabled:bg-green-500/10 disabled:text-green-300/40",
+		"bg-accent-bg border border-accent-border text-accent hover:border-accent",
 	secondary:
-		"bg-slate-700/40 text-slate-200 hover:bg-slate-700/60 disabled:bg-slate-700/20 disabled:text-slate-200/40",
+		"bg-surface border border-border text-text-body hover:border-border-strong",
 	danger:
-		"bg-red-500/20 text-red-300 hover:bg-red-500/30 disabled:bg-red-500/10 disabled:text-red-300/40",
+		"bg-surface border border-border text-state-error hover:border-state-error",
+	ghost: "text-text-muted hover:text-text-body",
 };
 
 export function Button({
-	variant = "primary",
+	variant = "secondary",
+	size = "md",
 	children,
 	className,
 	type = "button",
 	disabled,
 	...rest
 }: ButtonProps): ReactElement {
-	const variantClass = VARIANT_CLASSES[variant];
-	const baseClass =
-		"inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed";
+	const inner =
+		variant === "primary" ? (
+			<>
+				<span className="text-accent-bracket">[</span>
+				{children}
+				<span className="text-accent-bracket">]</span>
+			</>
+		) : (
+			children
+		);
 	return (
 		<button
 			type={type}
 			disabled={disabled}
-			className={`${baseClass} ${variantClass} ${className ?? ""}`.trim()}
+			className={cn(BASE, SIZES[size], VARIANTS[variant], className)}
 			{...rest}
 		>
-			{children}
+			{inner}
 		</button>
 	);
 }
