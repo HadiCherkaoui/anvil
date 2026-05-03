@@ -1,10 +1,15 @@
 //! `POST /api/servers` — create a managed Minecraft server.
 //!
 //! Validates the request, allocates a `NodePort` if requested, inserts a
-//! `servers` row + audit entry inside a transaction, then synchronously
-//! creates the k8s Secret, `StatefulSet` (replicas=0), and Service. Returns
-//! `202 Accepted` with the new server's id+name. The user must call
-//! `POST /:id/start` afterwards to bring up the pod.
+//! `servers` row + audit entry, then synchronously creates the k8s
+//! Secret, `StatefulSet` (replicas=0), and Service. Returns `202 Accepted`
+//! with the new server's id+name. The user must call `POST /:id/start`
+//! afterwards to bring up the pod.
+//!
+//! M5: the request now carries an optional `server_type` (defaults to
+//! `"vanilla"`); when set to `"curseforge"`, the handler resolves the
+//! latest `ServerFiles` file from the `CurseForge` API and persists the
+//! provider config so the update orchestrator can re-instantiate it later.
 
 use axum::Json;
 use axum::extract::State;
@@ -25,6 +30,8 @@ use crate::k8s_builders::{
     BuildParams, build_headless_service, build_rcon_secret, build_service, build_statefulset,
     rcon_password,
 };
+use crate::modpack::curseforge::{AutoUpdateMode, Channel, Config as CfConfig};
+use crate::modpack::{CurseForgeServerPack, ModpackProvider, ProviderContext, VanillaProvider};
 use crate::validation::{
     validate_exposure_mode, validate_mc_version, validate_memory_mi, validate_name,
 };
@@ -35,16 +42,20 @@ const NODEPORT_MIN: i32 = 30_000;
 const NODEPORT_MAX: i32 = 30_099;
 /// Default storage size (GiB) when the request omits the field.
 const DEFAULT_STORAGE_SIZE_GI: i64 = 10;
-/// Server type for M2 — only vanilla.
+/// Source kind discriminator persisted in `servers.source_kind`.
 const SERVER_TYPE_VANILLA: &str = "vanilla";
+/// Source kind discriminator for `CurseForge` `ServerFiles` servers.
+const SERVER_TYPE_CURSEFORGE: &str = "curseforge";
 
 /// Request body for `POST /api/servers`.
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
     /// User-facing name (DNS-1123 label).
     pub name: String,
-    /// Minecraft version. Must be in `KNOWN_MC_VERSIONS`.
-    pub mc_version: String,
+    /// Minecraft version. Required for vanilla; ignored on the `CurseForge` path
+    /// (the chosen `ServerFiles` file's display name is stored instead).
+    #[serde(default)]
+    pub mc_version: Option<String>,
     /// Memory budget in MiB. Must be 1024–16384 in 1024-step.
     pub memory_mi: i64,
     /// `loadbalancer` | `nodeport` | `clusterip`. Defaults to the cluster
@@ -58,6 +69,22 @@ pub struct CreateRequest {
     /// PVC size in GiB. Defaults to 10.
     #[serde(default)]
     pub storage_size_gi: Option<i64>,
+    /// `vanilla` (default) | `curseforge`.
+    #[serde(default)]
+    pub server_type: Option<String>,
+    /// Required when `server_type == "curseforge"`.
+    #[serde(default)]
+    pub curseforge: Option<CurseForgeCreateConfig>,
+}
+
+/// Sub-form fields for the `CurseForge` path.
+#[derive(Debug, Deserialize)]
+pub struct CurseForgeCreateConfig {
+    /// `CurseForge` project id (resolved via the `/modpack/curseforge/resolve`
+    /// endpoint when the user pasted a URL).
+    pub project_id: u32,
+    /// Release channel filter (`release` default | `beta` | `alpha`).
+    pub channel: Channel,
 }
 
 /// Response body for `POST /api/servers`.
@@ -72,7 +99,8 @@ pub struct CreateResponse {
 /// # Errors
 ///
 /// - 400 `name_invalid` / `memory_invalid` / `mc_version_unknown` /
-///   `exposure_mode_invalid`
+///   `exposure_mode_invalid` / `cf_disabled` / `cf_config_missing` /
+///   `no_server_pack_files` / `cf_project_not_found`
 /// - 502 `lb_unavailable` if `exposure_mode=loadbalancer` and the cluster
 ///   doesn't support it
 /// - 409 `name_taken` if the user-facing name is already in use
@@ -86,7 +114,6 @@ pub async fn handle(
     State(state): State<AppState>,
     Json(request): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<CreateResponse>), AppError> {
-    // Validate request fields and resolve defaults.
     let CreateRequest {
         name,
         mc_version,
@@ -94,10 +121,19 @@ pub async fn handle(
         exposure_mode,
         storage_class,
         storage_size_gi,
+        server_type,
+        curseforge,
     } = request;
     validate_name(&name)?;
     validate_memory_mi(memory_mi)?;
-    validate_mc_version(&mc_version)?;
+
+    let server_type = server_type.unwrap_or_else(|| SERVER_TYPE_VANILLA.to_owned());
+    if server_type != SERVER_TYPE_VANILLA && server_type != SERVER_TYPE_CURSEFORGE {
+        return Err(AppError::BadRequest {
+            code: "server_type_invalid",
+            message: format!("server_type must be vanilla or curseforge, got {server_type:?}"),
+        });
+    }
 
     let exposure_mode =
         exposure_mode.map_or_else(|| state.mc_svc_type.to_lowercase(), |m| m.to_lowercase());
@@ -114,10 +150,7 @@ pub async fn handle(
             message: format!("storage_size_gi must be in [1..=500], got {storage_size_gi}"),
         });
     }
-    // The SQLite column is nullable; an empty string in the request maps to None.
     let storage_class = storage_class.filter(|s| !s.is_empty());
-    // Effective StorageClass for the StatefulSet: request override, then chart default,
-    // then None (k8s cluster default).
     let effective_storage_class = storage_class.clone().or_else(|| {
         if state.mc_storage_class.is_empty() {
             None
@@ -126,7 +159,6 @@ pub async fn handle(
         }
     });
 
-    // Reject duplicate names early so we don't have to roll back k8s state.
     if name_exists(&state.pool, &name).await? {
         return Err(AppError::Conflict {
             code: "name_taken",
@@ -134,7 +166,6 @@ pub async fn handle(
         });
     }
 
-    // Pre-allocate a NodePort if needed.
     let nodeport = if exposure_mode == "nodeport" {
         Some(allocate_nodeport(&state.pool).await?)
     } else {
@@ -144,7 +175,27 @@ pub async fn handle(
     let id = Uuid::new_v4().to_string();
     let rcon_pwd = rcon_password();
     let now = Utc::now().timestamp();
-    let source_config = json!({}).to_string();
+
+    // Branch on server_type to resolve the provider, the version label, and the
+    // source_config JSON to persist.
+    let resolved = match server_type.as_str() {
+        SERVER_TYPE_VANILLA => {
+            // Vanilla requires an `mc_version`; CF rows don't.
+            let mc_v = mc_version.ok_or_else(|| AppError::BadRequest {
+                code: "mc_version_required",
+                message: "mc_version is required for vanilla servers".to_owned(),
+            })?;
+            validate_mc_version(&mc_v)?;
+            ResolvedSource {
+                provider: Box::new(VanillaProvider::new()),
+                mc_version: mc_v,
+                source_kind: SERVER_TYPE_VANILLA,
+                source_config: "{}".to_owned(),
+            }
+        }
+        SERVER_TYPE_CURSEFORGE => resolve_curseforge(&state, curseforge).await?,
+        _ => unreachable!("validated above"),
+    };
 
     // Persist metadata + audit entry. If k8s create fails after this, the
     // SQLite row remains; DELETE handler tolerates missing k8s resources.
@@ -152,13 +203,13 @@ pub async fn handle(
         &state.pool,
         &id,
         &name,
-        &mc_version,
+        &resolved.mc_version,
         memory_mi,
-        SERVER_TYPE_VANILLA,
+        resolved.source_kind,
         &exposure_mode,
         storage_class.as_deref(),
         storage_size_gi,
-        &source_config,
+        &resolved.source_config,
         nodeport,
         now,
     )
@@ -169,28 +220,35 @@ pub async fn handle(
         "created",
         Some(json!({
             "name": name,
-            "mc_version": mc_version,
+            "mc_version": resolved.mc_version,
             "memory_mi": memory_mi,
             "exposure_mode": exposure_mode,
             "storage_class": storage_class,
             "storage_size_gi": storage_size_gi,
             "nodeport": nodeport,
+            "source_kind": resolved.source_kind,
         })),
         now,
     )
     .await?;
 
-    // Create k8s objects synchronously: Secret first so the StatefulSet's
-    // RCON env var resolves on first scale-up; headless Service so STS
-    // gets stable per-pod DNS; StatefulSet (replicas=0); public Service
-    // last.
+    // Build the StatefulSet via provider-supplied image + command + env.
+    let ctx = ProviderContext {
+        server_id: &id,
+        memory_mi,
+    };
+    let extra_env = resolved.provider.extra_env(&ctx);
+    let command_owned = resolved.provider.launch_command();
     let build_params = BuildParams {
         id: &id,
         name: &name,
         namespace: &state.mc_namespace,
-        mc_version: &mc_version,
+        mc_version: &resolved.mc_version,
         memory_mi,
-        server_type: SERVER_TYPE_VANILLA,
+        server_type: resolved.source_kind,
+        image: resolved.provider.pod_image(),
+        command: command_owned.as_deref(),
+        extra_env: &extra_env,
         exposure_mode: &exposure_mode,
         storage_class: effective_storage_class.as_deref(),
         storage_size_gi,
@@ -206,10 +264,6 @@ pub async fn handle(
     secrets
         .create(&pp, &build_rcon_secret(&id, &state.mc_namespace, &rcon_pwd))
         .await?;
-    // Headless Service must exist before the StatefulSet for stable per-pod
-    // DNS records to be created. Replicas=0 at create time means there is no
-    // pod yet, so order isn't strictly enforced — but the convention spares
-    // the next operator a confusing missing-record race.
     services
         .create(&pp, &build_headless_service(&build_params))
         .await?;
@@ -219,6 +273,77 @@ pub async fn handle(
     services.create(&pp, &build_service(&build_params)).await?;
 
     Ok((StatusCode::ACCEPTED, Json(CreateResponse { id, name })))
+}
+
+/// Materialised provider + persistence values for one create call.
+struct ResolvedSource {
+    provider: Box<dyn ModpackProvider>,
+    mc_version: String,
+    source_kind: &'static str,
+    source_config: String,
+}
+
+/// Validates the `CurseForge` sub-form, hits the API to pick the newest
+/// matching server-pack file, and produces the persistence payload.
+async fn resolve_curseforge(
+    state: &AppState,
+    cfg: Option<CurseForgeCreateConfig>,
+) -> Result<ResolvedSource, AppError> {
+    let cf_client = state.cf_client.as_ref().ok_or(AppError::BadRequest {
+        code: "cf_disabled",
+        message: "CurseForge support is not enabled on this panel (CF_API_KEY missing)".to_owned(),
+    })?;
+    let cfg = cfg.ok_or(AppError::BadRequest {
+        code: "cf_config_missing",
+        message: "curseforge.{project_id, channel} required for server_type=curseforge".to_owned(),
+    })?;
+
+    // Materialize a temporary provider to drive the picker.
+    let provisional = CurseForgeServerPack::new(CfConfig {
+        project_id: cfg.project_id,
+        channel: cfg.channel,
+        version_skip: Vec::new(),
+        force_version: None,
+        current_version_id: 0,
+        current_version_name: String::new(),
+        auto_update_mode: AutoUpdateMode::Notify,
+    });
+
+    let files = cf_client
+        .list_files(cfg.project_id)
+        .await
+        .map_err(|e| AppError::BadRequest {
+            code: "cf_project_not_found",
+            message: format!("CurseForge project {} unavailable: {e}", cfg.project_id),
+        })?;
+    let pick = provisional
+        .pick_latest(&files)
+        .ok_or(AppError::BadRequest {
+            code: "no_server_pack_files",
+            message: format!(
+                "project {} has no server-pack files matching channel {:?}",
+                cfg.project_id, cfg.channel
+            ),
+        })?;
+
+    let stored_cfg = CfConfig {
+        project_id: cfg.project_id,
+        channel: cfg.channel,
+        version_skip: Vec::new(),
+        force_version: None,
+        current_version_id: pick.id,
+        current_version_name: pick.name.clone(),
+        auto_update_mode: AutoUpdateMode::Notify,
+    };
+    let source_config =
+        serde_json::to_string(&stored_cfg).map_err(|e| AppError::Internal(e.into()))?;
+
+    Ok(ResolvedSource {
+        provider: Box::new(CurseForgeServerPack::new(stored_cfg)),
+        mc_version: pick.name,
+        source_kind: SERVER_TYPE_CURSEFORGE,
+        source_config,
+    })
 }
 
 /// Returns `true` iff a row with `name` exists in `servers`.
@@ -266,7 +391,7 @@ async fn insert_server(
     name: &str,
     mc_version: &str,
     memory_mi: i64,
-    server_type: &str,
+    source_kind: &str,
     exposure_mode: &str,
     storage_class: Option<&str>,
     storage_size_gi: i64,
@@ -277,19 +402,22 @@ async fn insert_server(
     let result = sqlx::query(
         "INSERT INTO servers (
             id, name, mc_version, memory_mi, server_type, exposure_mode,
-            storage_class, storage_size_gi, source_config, nodeport,
-            created_at, last_started_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            storage_class, storage_size_gi, source_config, source_kind,
+            nodeport, created_at, last_started_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
     )
     .bind(id)
     .bind(name)
     .bind(mc_version)
     .bind(memory_mi)
-    .bind(server_type)
+    // Legacy `server_type` column kept in lockstep with `source_kind` so
+    // callers reading the M2 schema continue to see the same value.
+    .bind(source_kind)
     .bind(exposure_mode)
     .bind(storage_class)
     .bind(storage_size_gi)
     .bind(source_config)
+    .bind(source_kind)
     .bind(nodeport.map(i64::from))
     .bind(created_at)
     .execute(pool)
@@ -384,7 +512,6 @@ mod tests {
     #[tokio::test]
     async fn allocate_nodeport_exhausted_returns_conflict() {
         let pool = db::init("sqlite::memory:").await.unwrap();
-        // Fill the entire 30_000..=30_099 range.
         for (i, port) in (NODEPORT_MIN..=NODEPORT_MAX).enumerate() {
             insert_dummy(&pool, &format!("id-{i}"), &format!("s{i}"), Some(port)).await;
         }
@@ -420,5 +547,32 @@ mod tests {
         assert_eq!(row.2, "created");
         let details = row.3.expect("details");
         assert!(details.contains("\"memory_mi\":4096"));
+    }
+
+    #[tokio::test]
+    async fn insert_server_persists_curseforge_kind() {
+        let pool = db::init("sqlite::memory:").await.unwrap();
+        insert_server(
+            &pool,
+            "cf-1",
+            "atm11",
+            "ATM-11 4.4 Server",
+            8192,
+            SERVER_TYPE_CURSEFORGE,
+            "loadbalancer",
+            Some("tank"),
+            20,
+            r#"{"project_id":1148445}"#,
+            None,
+            1,
+        )
+        .await
+        .unwrap();
+        let kind: String = sqlx::query_scalar("SELECT source_kind FROM servers WHERE id = ?")
+            .bind("cf-1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kind, "curseforge");
     }
 }

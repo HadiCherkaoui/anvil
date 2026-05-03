@@ -12,8 +12,11 @@ pub mod logs;
 pub mod logs_stream;
 pub mod rcon;
 pub mod restart;
+pub mod settings;
 pub mod start;
 pub mod stop;
+pub mod update;
+pub mod update_stream;
 
 use std::collections::HashMap;
 
@@ -49,6 +52,11 @@ pub struct ServersBody {
 ///
 /// Returns [`AppError::DbUnavailable`] or [`AppError::KubeUnavailable`]
 /// if either source is unreachable.
+///
+/// # Panics
+///
+/// Panics if the `update_locks` Mutex is poisoned (recoverable only by
+/// restarting the panel).
 pub async fn list(State(state): State<AppState>) -> Result<Json<ServersBody>, AppError> {
     let rows = fetch_summary_rows(&state.pool).await?;
 
@@ -104,6 +112,15 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<ServersBody>, Ap
                 &resource_name,
                 &state.mc_namespace,
             );
+            let update_available = match (row.current_version_id, row.latest_id) {
+                (Some(cur), Some(latest)) => cur != latest,
+                _ => false,
+            };
+            let update_in_progress = state
+                .update_locks
+                .lock()
+                .expect("update_locks poisoned")
+                .contains(&row.id);
 
             ServerSummary {
                 id: row.id,
@@ -114,6 +131,10 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<ServersBody>, Ap
                 exposure_mode: row.exposure_mode,
                 endpoint,
                 created_at: row.created_at,
+                source_kind: row.source_kind,
+                update_available,
+                latest_version_name: row.latest_version_name,
+                update_in_progress,
             }
         })
         .collect();
@@ -129,25 +150,76 @@ struct SummaryRow {
     memory_mi: i64,
     exposure_mode: String,
     created_at: i64,
+    source_kind: String,
+    /// Latest version display name from the LEFT JOIN — `None` for vanilla
+    /// or unbumped CF servers.
+    latest_version_name: Option<String>,
+    /// CF `current_version_id` from `source_config`, used to compare against
+    /// `latest_id` and decide whether `update_available` is true.
+    current_version_id: Option<i64>,
+    /// CF `latest_id` from the LEFT JOIN — `None` when no upstream version cached.
+    latest_id: Option<i64>,
 }
 
+/// Tuple shape returned by [`fetch_summary_rows`]; aliased so the
+/// `query_as` annotation is not a clippy `type_complexity` violation.
+type SummaryTuple = (
+    String,
+    String,
+    String,
+    i64,
+    String,
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<i64>,
+);
+
 async fn fetch_summary_rows(pool: &SqlitePool) -> Result<Vec<SummaryRow>, AppError> {
-    let rows: Vec<(String, String, String, i64, String, i64)> = sqlx::query_as(
-        "SELECT id, name, mc_version, memory_mi, exposure_mode, created_at
-         FROM servers ORDER BY created_at ASC",
+    let rows: Vec<SummaryTuple> = sqlx::query_as(
+        "SELECT s.id, s.name, s.mc_version, s.memory_mi, s.exposure_mode,
+                s.created_at, s.source_kind, s.source_config,
+                mv.latest_name, mv.latest_id
+         FROM servers s
+         LEFT JOIN modpack_versions mv ON mv.server_id = s.id
+         ORDER BY s.created_at ASC",
     )
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
         .map(
-            |(id, name, mc_version, memory_mi, exposure_mode, created_at)| SummaryRow {
+            |(
                 id,
                 name,
                 mc_version,
                 memory_mi,
                 exposure_mode,
                 created_at,
+                source_kind,
+                source_config,
+                latest_version_name,
+                latest_id,
+            )| {
+                let current_version_id = serde_json::from_str::<serde_json::Value>(&source_config)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("current_version_id")
+                            .and_then(serde_json::Value::as_i64)
+                    });
+                SummaryRow {
+                    id,
+                    name,
+                    mc_version,
+                    memory_mi,
+                    exposure_mode,
+                    created_at,
+                    source_kind,
+                    latest_version_name,
+                    current_version_id,
+                    latest_id,
+                }
             },
         )
         .collect())

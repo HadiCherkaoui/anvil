@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetSpec};
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, EnvVarSource, PersistentVolumeClaim,
-    PersistentVolumeClaimSpec, PodSpec, PodTemplateSpec, ResourceRequirements, Secret,
-    SecretKeySelector, Service, ServicePort, ServiceSpec, VolumeMount, VolumeResourceRequirements,
+    Container, ContainerPort, EnvVar, PersistentVolumeClaim, PersistentVolumeClaimSpec, PodSpec,
+    PodTemplateSpec, ResourceRequirements, Secret, Service, ServicePort, ServiceSpec, VolumeMount,
+    VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
@@ -27,16 +27,13 @@ use crate::k8s::{
 };
 use crate::k8s_status::{MC_PORT, RCON_PORT};
 
-/// Container image used for managed Minecraft servers.
-///
-/// itzg/minecraft-server handles vanilla downloads, EULA, RCON wiring,
-/// and `server.properties` via env vars (per the M2 task brief).
-const MC_IMAGE: &str = "itzg/minecraft-server:java21";
-
 /// Length of the generated RCON password.
 const RCON_PASSWORD_LEN: usize = 24;
 
 /// Inputs needed to construct the StatefulSet/Service/Secret triple.
+///
+/// M5: `image`, `command`, and `extra_env` are now provider-supplied so the
+/// `CurseForge` path can launch its own bash entrypoint with custom JVM env.
 #[derive(Debug, Clone)]
 pub struct BuildParams<'a> {
     /// Server UUID; used as the resource-name suffix `mc-<id>`.
@@ -45,13 +42,21 @@ pub struct BuildParams<'a> {
     pub name: &'a str,
     /// Namespace where managed resources live.
     pub namespace: &'a str,
-    /// Minecraft version snapshotted at create time.
+    /// Minecraft version snapshotted at create time. Stored as an annotation.
     pub mc_version: &'a str,
-    /// Memory budget in MiB. Becomes both a JVM env hint and the k8s
-    /// resource requests/limits.
+    /// Memory budget in MiB. Becomes the k8s resource limit; provider env
+    /// (`MEMORY=…M` for vanilla, `JAVA_TOOL_OPTIONS=-Xmx…m` for CF) lives
+    /// in `extra_env`.
     pub memory_mi: i64,
-    /// Server type — `vanilla` in M2.
+    /// Server type — `vanilla` | `curseforge` (`servers.source_kind`).
     pub server_type: &'a str,
+    /// Container image (e.g. `itzg/minecraft-server:java21`,
+    /// `eclipse-temurin:21-jdk`). Comes from `ModpackProvider::pod_image`.
+    pub image: &'a str,
+    /// Container command override; `None` lets the image entrypoint run.
+    pub command: Option<&'a [String]>,
+    /// Provider-supplied env vars (already includes RCON for vanilla).
+    pub extra_env: &'a [EnvVar],
     /// Service exposure mode (`loadbalancer` | `nodeport` | `clusterip`).
     pub exposure_mode: &'a str,
     /// PVC `storageClassName`. `None` => omit field, k8s uses cluster default.
@@ -83,29 +88,23 @@ fn server_annotations(p: &BuildParams<'_>) -> BTreeMap<String, String> {
 }
 
 /// Builds the `StatefulSet` for a managed server (replicas=0, single
-/// container running the itzg/minecraft-server image).
+/// container running the provider-supplied image).
 #[must_use]
 pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
     let resource_name = format!("mc-{}", p.id);
     let labels = server_labels(p.id);
     let annotations = server_annotations(p);
 
-    // env vars passed to itzg/minecraft-server
-    let env = vec![
-        env("EULA", "TRUE"),
-        env("TYPE", &p.server_type.to_uppercase()),
-        env("VERSION", p.mc_version),
-        env("MEMORY", &format!("{}M", p.memory_mi)),
-        env("ENABLE_RCON", "true"),
-        env_from_secret("RCON_PASSWORD", &format!("mc-{}-rcon", p.id), "password"),
-    ];
-
     let resources = pod_resources(p.memory_mi);
 
     let container = Container {
         name: "mc".to_owned(),
-        image: Some(MC_IMAGE.to_owned()),
-        env: Some(env),
+        image: Some(p.image.to_owned()),
+        command: p.command.map(<[String]>::to_vec),
+        // The data volume mounts at /data; CurseForge packs unpack here and
+        // their startserver.sh expects /data as the working directory.
+        working_dir: Some("/data".to_owned()),
+        env: Some(p.extra_env.to_vec()),
         ports: Some(vec![
             ContainerPort {
                 container_port: i32::from(MC_PORT),
@@ -309,31 +308,6 @@ pub fn rcon_password() -> String {
         .collect()
 }
 
-/// Convenience for the common `EnvVar { name, value }` shape.
-fn env(name: &str, value: &str) -> EnvVar {
-    EnvVar {
-        name: name.to_owned(),
-        value: Some(value.to_owned()),
-        value_from: None,
-    }
-}
-
-/// Convenience for an env var sourced from a Secret key.
-fn env_from_secret(name: &str, secret_name: &str, key: &str) -> EnvVar {
-    EnvVar {
-        name: name.to_owned(),
-        value: None,
-        value_from: Some(EnvVarSource {
-            secret_key_ref: Some(SecretKeySelector {
-                name: secret_name.to_owned(),
-                key: key.to_owned(),
-                optional: Some(false),
-            }),
-            ..EnvVarSource::default()
-        }),
-    }
-}
-
 /// Returns CPU and memory limits for the Minecraft container.
 ///
 /// Limits only — no requests. The homelab cluster is intentionally
@@ -354,6 +328,14 @@ fn pod_resources(memory_mi: i64) -> ResourceRequirements {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modpack::VanillaProvider;
+    use std::sync::OnceLock;
+
+    static VANILLA_ENV: OnceLock<Vec<EnvVar>> = OnceLock::new();
+
+    fn vanilla_env_for_test() -> &'static [EnvVar] {
+        VANILLA_ENV.get_or_init(|| VanillaProvider::build_env("abcd1234", "1.21.4", 4096))
+    }
 
     fn params() -> BuildParams<'static> {
         BuildParams {
@@ -363,6 +345,9 @@ mod tests {
             mc_version: "1.21.4",
             memory_mi: 4096,
             server_type: "vanilla",
+            image: "itzg/minecraft-server:java21",
+            command: None,
+            extra_env: vanilla_env_for_test(),
             exposure_mode: "loadbalancer",
             storage_class: Some("tank"),
             storage_size_gi: 10,

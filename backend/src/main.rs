@@ -4,13 +4,19 @@
 //! builds the router, and serves it on the configured bind address.
 //! SIGTERM / Ctrl-C trigger graceful shutdown so in-flight requests finish.
 
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use anvil::auth::OidcState;
 use anvil::config::Config;
+use anvil::modpack::{self, CurseForgeClient};
 use anvil::{AppState, db, k8s, router};
 use anyhow::{Context as _, Result};
 use axum_extra::extract::cookie::Key;
 use tokio::net::TcpListener;
 use tokio::signal;
+use tokio::sync::Mutex as AsyncMutex;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 use tracing::Level;
@@ -42,6 +48,18 @@ async fn main() -> Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("OIDC client init: {e}"))?;
     let cookie_key = Key::derive_from(&config.session_key);
+
+    // CurseForge client is only constructed when both the API key AND the
+    // snapshots PVC are configured; the poll interval is read regardless so
+    // it has a stable value even when modpack support is off.
+    let cf_client = match config.cf_api_key.as_deref() {
+        Some(key) => Some(Arc::new(
+            CurseForgeClient::new(key).context("constructing CurseForge client")?,
+        )),
+        None => None,
+    };
+    let snapshots_pvc = config.modpack_snapshots_pvc.clone().map(Arc::new);
+
     let state = AppState {
         kube,
         pool,
@@ -55,7 +73,22 @@ async fn main() -> Result<()> {
         cookie_key,
         allowed_subs: config.allowed_subs.clone(),
         oidc,
+        cf_client,
+        snapshots_pvc,
+        modpack_poll_interval: Duration::from_secs(config.modpack_poll_interval_minutes * 60),
+        update_locks: Arc::new(Mutex::new(HashSet::new())),
+        update_phase_buses: Arc::new(Mutex::new(HashMap::new())),
+        snapshot_pvc_lock: Arc::new(AsyncMutex::new(())),
     };
+
+    // Hourly poller — only when modpack support is enabled. Runs for the
+    // process lifetime; no shutdown handle (process exit terminates it).
+    if state.cf_client.is_some() {
+        let poller_state = state.clone();
+        tokio::spawn(async move {
+            modpack::poller::run(poller_state).await;
+        });
+    }
 
     let app = router(state)
         .layer(CompressionLayer::new())

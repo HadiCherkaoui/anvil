@@ -15,13 +15,13 @@ use openidconnect::core::{
     CoreJweContentEncryptionAlgorithm, CoreJweKeyManagementAlgorithm, CoreResponseMode,
     CoreResponseType, CoreSubjectIdentifierType,
 };
-use openidconnect::reqwest;
 use openidconnect::{
     AdditionalProviderMetadata, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl,
     Nonce, PkceCodeChallenge, PkceCodeVerifier, ProviderMetadata, RedirectUrl, Scope,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use tracing::warn;
 
 use crate::auth::types::OidcStateCookie;
 use crate::error::AppError;
@@ -218,7 +218,10 @@ impl OidcState {
             .set_pkce_verifier(PkceCodeVerifier::new(state.pkce_verifier.clone()))
             .request_async(&self.http)
             .await
-            .map_err(|_| AppError::Unauthorized)?;
+            .map_err(|e| {
+                warn!(exchange.error = %e, "OIDC token exchange failed");
+                AppError::Unauthorized
+            })?;
         let id_token = token
             .extra_fields()
             .id_token()
@@ -228,7 +231,10 @@ impl OidcState {
                 &client.id_token_verifier(),
                 &Nonce::new(state.nonce.clone()),
             )
-            .map_err(|_| AppError::Unauthorized)?;
+            .map_err(|e| {
+                warn!(claims.error = %e, "OIDC ID token claims verification failed");
+                AppError::Unauthorized
+            })?;
         Ok(extract_identity(claims))
     }
 

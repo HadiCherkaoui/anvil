@@ -36,6 +36,9 @@ const DEFAULT_NODE_HOST: &str = "";
 /// since env vars are stringly typed.
 const DEFAULT_LB_SUPPORTED: &str = "true";
 
+/// Default value for [`Config::modpack_poll_interval_minutes`].
+const DEFAULT_MODPACK_POLL_MINUTES: &str = "60";
+
 /// Resolved process configuration.
 #[derive(Clone)]
 pub struct Config {
@@ -71,6 +74,14 @@ pub struct Config {
     pub session_key: Vec<u8>,
     /// Allowlist of Authentik subject UUIDs. Empty = any authenticated user.
     pub allowed_subs: Vec<String>,
+    /// `CurseForge` API key (M5). When unset / empty, modpack support is disabled
+    /// and the New Server modal hides the `CurseForge` option.
+    pub cf_api_key: Option<String>,
+    /// Name of the PVC mounted by backup/swap Jobs. Required iff `cf_api_key`
+    /// is set; the chart's modpack.snapshotsPvc.enabled value gates this.
+    pub modpack_snapshots_pvc: Option<String>,
+    /// Hourly poll interval for `modpack_versions` updates.
+    pub modpack_poll_interval_minutes: u64,
 }
 
 // `Vec<u8>` for `session_key` would print the raw HMAC key in `Debug`; hand-roll
@@ -92,6 +103,15 @@ impl std::fmt::Debug for Config {
             .field("oidc_redirect_url", &self.oidc_redirect_url)
             .field("session_key", &"<redacted>")
             .field("allowed_subs", &self.allowed_subs)
+            .field(
+                "cf_api_key",
+                &self.cf_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("modpack_snapshots_pvc", &self.modpack_snapshots_pvc)
+            .field(
+                "modpack_poll_interval_minutes",
+                &self.modpack_poll_interval_minutes,
+            )
             .finish()
     }
 }
@@ -159,6 +179,30 @@ impl Config {
             .map(str::to_owned)
             .collect();
 
+        // CF_API_KEY may live in a file (k8s secret mount) or directly in env;
+        // either being unset means modpack support stays disabled.
+        let cf_api_key = optional_secret("CF_API_KEY_FILE", "CF_API_KEY")?;
+        let modpack_snapshots_pvc = env::var("ANVIL_MODPACK_SNAPSHOTS_PVC")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let modpack_poll_interval_minutes_str = env::var("ANVIL_MODPACK_POLL_MINUTES")
+            .unwrap_or_else(|_| DEFAULT_MODPACK_POLL_MINUTES.to_owned());
+        let modpack_poll_interval_minutes: u64 =
+            modpack_poll_interval_minutes_str.parse().with_context(|| {
+                format!(
+                    "ANVIL_MODPACK_POLL_MINUTES={modpack_poll_interval_minutes_str:?} is not a u64"
+                )
+            })?;
+        if modpack_poll_interval_minutes == 0 {
+            bail!("ANVIL_MODPACK_POLL_MINUTES must be > 0");
+        }
+
+        if cf_api_key.is_some() && modpack_snapshots_pvc.is_none() {
+            bail!(
+                "CF_API_KEY is set but ANVIL_MODPACK_SNAPSHOTS_PVC is not — modpack updates need a snapshots PVC"
+            );
+        }
+
         Ok(Self {
             bind_addr,
             database_url,
@@ -174,8 +218,21 @@ impl Config {
             oidc_redirect_url,
             session_key,
             allowed_subs,
+            cf_api_key,
+            modpack_snapshots_pvc,
+            modpack_poll_interval_minutes,
         })
     }
+}
+
+/// Like [`read_secret`] but returns `None` (not an error) when both vars are unset.
+fn optional_secret(file_var: &str, value_var: &str) -> Result<Option<String>> {
+    if let Ok(path) = env::var(file_var) {
+        return std::fs::read_to_string(&path)
+            .with_context(|| format!("{file_var}={path:?} could not be read"))
+            .map(|s| Some(s.trim_end_matches(['\n', '\r']).to_owned()));
+    }
+    Ok(env::var(value_var).ok().filter(|s| !s.is_empty()))
 }
 
 /// Reads a secret value from a k8s-mounted file path or, failing that, an env var.

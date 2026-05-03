@@ -34,6 +34,20 @@ pub struct ServerDetail {
     pub endpoint: Option<Endpoint>,
     pub created_at: i64,
     pub last_started_at: Option<i64>,
+    /// Provider discriminator (`vanilla` | `curseforge`).
+    pub source_kind: String,
+    /// Provider config JSON (parsed). `null` for vanilla.
+    pub source_config: serde_json::Value,
+    /// `true` when a newer modpack version is cached.
+    pub update_available: bool,
+    /// `CurseForge` file id of the cached latest, if any.
+    pub latest_version_id: Option<i64>,
+    /// Display name of the cached latest, if any.
+    pub latest_version_name: Option<String>,
+    /// First lines of the changelog for the cached latest, if any.
+    pub latest_changelog_excerpt: Option<String>,
+    /// `true` while the orchestrator is mid-update for this server.
+    pub update_in_progress: bool,
 }
 
 /// Handler for `GET /api/servers/:id`.
@@ -89,6 +103,39 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         &state.mc_namespace,
     );
 
+    // Modpack-version JOIN + lock check; both are independent of the k8s
+    // calls above so the fan-out is fine.
+    let mv: Option<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT latest_id, latest_name, changelog_excerpt
+         FROM modpack_versions WHERE server_id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (source_kind, source_config_text): (String, String) =
+        sqlx::query_as("SELECT source_kind, source_config FROM servers WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await?;
+    let source_config: serde_json::Value =
+        serde_json::from_str(&source_config_text).unwrap_or(serde_json::Value::Null);
+    let current_version_id = source_config
+        .get("current_version_id")
+        .and_then(serde_json::Value::as_i64);
+    let (latest_version_id, latest_version_name, latest_changelog_excerpt) = match mv {
+        Some((id, name, excerpt)) => (Some(id), Some(name), excerpt),
+        None => (None, None, None),
+    };
+    let update_available = match (current_version_id, latest_version_id) {
+        (Some(cur), Some(latest)) => cur != latest,
+        _ => false,
+    };
+    let update_in_progress = state
+        .update_locks
+        .lock()
+        .expect("update_locks poisoned")
+        .contains(id);
+
     Ok(ServerDetail {
         id: row.id,
         name: row.name,
@@ -103,6 +150,13 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         endpoint,
         created_at: row.created_at,
         last_started_at: row.last_started_at,
+        source_kind,
+        source_config,
+        update_available,
+        latest_version_id,
+        latest_version_name,
+        latest_changelog_excerpt,
+        update_in_progress,
     })
 }
 

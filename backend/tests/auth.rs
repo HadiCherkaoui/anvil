@@ -48,6 +48,16 @@ fn test_state(allowed: Vec<String>) -> AppState {
         cookie_key,
         allowed_subs: allowed,
         oidc,
+        // M5 modpack fields — none of the auth-middleware tests exercise
+        // them, so all-disabled / empty defaults are fine.
+        cf_client: None,
+        snapshots_pvc: None,
+        modpack_poll_interval: std::time::Duration::from_secs(3600),
+        update_locks: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+        update_phase_buses: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
+        snapshot_pvc_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
     }
 }
 

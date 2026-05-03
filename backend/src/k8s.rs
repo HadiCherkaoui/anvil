@@ -80,6 +80,14 @@ pub struct ServerSummary {
     pub endpoint: Option<Endpoint>,
     /// Unix-second creation timestamp.
     pub created_at: i64,
+    /// Provider discriminator (`vanilla` | `curseforge`).
+    pub source_kind: String,
+    /// `true` when a newer modpack version is cached for this server.
+    pub update_available: bool,
+    /// Display name of the latest cached upstream version, when any.
+    pub latest_version_name: Option<String>,
+    /// `true` while the orchestrator is mid-update for this server.
+    pub update_in_progress: bool,
 }
 
 /// Builds an in-cluster client when one is available, otherwise falls back

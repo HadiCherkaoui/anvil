@@ -22,6 +22,10 @@ use crate::error::AppError;
 pub const CAPABILITIES_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// Cluster capabilities response shape.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool gates an independent feature in the frontend; bitmask would be opaque"
+)]
 #[derive(Debug, Clone, Serialize)]
 pub struct ClusterCapabilities {
     /// Whether the create handler will accept `exposure_mode=loadbalancer`.
@@ -35,6 +39,9 @@ pub struct ClusterCapabilities {
     /// Name of the `StorageClass` annotated `is-default-class=true`,
     /// if any.
     pub default_storage_class: Option<String>,
+    /// Whether the backend has a `CurseForge` API key configured. The frontend
+    /// hides the `CurseForge` option in the New Server modal when this is false.
+    pub cf_api_key_present: bool,
 }
 
 /// In-memory cache slot held in `AppState`.
@@ -87,6 +94,7 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabil
         clusterip: true,
         available_storage_classes: classes,
         default_storage_class: default,
+        cf_api_key_present: state.cf_client.is_some(),
     };
     write_cache(&state.capabilities_cache, &caps);
     Ok(Json(caps))

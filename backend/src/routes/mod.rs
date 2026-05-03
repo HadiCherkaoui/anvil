@@ -9,6 +9,7 @@ use crate::auth::{handlers as auth, require_session};
 
 pub mod cluster;
 pub mod health;
+pub mod modpack;
 pub mod servers;
 
 /// Builds the stateful application router (production path).
@@ -74,7 +75,20 @@ fn api_routes(state: AppState) -> Router<AppState> {
             get(servers::logs_stream::handle),
         )
         .route("/api/servers/{id}/rcon", post(servers::rcon::handle))
+        .route("/api/servers/{id}/update", post(servers::update::handle))
+        .route(
+            "/api/servers/{id}/update/stream",
+            get(servers::update_stream::handle),
+        )
+        .route(
+            "/api/servers/{id}/settings",
+            axum::routing::patch(servers::settings::handle),
+        )
         .route("/api/cluster/capabilities", get(cluster::handle))
+        .route(
+            "/api/modpack/curseforge/resolve",
+            get(modpack::resolve_curseforge),
+        )
         .route_layer(from_fn_with_state(state, require_session));
 
     public.merge(protected)

@@ -4,15 +4,19 @@
 //! used by integration tests. Only items that need to be exercised from
 //! `tests/*.rs` are public.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
 use kube::Client;
 use sqlx::SqlitePool;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use crate::auth::OidcState;
+use crate::modpack::{CurseForgeClient, orchestrator::UpdatePhase};
 use crate::routes::cluster::CapabilitiesCache;
 
 pub mod auth;
@@ -22,6 +26,7 @@ pub mod error;
 pub mod k8s;
 pub mod k8s_builders;
 pub mod k8s_status;
+pub mod modpack;
 pub mod routes;
 #[cfg(any(feature = "serve-dir", feature = "embed"))]
 pub mod static_serve;
@@ -61,6 +66,21 @@ pub struct AppState {
     pub allowed_subs: Vec<String>,
     /// OIDC client + cached provider metadata.
     pub oidc: Arc<OidcState>,
+    /// `CurseForge` HTTP client. `None` when `CF_API_KEY` is unset — modpack
+    /// support is then disabled across all handlers.
+    pub cf_client: Option<Arc<CurseForgeClient>>,
+    /// Name of the shared snapshots PVC mounted by backup/swap Jobs.
+    /// `None` when modpack support is disabled.
+    pub snapshots_pvc: Option<Arc<String>>,
+    /// How often the modpack poller refreshes `modpack_versions`.
+    pub modpack_poll_interval: Duration,
+    /// Server ids with an update orchestrator currently running.
+    pub update_locks: Arc<std::sync::Mutex<HashSet<String>>>,
+    /// Live `watch::Receiver` per running update — fed to the update WS.
+    pub update_phase_buses: Arc<std::sync::Mutex<HashMap<String, watch::Receiver<UpdatePhase>>>>,
+    /// Serializes backup + swap + restore Jobs panel-wide so one Job at a
+    /// time mounts the shared snapshots PVC (RWO on single-node ZFS).
+    pub snapshot_pvc_lock: Arc<AsyncMutex<()>>,
 }
 
 // `kube::Client` doesn't impl `Debug`, so the derive on `AppState` would
@@ -81,6 +101,12 @@ impl fmt::Debug for AppState {
             .field("cookie_key", &"<redacted>")
             .field("allowed_subs", &self.allowed_subs)
             .field("oidc", &self.oidc)
+            .field("cf_client", &self.cf_client.as_ref().map(|_| "<cf>"))
+            .field("snapshots_pvc", &self.snapshots_pvc)
+            .field("modpack_poll_interval", &self.modpack_poll_interval)
+            .field("update_locks", &"<lock>")
+            .field("update_phase_buses", &"<map>")
+            .field("snapshot_pvc_lock", &"<lock>")
             .finish()
     }
 }

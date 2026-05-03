@@ -3,7 +3,7 @@ resolver = "3"
 
 [package]
 name = "anvil"
-version = "0.4.0"
+version = "1.0.0"
 edition = "2024"
 description = "k8s-native Minecraft server panel"
 license = "AGPL-3.0-or-later"
@@ -23,6 +23,7 @@ embed = ["dep:rust-embed", "dep:mime_guess"]
 
 [dependencies]
 anyhow = "1.0.102"
+async-trait = "0.1.89"
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-extra = { version = "0.10", features = ["cookie", "cookie-key-expansion", "cookie-private", "cookie-signed"] }
 base64 = "0.22"
@@ -36,6 +37,7 @@ mime_guess = { version = "2.0.5", optional = true }
 openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
 rand = "0.10.1"
 rcon = { version = "0.6.0", default-features = false, features = ["rt-tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rust-embed = { version = "8.11.0", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
