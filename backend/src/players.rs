@@ -45,8 +45,10 @@ pub struct PlayerEvent {
     pub ts_ms: i64,
 }
 
-/// Returns the current wall-clock time in millis. Extracted so tests can
-/// inject a fixed value; production callers use it directly.
+/// Returns the current wall-clock time as Unix milliseconds.
+///
+/// Route handlers pass this value to [`parse_log_join_leave`]; tests
+/// pass a fixed literal instead, so this function is not called in tests.
 #[must_use]
 pub fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
@@ -148,14 +150,16 @@ pub fn parse_banlist_ips_output(s: &str) -> Vec<BanIpEntry> {
 /// Shared shape parser used for both `banlist players` and `banlist ips`.
 /// Returns (target, reason) pairs.
 fn parse_banlist_lines(s: &str, empty_keyword: &str) -> Vec<(String, String)> {
-    let trimmed = s.trim().trim_end_matches('.');
     // Empty-state messages: "There are no bans" / "There is no ban" /
     // "There are no IP bans" / "There is no IP ban". The keyword we
     // search for is the unique noun part (e.g. "no IP bans" or "no bans").
+    // Anchor to the first line only — a ban reason can legitimately contain
+    // the keyword and must not trigger a false empty result.
+    let first_line = s.lines().next().unwrap_or("").trim();
     let empty_short = empty_keyword
         .strip_prefix("There are ")
         .unwrap_or(empty_keyword);
-    if trimmed.contains(empty_short) {
+    if first_line.contains(empty_short) {
         return Vec::new();
     }
     s.lines()
@@ -184,14 +188,14 @@ pub fn parse_log_join_leave(line: &str, ts_ms: i64) -> Option<PlayerEvent> {
     if let Some(name) = body.strip_suffix(" joined the game") {
         return Some(PlayerEvent {
             kind: PlayerEventKind::Joined,
-            player: name.trim().to_owned(),
+            player: name.to_owned(),
             ts_ms,
         });
     }
     if let Some(name) = body.strip_suffix(" left the game") {
         return Some(PlayerEvent {
             kind: PlayerEventKind::Left,
-            player: name.trim().to_owned(),
+            player: name.to_owned(),
             ts_ms,
         });
     }
@@ -305,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn banlist_players_parses_with_no_reason() {
+    fn banlist_players_parses_default_reason() {
         let s = "There are 1 ban:\nalice was banned by Server: Banned by an operator.";
         let out = parse_banlist_players_output(s);
         assert_eq!(
@@ -313,6 +317,19 @@ mod tests {
             vec![BanEntry {
                 name: "alice".into(),
                 reason: "Banned by an operator".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn banlist_players_does_not_false_empty_on_reason_text() {
+        let s = "There is 1 ban:\nalice was banned by Server: no bans have been pardoned yet.";
+        let out = parse_banlist_players_output(s);
+        assert_eq!(
+            out,
+            vec![BanEntry {
+                name: "alice".into(),
+                reason: "no bans have been pardoned yet".into(),
             }]
         );
     }
