@@ -67,6 +67,10 @@ fn api_routes(state: AppState) -> Router<AppState> {
             "/api/servers/{id}",
             get(servers::get::handle).delete(servers::delete::handle),
         )
+        .route(
+            "/api/servers/by-name/{name}",
+            get(servers::get::handle_by_name),
+        )
         .route("/api/servers/{id}/start", post(servers::start::handle))
         .route("/api/servers/{id}/stop", post(servers::stop::handle))
         .route("/api/servers/{id}/restart", post(servers::restart::handle))

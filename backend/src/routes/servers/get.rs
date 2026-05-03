@@ -63,6 +63,28 @@ pub async fn handle(
     Ok(Json(detail))
 }
 
+/// Handler for `GET /api/servers/by-name/:name`.
+///
+/// Resolves the user-facing server name (UNIQUE in `servers`) to its UUID
+/// then returns the same shape as [`handle`].
+///
+/// # Errors
+///
+/// - 404 if no server with that name exists.
+/// - 500 on DB or k8s failure.
+pub async fn handle_by_name(
+    Path(name): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ServerDetail>, AppError> {
+    let id: Option<String> = sqlx::query_scalar("SELECT id FROM servers WHERE name = ?")
+        .bind(&name)
+        .fetch_optional(&state.pool)
+        .await?;
+    let id = id.ok_or(AppError::NotFound)?;
+    let detail = fetch_detail(&state, &id).await?;
+    Ok(Json(detail))
+}
+
 /// Shared by start/stop/restart handlers — fetches the same shape
 /// `GET /api/servers/:id` returns.
 pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDetail, AppError> {
