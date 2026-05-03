@@ -44,6 +44,18 @@ const FORCE_VERSION_MAX_LEN: usize = 128;
 /// Maximum entries in a `version_skip` list.
 const VERSION_SKIP_MAX_LEN: usize = 50;
 
+/// Loaders accepted by the modded `RuntimePicker` and the catalog facets.
+const KNOWN_RUNTIMES: &[&str] = &["fabric", "forge", "neoforge", "paper"];
+
+/// Catalog providers the search/versions endpoints recognise.
+const KNOWN_CATALOG_PROVIDERS: &[&str] = &["curseforge", "modrinth"];
+
+/// Maximum length of a free-text catalog search query.
+const SEARCH_QUERY_MAX_LEN: usize = 100;
+
+/// Maximum length of a mod jar filename.
+const MOD_FILENAME_MAX_LEN: usize = 200;
+
 /// Validates a server name against RFC 1123 label rules.
 ///
 /// # Errors
@@ -227,6 +239,106 @@ pub fn validate_version_skip(list: &[String]) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Validates a runtime discriminator (`fabric` | `forge` | `neoforge` | `paper`).
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "runtime_invalid"`.
+pub fn validate_runtime(r: &str) -> Result<(), AppError> {
+    if KNOWN_RUNTIMES.contains(&r) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest {
+            code: "runtime_invalid",
+            message: format!("runtime {r:?} not in {KNOWN_RUNTIMES:?}"),
+        })
+    }
+}
+
+/// Validates a Modrinth project id (8-char base62) or slug (`[a-z0-9_-]{1,40}`).
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "modrinth_id_invalid"`.
+pub fn validate_modrinth_id_or_slug(s: &str) -> Result<(), AppError> {
+    let len = s.len();
+    if (1..=40).contains(&len) {
+        let is_id = len == 8 && s.chars().all(|c| c.is_ascii_alphanumeric());
+        let is_slug = s
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+        if is_id || is_slug {
+            return Ok(());
+        }
+    }
+    Err(AppError::BadRequest {
+        code: "modrinth_id_invalid",
+        message: format!("modrinth id/slug {s:?} invalid"),
+    })
+}
+
+/// Validates a catalog free-text search query — non-blank, ≤ 100 chars.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "search_query_invalid"`.
+pub fn validate_search_query(q: &str) -> Result<(), AppError> {
+    let trimmed = q.trim();
+    if trimmed.is_empty() || trimmed.len() > SEARCH_QUERY_MAX_LEN {
+        return Err(AppError::BadRequest {
+            code: "search_query_invalid",
+            message: format!("query must be 1..={SEARCH_QUERY_MAX_LEN} chars"),
+        });
+    }
+    Ok(())
+}
+
+/// Validates a catalog provider discriminator (`curseforge` | `modrinth`).
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "catalog_provider_invalid"`.
+pub fn validate_catalog_provider(p: &str) -> Result<(), AppError> {
+    if KNOWN_CATALOG_PROVIDERS.contains(&p) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest {
+            code: "catalog_provider_invalid",
+            message: format!("provider {p:?} not in {KNOWN_CATALOG_PROVIDERS:?}"),
+        })
+    }
+}
+
+/// Validates a mod jar filename. Defends the sync Job's `rm` from path
+/// injection at the DB-write layer.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "mod_filename_invalid"`
+/// when the name contains `/`, doesn't end `.jar`, exceeds 200 bytes, or
+/// uses characters outside `[A-Za-z0-9._+-]`.
+pub fn validate_mod_filename(name: &str) -> Result<(), AppError> {
+    let len = name.len();
+    let ends_jar = std::path::Path::new(name)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("jar"));
+    if !(1..=MOD_FILENAME_MAX_LEN).contains(&len)
+        || name.contains('/')
+        || !ends_jar
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+    {
+        return Err(AppError::BadRequest {
+            code: "mod_filename_invalid",
+            message: format!(
+                "filename {name:?} must be a basename ending .jar with [A-Za-z0-9._+-]"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Validates that `mode` is in [`KNOWN_EXPOSURE_MODES`].
 ///
 /// # Errors
@@ -357,5 +469,56 @@ mod tests {
     fn unknown_exposure_mode_fails() {
         assert!(validate_exposure_mode("LoadBalancer").is_err()); // case-sensitive
         assert!(validate_exposure_mode("hostport").is_err());
+    }
+
+    #[test]
+    fn runtime_validator() {
+        for r in KNOWN_RUNTIMES {
+            assert!(validate_runtime(r).is_ok());
+        }
+        for r in ["", "vanilla", "FABRIC", "spongeforge"] {
+            assert!(validate_runtime(r).is_err());
+        }
+    }
+
+    #[test]
+    fn modrinth_id_or_slug_validator() {
+        assert!(validate_modrinth_id_or_slug("AANobbMI").is_ok());
+        assert!(validate_modrinth_id_or_slug("sodium").is_ok());
+        assert!(validate_modrinth_id_or_slug("more-than-eight-but-slug").is_ok());
+        assert!(validate_modrinth_id_or_slug("").is_err());
+        assert!(validate_modrinth_id_or_slug("UPPER").is_err());
+        assert!(validate_modrinth_id_or_slug("space slug").is_err());
+        assert!(validate_modrinth_id_or_slug(&"a".repeat(41)).is_err());
+    }
+
+    #[test]
+    fn search_query_validator() {
+        assert!(validate_search_query("sodium").is_ok());
+        assert!(validate_search_query("").is_err());
+        assert!(validate_search_query("    ").is_err());
+        assert!(validate_search_query(&"a".repeat(101)).is_err());
+    }
+
+    #[test]
+    fn catalog_provider_validator() {
+        assert!(validate_catalog_provider("curseforge").is_ok());
+        assert!(validate_catalog_provider("modrinth").is_ok());
+        assert!(validate_catalog_provider("vanilla").is_err());
+    }
+
+    #[test]
+    fn mod_filename_validator_accepts_realistic_names() {
+        assert!(validate_mod_filename("sodium-fabric-0.5.13+mc1.21.1.jar").is_ok());
+        assert!(validate_mod_filename("lithium-1.21.1.jar").is_ok());
+    }
+
+    #[test]
+    fn mod_filename_validator_rejects_path_traversal() {
+        assert!(validate_mod_filename("../etc/passwd").is_err());
+        assert!(validate_mod_filename("a/b.jar").is_err());
+        assert!(validate_mod_filename("sodium.zip").is_err());
+        assert!(validate_mod_filename("").is_err());
+        assert!(validate_mod_filename(&format!("{}.jar", "a".repeat(200))).is_err());
     }
 }
