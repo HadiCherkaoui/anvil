@@ -48,6 +48,8 @@ pub struct BuildParams<'a> {
     /// (`MEMORY=…M` for vanilla, `JAVA_TOOL_OPTIONS=-Xmx…m` for CF) lives
     /// in `extra_env`.
     pub memory_mi: i64,
+    /// CPU budget in millicores. Becomes the k8s `resources.limits.cpu`.
+    pub cpu_millicores: i64,
     /// Server type — `vanilla` | `curseforge` (`servers.source_kind`).
     pub server_type: &'a str,
     /// Container image (e.g. `itzg/minecraft-server:java21`,
@@ -95,7 +97,7 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
     let labels = server_labels(p.id);
     let annotations = server_annotations(p);
 
-    let resources = pod_resources(p.memory_mi);
+    let resources = pod_resources(p.memory_mi, p.cpu_millicores);
 
     let container = Container {
         name: "mc".to_owned(),
@@ -314,10 +316,10 @@ pub fn rcon_password() -> String {
 /// overprovisioned, so binding scheduler-visible requests to the
 /// per-server budget would force the operator to right-size every
 /// server before deploying. Limits still cap runaway containers.
-fn pod_resources(memory_mi: i64) -> ResourceRequirements {
+fn pod_resources(memory_mi: i64, cpu_millicores: i64) -> ResourceRequirements {
     let mut limits: BTreeMap<String, Quantity> = BTreeMap::new();
     limits.insert("memory".to_owned(), Quantity(format!("{memory_mi}Mi")));
-    limits.insert("cpu".to_owned(), Quantity("2000m".to_owned()));
+    limits.insert("cpu".to_owned(), Quantity(format!("{cpu_millicores}m")));
     ResourceRequirements {
         requests: None,
         limits: Some(limits),
@@ -344,6 +346,7 @@ mod tests {
             namespace: "mc",
             mc_version: "1.21.4",
             memory_mi: 4096,
+            cpu_millicores: 2000,
             server_type: "vanilla",
             image: "itzg/minecraft-server:java21",
             command: None,

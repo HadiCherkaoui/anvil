@@ -26,6 +26,7 @@ pub struct ServerDetail {
     pub status: ServerStatus,
     pub mc_version: String,
     pub memory_mi: i64,
+    pub cpu_millicores: i64,
     pub server_type: String,
     pub exposure_mode: String,
     pub storage_class: Option<String>,
@@ -44,8 +45,6 @@ pub struct ServerDetail {
     pub latest_version_id: Option<i64>,
     /// Display name of the cached latest, if any.
     pub latest_version_name: Option<String>,
-    /// First lines of the changelog for the cached latest, if any.
-    pub latest_changelog_excerpt: Option<String>,
     /// `true` while the orchestrator is mid-update for this server.
     pub update_in_progress: bool,
 }
@@ -105,13 +104,11 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
 
     // Modpack-version JOIN + lock check; both are independent of the k8s
     // calls above so the fan-out is fine.
-    let mv: Option<(i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT latest_id, latest_name, changelog_excerpt
-         FROM modpack_versions WHERE server_id = ?",
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let mv: Option<(i64, String)> =
+        sqlx::query_as("SELECT latest_id, latest_name FROM modpack_versions WHERE server_id = ?")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?;
     let (source_kind, source_config_text): (String, String) =
         sqlx::query_as("SELECT source_kind, source_config FROM servers WHERE id = ?")
             .bind(id)
@@ -122,9 +119,9 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
     let current_version_id = source_config
         .get("current_version_id")
         .and_then(serde_json::Value::as_i64);
-    let (latest_version_id, latest_version_name, latest_changelog_excerpt) = match mv {
-        Some((id, name, excerpt)) => (Some(id), Some(name), excerpt),
-        None => (None, None, None),
+    let (latest_version_id, latest_version_name) = match mv {
+        Some((id, name)) => (Some(id), Some(name)),
+        None => (None, None),
     };
     let update_available = match (current_version_id, latest_version_id) {
         (Some(cur), Some(latest)) => cur != latest,
@@ -142,6 +139,7 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         status,
         mc_version: row.mc_version,
         memory_mi: row.memory_mi,
+        cpu_millicores: row.cpu_millicores,
         server_type: row.server_type,
         exposure_mode: row.exposure_mode,
         storage_class: row.storage_class,
@@ -155,7 +153,6 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         update_available,
         latest_version_id,
         latest_version_name,
-        latest_changelog_excerpt,
         update_in_progress,
     })
 }
@@ -166,6 +163,7 @@ pub(crate) struct ServerRow {
     pub name: String,
     pub mc_version: String,
     pub memory_mi: i64,
+    pub cpu_millicores: i64,
     pub server_type: String,
     pub exposure_mode: String,
     pub storage_class: Option<String>,
@@ -182,6 +180,7 @@ type ServerRowTuple = (
     String,
     String,
     i64,
+    i64,
     String,
     String,
     Option<String>,
@@ -195,7 +194,7 @@ type ServerRowTuple = (
 /// when no row exists.
 pub(crate) async fn fetch_server_row(pool: &SqlitePool, id: &str) -> Result<ServerRow, AppError> {
     let opt: Option<ServerRowTuple> = sqlx::query_as(
-        "SELECT id, name, mc_version, memory_mi, server_type, exposure_mode,
+        "SELECT id, name, mc_version, memory_mi, cpu_millicores, server_type, exposure_mode,
                 storage_class, storage_size_gi, nodeport, created_at, last_started_at
          FROM servers WHERE id = ?",
     )
@@ -210,6 +209,7 @@ pub(crate) async fn fetch_server_row(pool: &SqlitePool, id: &str) -> Result<Serv
             name,
             mc_version,
             memory_mi,
+            cpu_millicores,
             server_type,
             exposure_mode,
             storage_class,
@@ -222,6 +222,7 @@ pub(crate) async fn fetch_server_row(pool: &SqlitePool, id: &str) -> Result<Serv
             name,
             mc_version,
             memory_mi,
+            cpu_millicores,
             server_type,
             exposure_mode,
             storage_class,
