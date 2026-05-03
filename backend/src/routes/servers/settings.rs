@@ -14,7 +14,9 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::modpack::curseforge::AutoUpdateMode;
 use crate::routes::servers::create::insert_audit;
-use crate::validation::{validate_cpu_millicores, validate_memory_mi};
+use crate::validation::{
+    validate_cpu_millicores, validate_force_version, validate_memory_mi, validate_version_skip,
+};
 
 /// Request body — every field optional, only present fields update.
 #[derive(Debug, Default, Deserialize)]
@@ -61,6 +63,12 @@ pub async fn handle(
     }
     if let Some(c) = req.cpu_millicores {
         validate_cpu_millicores(c)?;
+    }
+    if let Some(skips) = req.version_skip.as_ref() {
+        validate_version_skip(skips)?;
+    }
+    if let Some(Some(v)) = req.force_version.as_ref() {
+        validate_force_version(v)?;
     }
 
     // Resource fields land independently of source_config. COALESCE preserves

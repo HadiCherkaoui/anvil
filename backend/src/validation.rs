@@ -4,13 +4,14 @@
 //! that error messages require. They run before any kube or DB call so
 //! invalid requests short-circuit with a 400 response.
 
+use crate::AppState;
 use crate::error::AppError;
 
-/// Minecraft versions Anvil offers in the UI.
+/// Offline floor for Minecraft version validation.
 ///
-/// Hardcoded per CLAUDE.md anti-overengineering: there are only ~10 we
-/// care about and a discovery service is out of scope. Bumping this
-/// list is a one-line code change in M3.
+/// The live source is the cached Mojang manifest in
+/// `AppState::mc_versions_cache`; this fallback list keeps the panel
+/// usable when the manifest endpoint is unreachable.
 pub const KNOWN_MC_VERSIONS: &[&str] =
     &["1.20.4", "1.20.6", "1.21.0", "1.21.1", "1.21.3", "1.21.4"];
 
@@ -28,6 +29,20 @@ const MEMORY_MI_STEP: i64 = 1024;
 const CPU_MILLICORES_MIN: i64 = 250;
 /// Maximum CPU (millicores). 16000m matches the cluster-profile ceiling.
 const CPU_MILLICORES_MAX: i64 = 16_000;
+
+/// Minimum PVC size (GiB).
+const STORAGE_SIZE_GI_MIN: i64 = 10;
+/// Maximum PVC size (GiB). Generous ceiling; anything more is a misconfig.
+const STORAGE_SIZE_GI_MAX: i64 = 500;
+
+/// Maximum length of a `CurseForge` slug.
+const SLUG_MAX_LEN: usize = 200;
+
+/// Maximum length of a `force_version` string.
+const FORCE_VERSION_MAX_LEN: usize = 128;
+
+/// Maximum entries in a `version_skip` list.
+const VERSION_SKIP_MAX_LEN: usize = 50;
 
 /// Validates a server name against RFC 1123 label rules.
 ///
@@ -103,20 +118,113 @@ pub fn validate_cpu_millicores(m: i64) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Validates that `version` is in [`KNOWN_MC_VERSIONS`].
+/// Returns `true` when `version` is in the offline floor.
+///
+/// Used by [`validate_mc_version`] as the fallback path; broken out so it
+/// is unit-testable without an [`AppState`].
+#[must_use]
+pub fn is_known_mc_version_offline(version: &str) -> bool {
+    KNOWN_MC_VERSIONS.contains(&version)
+}
+
+/// Validates that `version` is currently advertised by `/cluster/mc-versions`.
+///
+/// Consults the in-memory Mojang manifest cache; falls back to the offline
+/// floor [`KNOWN_MC_VERSIONS`] when the cache is empty or stale (the cache
+/// is populated lazily when the endpoint is first hit).
 ///
 /// # Errors
 ///
 /// Returns [`AppError::BadRequest`] with `code = "mc_version_unknown"` if
-/// the version is not in the allow-list.
-pub fn validate_mc_version(version: &str) -> Result<(), AppError> {
-    if KNOWN_MC_VERSIONS.contains(&version) {
+/// the version is not in the live list AND not in the offline floor.
+pub async fn validate_mc_version(state: &AppState, version: &str) -> Result<(), AppError> {
+    if let Some(cached) = crate::routes::mc_versions::cached(&state.mc_versions_cache).await
+        && cached.iter().any(|v| v == version)
+    {
+        return Ok(());
+    }
+    if is_known_mc_version_offline(version) {
         return Ok(());
     }
     Err(AppError::BadRequest {
         code: "mc_version_unknown",
-        message: format!("mc_version {version:?} not in {KNOWN_MC_VERSIONS:?}"),
+        message: format!("mc_version {version:?} is not a known release"),
     })
+}
+
+/// Validates the `storage_size_gi` field against the supported range.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "storage_size_invalid"` when
+/// the value is out of `[10, 500]`.
+pub fn validate_storage_size_gi(gi: i64) -> Result<(), AppError> {
+    if !(STORAGE_SIZE_GI_MIN..=STORAGE_SIZE_GI_MAX).contains(&gi) {
+        return Err(AppError::BadRequest {
+            code: "storage_size_invalid",
+            message: format!(
+                "storage_size_gi must be in [{STORAGE_SIZE_GI_MIN}..={STORAGE_SIZE_GI_MAX}]"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validates a `CurseForge` slug — non-blank, ≤ 200 characters after trimming.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "slug_invalid"`.
+pub fn validate_slug(s: &str) -> Result<(), AppError> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed.len() > SLUG_MAX_LEN {
+        return Err(AppError::BadRequest {
+            code: "slug_invalid",
+            message: format!("slug must be 1..={SLUG_MAX_LEN} non-blank characters"),
+        });
+    }
+    Ok(())
+}
+
+/// Validates `force_version` — `[A-Za-z0-9._-]{1,128}`.
+///
+/// Accepts ASCII alphanumerics plus `.`, `_`, `-`; bounded to 128 bytes.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "force_version_invalid"`.
+pub fn validate_force_version(v: &str) -> Result<(), AppError> {
+    if v.is_empty() || v.len() > FORCE_VERSION_MAX_LEN {
+        return Err(AppError::BadRequest {
+            code: "force_version_invalid",
+            message: format!("force_version must be 1..={FORCE_VERSION_MAX_LEN} characters"),
+        });
+    }
+    if !v
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(AppError::BadRequest {
+            code: "force_version_invalid",
+            message: "force_version may only contain [A-Za-z0-9._-]".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Validates `version_skip` — at most 50 entries.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "version_skip_invalid"`.
+pub fn validate_version_skip(list: &[String]) -> Result<(), AppError> {
+    if list.len() > VERSION_SKIP_MAX_LEN {
+        return Err(AppError::BadRequest {
+            code: "version_skip_invalid",
+            message: format!("version_skip must have ≤ {VERSION_SKIP_MAX_LEN} entries"),
+        });
+    }
+    Ok(())
 }
 
 /// Validates that `mode` is in [`KNOWN_EXPOSURE_MODES`].
@@ -191,15 +299,51 @@ mod tests {
     }
 
     #[test]
-    fn known_versions_pass() {
-        assert!(validate_mc_version("1.21.4").is_ok());
-        assert!(validate_mc_version("1.20.4").is_ok());
+    fn offline_versions_pass() {
+        assert!(is_known_mc_version_offline("1.21.4"));
+        assert!(is_known_mc_version_offline("1.20.4"));
     }
 
     #[test]
-    fn unknown_version_fails() {
-        assert!(validate_mc_version("1.7.10").is_err());
-        assert!(validate_mc_version("garbage").is_err());
+    fn offline_unknown_fails() {
+        assert!(!is_known_mc_version_offline("1.7.10"));
+        assert!(!is_known_mc_version_offline("garbage"));
+    }
+
+    #[test]
+    fn storage_size_bounds() {
+        assert!(validate_storage_size_gi(0).is_err());
+        assert!(validate_storage_size_gi(9).is_err());
+        assert!(validate_storage_size_gi(10).is_ok());
+        assert!(validate_storage_size_gi(500).is_ok());
+        assert!(validate_storage_size_gi(501).is_err());
+    }
+
+    #[test]
+    fn slug_length_cap() {
+        assert!(validate_slug("ok").is_ok());
+        assert!(validate_slug("").is_err());
+        assert!(validate_slug("   ").is_err());
+        assert!(validate_slug(&"a".repeat(200)).is_ok());
+        assert!(validate_slug(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn force_version_format() {
+        assert!(validate_force_version("1.21.4").is_ok());
+        assert!(validate_force_version("ATM-11_v3.2-final").is_ok());
+        assert!(validate_force_version("").is_err());
+        assert!(validate_force_version("bad version!").is_err());
+        assert!(validate_force_version("contains space").is_err());
+        assert!(validate_force_version(&"a".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn version_skip_cap() {
+        let ok: Vec<String> = (0..50).map(|i| format!("v{i}")).collect();
+        assert!(validate_version_skip(&ok).is_ok());
+        let too_many: Vec<String> = (0..51).map(|i| format!("v{i}")).collect();
+        assert!(validate_version_skip(&too_many).is_err());
     }
 
     #[test]

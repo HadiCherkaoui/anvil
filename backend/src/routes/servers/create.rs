@@ -34,7 +34,7 @@ use crate::modpack::curseforge::{AutoUpdateMode, Channel, Config as CfConfig};
 use crate::modpack::{CurseForgeServerPack, ModpackProvider, ProviderContext, VanillaProvider};
 use crate::validation::{
     validate_cpu_millicores, validate_exposure_mode, validate_mc_version, validate_memory_mi,
-    validate_name,
+    validate_name, validate_storage_size_gi,
 };
 
 /// Lowest `NodePort` allocated by the panel.
@@ -149,12 +149,7 @@ pub async fn handle(
     }
 
     let storage_size_gi = storage_size_gi.unwrap_or(DEFAULT_STORAGE_SIZE_GI);
-    if storage_size_gi <= 0 || storage_size_gi > 500 {
-        return Err(AppError::BadRequest {
-            code: "storage_size_invalid",
-            message: format!("storage_size_gi must be in [1..=500], got {storage_size_gi}"),
-        });
-    }
+    validate_storage_size_gi(storage_size_gi)?;
     let storage_class = storage_class.filter(|s| !s.is_empty());
     let effective_storage_class = storage_class.clone().or_else(|| {
         if state.mc_storage_class.is_empty() {
@@ -190,7 +185,7 @@ pub async fn handle(
                 code: "mc_version_required",
                 message: "mc_version is required for vanilla servers".to_owned(),
             })?;
-            validate_mc_version(&mc_v)?;
+            validate_mc_version(&state, &mc_v).await?;
             ResolvedSource {
                 provider: Box::new(VanillaProvider::new()),
                 mc_version: mc_v,

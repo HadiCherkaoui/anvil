@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::error::AppError;
+use crate::validation::validate_slug;
 
 /// Query string for the resolve endpoint.
 #[derive(Debug, Deserialize)]
@@ -40,12 +41,7 @@ pub async fn resolve_curseforge(
         code: "cf_disabled",
         message: "CurseForge support is not enabled on this panel".to_owned(),
     })?;
-    if q.slug.trim().is_empty() {
-        return Err(AppError::BadRequest {
-            code: "cf_url_unparseable",
-            message: "slug query parameter must be non-empty".to_owned(),
-        });
-    }
+    validate_slug(&q.slug)?;
 
     let project = cf
         .resolve_slug(q.slug.trim())
