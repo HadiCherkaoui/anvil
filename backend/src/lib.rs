@@ -18,6 +18,7 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 use crate::auth::OidcState;
 use crate::modpack::{CurseForgeClient, orchestrator::UpdatePhase};
 use crate::routes::cluster::CapabilitiesCache;
+use crate::routes::mc_versions::McVersionsCache;
 
 pub mod auth;
 pub mod config;
@@ -58,6 +59,8 @@ pub struct AppState {
     pub loadbalancer_supported: bool,
     /// 5-minute cache for `GET /api/cluster/capabilities`.
     pub capabilities_cache: CapabilitiesCache,
+    /// 24-hour cache for `GET /api/cluster/mc-versions`.
+    pub mc_versions_cache: McVersionsCache,
     /// HMAC secret for the session JWT.
     pub session_key: Vec<u8>,
     /// AES-GCM key (derived from `session_key`) for the encrypted OIDC-state cookie.
@@ -97,6 +100,7 @@ impl fmt::Debug for AppState {
             .field("node_host", &self.node_host)
             .field("loadbalancer_supported", &self.loadbalancer_supported)
             .field("capabilities_cache", &"<Mutex<...>>")
+            .field("mc_versions_cache", &"<Mutex<...>>")
             .field("session_key", &"<redacted>")
             .field("cookie_key", &"<redacted>")
             .field("allowed_subs", &self.allowed_subs)

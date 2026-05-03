@@ -9,6 +9,7 @@ use crate::auth::{handlers as auth, require_session};
 
 pub mod cluster;
 pub mod health;
+pub mod mc_versions;
 pub mod modpack;
 pub mod servers;
 
@@ -85,6 +86,7 @@ fn api_routes(state: AppState) -> Router<AppState> {
             axum::routing::patch(servers::settings::handle),
         )
         .route("/api/cluster/capabilities", get(cluster::handle))
+        .route("/api/cluster/mc-versions", get(mc_versions::handle))
         .route(
             "/api/modpack/curseforge/resolve",
             get(modpack::resolve_curseforge),

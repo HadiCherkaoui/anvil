@@ -44,6 +44,7 @@ fn test_state(allowed: Vec<String>) -> AppState {
         node_host: "host".into(),
         loadbalancer_supported: false,
         capabilities_cache: anvil::routes::cluster::new_cache(),
+        mc_versions_cache: anvil::routes::mc_versions::new_cache(),
         session_key,
         cookie_key,
         allowed_subs: allowed,
