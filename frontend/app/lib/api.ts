@@ -587,14 +587,11 @@ export async function addPendingMod(
 	op: ModPendingOp,
 ): Promise<void> {
 	const validated = modPendingOpSchema.parse(op);
-	const res = await fetch(
-		`/api/servers/${encodeURIComponent(serverId)}/mods`,
-		{
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(validated),
-		},
-	);
+	const res = await fetch(`/api/servers/${encodeURIComponent(serverId)}/mods`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(validated),
+	});
 	await noContentOrThrow(res);
 }
 
@@ -619,4 +616,131 @@ export async function applyMods(
 		{ method: "POST" },
 	);
 	return jsonOrThrow(res, modsApplyResponseSchema);
+}
+
+// --- players (sub-project C) --------------------------------------------------
+
+export const onlinePlayersSchema = z.object({
+	count: z.number().int().nonnegative(),
+	max: z.number().int().nonnegative(),
+	players: z.array(z.string()),
+});
+
+export const banEntrySchema = z.object({
+	name: z.string(),
+	reason: z.string(),
+});
+
+export const banIpEntrySchema = z.object({
+	ip: z.string(),
+	reason: z.string(),
+});
+
+export const playerEventSchema = z.object({
+	kind: z.enum(["joined", "left"]),
+	player: z.string(),
+	ts_ms: z.number().int(),
+});
+
+export const playersResponseSchema = z.object({
+	online: onlinePlayersSchema,
+	whitelist: z.array(z.string()),
+	banlist: z.object({
+		players: z.array(banEntrySchema),
+		ips: z.array(banIpEntrySchema),
+	}),
+	history: z.array(playerEventSchema),
+});
+
+export const gamemodeSchema = z.enum([
+	"survival",
+	"creative",
+	"adventure",
+	"spectator",
+]);
+
+export const playerActionSchema = z.discriminatedUnion("action", [
+	z.object({
+		action: z.literal("kick"),
+		player: z.string(),
+		reason: z.string().optional(),
+	}),
+	z.object({
+		action: z.literal("ban"),
+		player: z.string(),
+		reason: z.string().optional(),
+	}),
+	z.object({
+		action: z.literal("ban-ip"),
+		player: z.string(),
+		reason: z.string().optional(),
+	}),
+	z.object({ action: z.literal("pardon"), player: z.string() }),
+	z.object({ action: z.literal("pardon-ip"), ip: z.string() }),
+	z.object({ action: z.literal("op"), player: z.string() }),
+	z.object({ action: z.literal("deop"), player: z.string() }),
+	z.object({
+		action: z.literal("gamemode"),
+		player: z.string(),
+		mode: gamemodeSchema,
+	}),
+	z.object({
+		action: z.literal("tell"),
+		player: z.string(),
+		message: z.string(),
+	}),
+	z.object({ action: z.literal("whitelist-add"), player: z.string() }),
+	z.object({ action: z.literal("whitelist-remove"), player: z.string() }),
+]);
+
+export type PlayersResponse = z.infer<typeof playersResponseSchema>;
+export type PlayerEvent = z.infer<typeof playerEventSchema>;
+export type BanEntry = z.infer<typeof banEntrySchema>;
+export type BanIpEntry = z.infer<typeof banIpEntrySchema>;
+export type Gamemode = z.infer<typeof gamemodeSchema>;
+export type PlayerAction = z.infer<typeof playerActionSchema>;
+
+/// Fetches the bulk Players response. 409 on stopped server is
+/// surfaced as a typed ApiError (`code: "server_not_running"`).
+export async function fetchPlayers(
+	id: string,
+	signal: AbortSignal,
+): Promise<PlayersResponse> {
+	const res = await fetch(`/api/servers/${encodeURIComponent(id)}/players`, {
+		signal,
+	});
+	return jsonOrThrow(res, playersResponseSchema);
+}
+
+/// Runs one player action. 204 on success.
+export async function runPlayerAction(
+	id: string,
+	action: PlayerAction,
+): Promise<void> {
+	const validated = playerActionSchema.parse(action);
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(id)}/players/action`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(validated),
+		},
+	);
+	await noContentOrThrow(res);
+}
+
+/// Sends `say <message>` to the server.
+export async function broadcastMessage(
+	id: string,
+	message: string,
+): Promise<void> {
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(id)}/players/broadcast`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ message }),
+		},
+	);
+	await noContentOrThrow(res);
 }
