@@ -390,13 +390,13 @@ pub fn validate_mc_username(s: &str) -> Result<&str, AppError> {
 ///
 /// # Errors
 ///
-/// `AppError::BadRequest` with `code = "reason_too_long"` or
+/// Returns [`AppError::BadRequest`] with `code = "reason_too_long"` or
 /// `code = "reason_has_control_char"`.
 pub fn validate_kick_reason(s: &str) -> Result<&str, AppError> {
     if s.len() > REASON_MAX_LEN {
         return Err(AppError::BadRequest {
             code: "reason_too_long",
-            message: format!("reason must be ≤ {REASON_MAX_LEN} chars"),
+            message: format!("reason must be ≤ {REASON_MAX_LEN} bytes"),
         });
     }
     if s.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
@@ -413,13 +413,13 @@ pub fn validate_kick_reason(s: &str) -> Result<&str, AppError> {
 ///
 /// # Errors
 ///
-/// `AppError::BadRequest` with `code = "message_too_long"` or
+/// Returns [`AppError::BadRequest`] with `code = "message_too_long"` or
 /// `code = "message_has_control_char"`.
 pub fn validate_chat_message(s: &str) -> Result<&str, AppError> {
     if s.len() > CHAT_MAX_LEN {
         return Err(AppError::BadRequest {
             code: "message_too_long",
-            message: format!("message must be ≤ {CHAT_MAX_LEN} chars"),
+            message: format!("message must be ≤ {CHAT_MAX_LEN} bytes"),
         });
     }
     if s.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
@@ -451,7 +451,7 @@ pub fn validate_gamemode(s: &str) -> Result<&str, AppError> {
 ///
 /// # Errors
 ///
-/// `AppError::BadRequest` with `code = "ip_invalid"`.
+/// Returns [`AppError::BadRequest`] with `code = "ip_invalid"`.
 pub fn validate_ip_v4_or_v6(s: &str) -> Result<&str, AppError> {
     if s.parse::<std::net::IpAddr>().is_ok() {
         Ok(s)
