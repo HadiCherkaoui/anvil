@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { ApiError, sendRconCommand } from "../lib/api";
+
 import { Button } from "./Button";
 
 interface RconCommandProps {
@@ -51,10 +52,12 @@ export function RconCommand({
 		[cmd, serverId],
 	);
 
+	const inputDisabled = disabled || busy;
+
 	return (
-		<section className="flex flex-col gap-3 rounded-lg border border-slate-800 p-4">
-			<h2 className="text-xs uppercase tracking-wide text-slate-400">
-				Send command
+		<section className="flex flex-col gap-3 rounded-md border border-border bg-surface p-4">
+			<h2 className="font-mono text-[11px] uppercase tracking-wider text-text-muted">
+				send command
 			</h2>
 			<form onSubmit={handleSubmit} className="flex gap-2">
 				<input
@@ -63,23 +66,25 @@ export function RconCommand({
 					onChange={(ev) => {
 						setCmd(ev.target.value);
 					}}
-					placeholder="say hi"
-					disabled={disabled || busy}
-					className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 font-mono text-sm text-slate-100 placeholder:text-slate-500 focus:border-slate-500 focus:outline-none disabled:opacity-50"
+					placeholder={disabled ? "server is not running" : "say hi"}
+					disabled={inputDisabled}
+					className="flex-1 rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[13px] text-text-body placeholder:text-text-faint focus:border-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
 					autoComplete="off"
 					spellCheck={false}
 				/>
 				<Button
 					variant="primary"
 					type="submit"
-					disabled={disabled || busy || cmd.trim().length === 0}
+					disabled={inputDisabled || cmd.trim().length === 0}
 				>
 					send
 				</Button>
 			</form>
-			{error !== null && <p className="text-sm text-red-400">{error}</p>}
+			{error !== null && (
+				<p className="font-mono text-[12px] text-state-error">{error}</p>
+			)}
 			{output !== null && error === null && (
-				<pre className="max-h-40 overflow-auto rounded-md bg-slate-950 p-3 font-mono text-xs leading-relaxed text-slate-300">
+				<pre className="max-h-40 overflow-auto rounded-sm bg-bg p-3 font-mono text-[12px] leading-relaxed text-text-body">
 					{output.length === 0 ? "(empty response)" : output}
 				</pre>
 			)}

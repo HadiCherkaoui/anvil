@@ -276,6 +276,16 @@ export async function fetchServerDetail(
 	return jsonOrThrow(res, serverDetailSchema);
 }
 
+export async function fetchServerByName(
+	name: string,
+	signal: AbortSignal,
+): Promise<ServerDetail> {
+	const res = await fetch(`/api/servers/by-name/${encodeURIComponent(name)}`, {
+		signal,
+	});
+	return jsonOrThrow(res, serverDetailSchema);
+}
+
 export async function fetchCapabilities(
 	signal: AbortSignal,
 ): Promise<ClusterCapabilities> {

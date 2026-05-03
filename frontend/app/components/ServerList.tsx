@@ -96,7 +96,7 @@ function ServerRow({ server, onActionDone }: ServerRowProps): ReactElement {
 	const [busy, setBusy] = useState(false);
 
 	const sourceBarClass = SOURCE_BAR[server.source_kind];
-	const detailHref = `/servers/${encodeURIComponent(server.name)}`;
+	const detailHref = `/servers?name=${encodeURIComponent(server.name)}`;
 
 	const navigate = (): void => {
 		router.push(detailHref);
@@ -227,7 +227,7 @@ function ServerRow({ server, onActionDone }: ServerRowProps): ReactElement {
 								id: "console",
 								label: "open console",
 								onSelect: () => {
-									router.push(`${detailHref}/console`);
+									router.push(`${detailHref}&tab=console`);
 								},
 							},
 						]}

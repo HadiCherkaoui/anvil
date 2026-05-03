@@ -8,6 +8,8 @@ import {
 	type LogLevel,
 	useLogsStream,
 } from "../lib/logs-stream";
+import { friendlyEndReason } from "../lib/end-reason";
+import { cn } from "../lib/cn";
 
 interface LiveLogPanelProps {
 	readonly serverId: string;
@@ -16,9 +18,16 @@ interface LiveLogPanelProps {
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 
 const LEVEL_CLASS: Record<LogLevel, string> = {
-	info: "text-slate-300",
-	warn: "text-amber-300",
-	error: "text-red-400",
+	info: "text-text-body",
+	warn: "text-state-warning",
+	error: "text-state-error",
+};
+
+const STATUS_DOT: Record<ConnectionStatus, string> = {
+	connecting: "bg-text-muted",
+	live: "bg-state-running",
+	reconnecting: "bg-state-warning animate-pulse",
+	closed: "bg-text-faint",
 };
 
 export function LiveLogPanel({ serverId }: LiveLogPanelProps): ReactElement {
@@ -47,19 +56,27 @@ export function LiveLogPanel({ serverId }: LiveLogPanelProps): ReactElement {
 		setAutoScroll(true);
 	};
 
+	const statusText =
+		endedReason !== null ? `ended · ${friendlyEndReason(endedReason)}` : status;
+
 	return (
-		<section className="flex flex-col gap-3 rounded-lg border border-slate-800 p-4">
+		<section className="flex flex-col gap-3 rounded-md border border-border bg-surface p-4">
 			<div className="flex items-baseline justify-between">
-				<h2 className="text-xs uppercase tracking-wide text-slate-400">
-					Live logs
+				<h2 className="font-mono text-[11px] uppercase tracking-wider text-text-muted">
+					live logs
 				</h2>
-				<div className="flex items-center gap-3 text-xs">
-					<StatusDot status={status} endedReason={endedReason} />
+				<div className="flex items-center gap-3 font-mono text-[11px] text-text-muted">
+					<span className="inline-flex items-center gap-1.5">
+						<span
+							className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[status])}
+						/>
+						<span>{statusText}</span>
+					</span>
 					{!autoScroll && (
 						<button
 							type="button"
 							onClick={jumpToLatest}
-							className="text-xs text-slate-400 hover:text-slate-100"
+							className="text-text-muted transition-colors hover:text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-sm"
 						>
 							jump to latest ↓
 						</button>
@@ -69,10 +86,10 @@ export function LiveLogPanel({ serverId }: LiveLogPanelProps): ReactElement {
 			<div
 				ref={containerRef}
 				onScroll={onScroll}
-				className="max-h-96 overflow-auto rounded-md bg-slate-950 p-3 font-mono text-xs leading-relaxed"
+				className="max-h-96 overflow-auto rounded-sm bg-bg p-3 font-mono text-[12px] leading-relaxed"
 			>
 				{lines.length === 0 ? (
-					<span className="text-slate-500">(waiting for log lines…)</span>
+					<span className="text-text-faint">(waiting for log lines…)</span>
 				) : (
 					lines.map((l) => (
 						<div key={l.key} className={LEVEL_CLASS[l.level]}>
@@ -82,30 +99,11 @@ export function LiveLogPanel({ serverId }: LiveLogPanelProps): ReactElement {
 				)}
 			</div>
 			{lastError !== null && (
-				<p className="text-xs text-red-400">{lastError}</p>
+				<p className="font-mono text-[11px] text-state-error">{lastError}</p>
 			)}
 		</section>
 	);
 }
 
-interface StatusDotProps {
-	readonly status: ConnectionStatus;
-	readonly endedReason: EndReason | null;
-}
-
-function StatusDot({ status, endedReason }: StatusDotProps): ReactElement {
-	const labelMap: Record<ConnectionStatus, { dot: string; text: string }> = {
-		connecting: { dot: "bg-amber-400", text: "connecting" },
-		live: { dot: "bg-green-400", text: "live" },
-		reconnecting: { dot: "bg-amber-400", text: "reconnecting" },
-		closed: { dot: "bg-slate-500", text: "closed" },
-	};
-	const display = labelMap[status];
-	const text = endedReason !== null ? `ended (${endedReason})` : display.text;
-	return (
-		<span className="inline-flex items-center gap-1.5 text-slate-400">
-			<span className={`h-2 w-2 rounded-full ${display.dot}`} />
-			<span>{text}</span>
-		</span>
-	);
-}
+// kept for legacy import compatibility but no longer rendered
+export type { EndReason };

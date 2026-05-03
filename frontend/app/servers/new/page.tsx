@@ -1,0 +1,483 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import {
+	useEffect,
+	useMemo,
+	useState,
+	type ChangeEvent,
+	type ReactElement,
+	type ReactNode,
+} from "react";
+
+import {
+	ApiError,
+	createServer,
+	fetchCapabilities,
+	resolveCurseForgeSlug,
+	type CfChannel,
+	type ClusterCapabilities,
+	type CreateServerRequest,
+	type ExposureMode,
+} from "../../lib/api";
+import { useMcVersions } from "../../lib/use-mc-versions";
+
+import {
+	BuildSlip,
+	CreateFormContext,
+	type CreateDraft,
+	type CreateType,
+} from "../../components/BuildSlip";
+import { Button } from "../../components/Button";
+import { Card } from "../../components/Card";
+import { RangeSlider } from "../../components/RangeSlider";
+import { SegmentedControl } from "../../components/SegmentedControl";
+import { useToast } from "../../components/Toast";
+
+const TYPE_OPTIONS: ReadonlyArray<{ value: CreateType; label: string }> = [
+	{ value: "vanilla", label: "vanilla" },
+	{ value: "modpack", label: "modpack" },
+];
+
+const CHANNEL_OPTIONS: ReadonlyArray<{ value: CfChannel; label: string }> = [
+	{ value: "release", label: "release" },
+	{ value: "beta", label: "beta" },
+	{ value: "alpha", label: "alpha" },
+];
+
+const INITIAL: CreateDraft = {
+	name: "",
+	type: "vanilla",
+	mc_version: null,
+	cpu_millicores: 2000,
+	memory_mi: 4096,
+	storage_size_gi: 20,
+	storage_class: null,
+	exposure_mode: "clusterip",
+	server_type: "vanilla",
+	curseforge: null,
+};
+
+function buildExposureOptions(
+	caps: ClusterCapabilities | null,
+): ReadonlyArray<{ value: ExposureMode; label: string }> {
+	const opts: Array<{ value: ExposureMode; label: string }> = [
+		{ value: "clusterip", label: "clusterip" },
+	];
+	if (caps?.nodeport ?? true)
+		opts.push({ value: "nodeport", label: "nodeport" });
+	if (caps?.loadbalancer === true) {
+		opts.push({ value: "loadbalancer", label: "loadbalancer" });
+	}
+	return opts;
+}
+
+export default function NewServerPage(): ReactElement {
+	const router = useRouter();
+	const toast = useToast();
+	const versions = useMcVersions();
+	const [draft, setDraft] = useState<CreateDraft>(INITIAL);
+	const [submitting, setSubmitting] = useState(false);
+	const [caps, setCaps] = useState<ClusterCapabilities | null>(null);
+	const [slugInput, setSlugInput] = useState("");
+	const [slugBusy, setSlugBusy] = useState(false);
+	const [slugError, setSlugError] = useState<string | null>(null);
+
+	useEffect(() => {
+		const ctrl = new AbortController();
+		fetchCapabilities(ctrl.signal)
+			.then(setCaps)
+			.catch(() => {
+				// best-effort — exposure dropdown falls back to clusterip-only
+			});
+		return () => {
+			ctrl.abort();
+		};
+	}, []);
+
+	const set = <K extends keyof CreateDraft>(k: K, v: CreateDraft[K]): void => {
+		setDraft((d) => ({ ...d, [k]: v }));
+	};
+
+	const exposureOptions = useMemo(() => buildExposureOptions(caps), [caps]);
+
+	const missing: string[] = [];
+	if (draft.name === "") missing.push("name");
+	if (draft.mc_version === null || draft.mc_version === "")
+		missing.push("mc version");
+	if (draft.type === "modpack" && draft.curseforge === null)
+		missing.push("modpack");
+	const valid = missing.length === 0;
+	const status = submitting ? "submitting" : valid ? "valid" : "draft";
+
+	const onResolveSlug = (): void => {
+		setSlugError(null);
+		setSlugBusy(true);
+		resolveCurseForgeSlug(slugInput.trim())
+			.then((res) => {
+				set("curseforge", { project_id: res.project_id, channel: "release" });
+				toast.push(`resolved · ${res.name}`, "success");
+			})
+			.catch((err: unknown) => {
+				const msg =
+					err instanceof ApiError
+						? `${err.code}: ${err.message}`
+						: err instanceof Error
+							? err.message
+							: "unknown error";
+				setSlugError(msg);
+			})
+			.finally(() => {
+				setSlugBusy(false);
+			});
+	};
+
+	const submit = (): void => {
+		if (!valid || draft.mc_version === null) return;
+		setSubmitting(true);
+		const isModpack = draft.type === "modpack" && draft.curseforge !== null;
+		const request: CreateServerRequest = {
+			name: draft.name,
+			memory_mi: draft.memory_mi,
+			cpu_millicores: draft.cpu_millicores,
+			exposure_mode: draft.exposure_mode,
+			storage_size_gi: draft.storage_size_gi,
+			...(draft.storage_class !== null && draft.storage_class !== ""
+				? { storage_class: draft.storage_class }
+				: {}),
+			server_type: isModpack ? "curseforge" : "vanilla",
+			...(isModpack ? {} : { mc_version: draft.mc_version }),
+			...(isModpack && draft.curseforge !== null
+				? {
+						curseforge: {
+							project_id: draft.curseforge.project_id,
+							channel: draft.curseforge.channel,
+						},
+					}
+				: {}),
+		};
+		createServer(request)
+			.then((created) => {
+				toast.push(`${created.name} forged`, "success");
+				router.push(`/servers/${encodeURIComponent(created.name)}`);
+			})
+			.catch((err: unknown) => {
+				const msg =
+					err instanceof ApiError
+						? `${err.code}: ${err.message}`
+						: err instanceof Error
+							? err.message
+							: "unknown error";
+				toast.push(`create failed · ${msg}`, "error");
+				setSubmitting(false);
+			});
+	};
+
+	return (
+		<CreateFormContext.Provider value={draft}>
+			<div className="grid grid-cols-1 gap-8 px-5 py-6 lg:grid-cols-[320px_1fr]">
+				<BuildSlip status={status} />
+				<div className="flex max-w-2xl flex-col gap-4">
+					<Section number="01" title="identity">
+						<Card>
+							<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+								name
+							</label>
+							<input
+								value={draft.name}
+								onChange={(e: ChangeEvent<HTMLInputElement>) => {
+									set("name", e.target.value);
+								}}
+								placeholder="e.g. atm-11-friends"
+								className="w-full rounded-md border border-border bg-bg px-3 py-2 font-mono text-[13px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+								autoComplete="off"
+								spellCheck={false}
+							/>
+							<p className="mt-1 font-mono text-[11px] text-text-faint">
+								lowercase, dashes, 1–63 chars, must start with a letter.
+							</p>
+						</Card>
+					</Section>
+
+					<Section number="02" title="type">
+						<Card>
+							<SegmentedControl
+								ariaLabel="server type"
+								value={draft.type}
+								onChange={(v) => {
+									set("type", v);
+									if (v === "vanilla") set("curseforge", null);
+								}}
+								options={TYPE_OPTIONS}
+							/>
+							<p className="mt-2 font-mono text-[11px] text-text-faint">
+								paper, fabric/forge runtimes arrive in v2.1.
+							</p>
+						</Card>
+					</Section>
+
+					<Section number="03" title="source">
+						<Card>
+							{draft.type === "vanilla" ? (
+								<div>
+									<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+										minecraft version
+									</label>
+									<select
+										value={draft.mc_version ?? ""}
+										onChange={(e) => {
+											set(
+												"mc_version",
+												e.target.value === "" ? null : e.target.value,
+											);
+										}}
+										className="rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-[12px] text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+									>
+										<option value="">— select —</option>
+										{(versions?.versions ?? []).map((v) => (
+											<option key={v} value={v}>
+												{v}
+											</option>
+										))}
+									</select>
+									{versions?.source === "fallback" && (
+										<p className="mt-1 font-mono text-[11px] text-state-warning">
+											mojang manifest unreachable · using offline fallback list
+										</p>
+									)}
+								</div>
+							) : (
+								<div className="flex flex-col gap-3">
+									<label className="block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+										curseforge slug
+									</label>
+									<div className="flex gap-2">
+										<input
+											value={slugInput}
+											onChange={(e) => {
+												setSlugInput(e.target.value);
+											}}
+											placeholder="all-the-mods-11"
+											className="flex-1 rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+											spellCheck={false}
+										/>
+										<Button
+											onClick={onResolveSlug}
+											disabled={slugBusy || slugInput.trim().length === 0}
+										>
+											resolve
+										</Button>
+									</div>
+									{slugError !== null && (
+										<p className="font-mono text-[11px] text-state-error">
+											{slugError}
+										</p>
+									)}
+									{draft.curseforge !== null && (
+										<>
+											<p className="font-mono text-[12px] text-text-body">
+												project · {draft.curseforge.project_id}
+											</p>
+											<div>
+												<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+													channel
+												</label>
+												<SegmentedControl
+													ariaLabel="release channel"
+													value={draft.curseforge.channel}
+													onChange={(v) => {
+														if (draft.curseforge !== null) {
+															set("curseforge", {
+																project_id: draft.curseforge.project_id,
+																channel: v,
+															});
+														}
+													}}
+													options={CHANNEL_OPTIONS}
+												/>
+											</div>
+											<p className="font-mono text-[11px] text-text-faint">
+												the latest matching ServerFiles file becomes the initial
+												version. mc version is read from the file name.
+											</p>
+											<input
+												type="hidden"
+												value={draft.mc_version ?? ""}
+												onChange={() => undefined}
+											/>
+										</>
+									)}
+									{draft.curseforge !== null && (
+										<div>
+											<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+												label this build as
+											</label>
+											<input
+												value={draft.mc_version ?? ""}
+												onChange={(e) => {
+													set(
+														"mc_version",
+														e.target.value === "" ? null : e.target.value,
+													);
+												}}
+												placeholder="e.g. atm-11-4.4"
+												className="w-full rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+												spellCheck={false}
+											/>
+										</div>
+									)}
+								</div>
+							)}
+						</Card>
+					</Section>
+
+					<Section number="04" title="resources">
+						<Card>
+							<div className="flex flex-col gap-4">
+								<RangeSlider
+									label="memory"
+									value={draft.memory_mi}
+									onChange={(v) => {
+										set("memory_mi", v);
+									}}
+									min={1024}
+									max={16384}
+									step={1024}
+									unit="MiB"
+								/>
+								<RangeSlider
+									label="cpu"
+									value={draft.cpu_millicores}
+									onChange={(v) => {
+										set("cpu_millicores", v);
+									}}
+									min={250}
+									max={16000}
+									step={250}
+									unit="m"
+								/>
+								{caps !== null && (
+									<p className="font-mono text-[11px] text-text-faint">
+										cluster headroom · {caps.available_cpu_cores.toFixed(1)}{" "}
+										cores allocatable
+									</p>
+								)}
+							</div>
+						</Card>
+					</Section>
+
+					<Section number="05" title="storage">
+						<Card>
+							<div className="flex flex-col gap-4">
+								<RangeSlider
+									label="size"
+									value={draft.storage_size_gi}
+									onChange={(v) => {
+										set("storage_size_gi", v);
+									}}
+									min={10}
+									max={500}
+									step={10}
+									unit="GiB"
+								/>
+								{caps !== null && caps.available_storage_classes.length > 1 && (
+									<div>
+										<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+											storage class
+										</label>
+										<select
+											value={draft.storage_class ?? ""}
+											onChange={(e) => {
+												set(
+													"storage_class",
+													e.target.value === "" ? null : e.target.value,
+												);
+											}}
+											className="rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-[12px] text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+										>
+											<option value="">
+												— default ({caps.default_storage_class ?? "?"}) —
+											</option>
+											{caps.available_storage_classes.map((c) => (
+												<option key={c} value={c}>
+													{c}
+												</option>
+											))}
+										</select>
+									</div>
+								)}
+							</div>
+						</Card>
+					</Section>
+
+					<Section number="06" title="network">
+						<Card>
+							<SegmentedControl
+								ariaLabel="exposure mode"
+								value={draft.exposure_mode}
+								onChange={(v) => {
+									set("exposure_mode", v);
+								}}
+								options={exposureOptions}
+							/>
+						</Card>
+					</Section>
+
+					<footer className="sticky bottom-0 -mx-5 mt-4 flex items-center justify-between border-t border-border bg-bg px-5 py-3">
+						<span className="font-mono text-[12px]">
+							{valid ? (
+								<span className="text-state-running">
+									● all sections valid · ready to forge
+								</span>
+							) : (
+								<span className="text-state-error">
+									× missing: {missing.join(", ")}
+								</span>
+							)}
+						</span>
+						<div className="flex gap-2">
+							<Button
+								onClick={() => {
+									router.push("/");
+								}}
+							>
+								cancel
+							</Button>
+							<Button
+								variant="primary"
+								disabled={!valid || submitting}
+								onClick={submit}
+							>
+								create server
+							</Button>
+						</div>
+					</footer>
+				</div>
+			</div>
+		</CreateFormContext.Provider>
+	);
+}
+
+function Section({
+	number,
+	title,
+	children,
+}: {
+	number: string;
+	title: string;
+	children: ReactNode;
+}): ReactElement {
+	return (
+		<section>
+			<header className="mb-2 flex items-baseline gap-3">
+				<span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-faint">
+					{number}
+				</span>
+				<h2 className="font-mono text-[14px] uppercase tracking-wider text-text-primary">
+					{title}
+				</h2>
+			</header>
+			{children}
+		</section>
+	);
+}

@@ -3,6 +3,7 @@
 import { useState, type ReactElement } from "react";
 
 import { ApiError, deleteServer } from "../lib/api";
+
 import { Button } from "./Button";
 import { Modal } from "./Modal";
 
@@ -48,16 +49,16 @@ export function ConfirmDeleteDialog({
 	};
 
 	return (
-		<Modal open={open} onClose={onClose} title={`Delete ${serverName}?`}>
-			<div className="flex flex-col gap-4 text-sm">
-				<p className="text-slate-300">
-					This permanently removes the StatefulSet, PVC, Service, and RCON
-					Secret. The server&apos;s world data is lost.
+		<Modal open={open} onClose={onClose} title={`delete ${serverName}?`}>
+			<div className="flex flex-col gap-4 font-mono text-[13px]">
+				<p className="text-text-body">
+					this permanently removes the StatefulSet, PVC, Service, and RCON
+					Secret. the server&apos;s world data is lost.
 				</p>
 				<label className="flex flex-col gap-1.5">
-					<span className="text-xs uppercase tracking-wide text-slate-400">
-						Type <span className="font-mono text-slate-200">{serverName}</span>{" "}
-						to confirm
+					<span className="text-[11px] uppercase tracking-wider text-text-muted">
+						type <span className="text-text-primary">{serverName}</span> to
+						confirm
 					</span>
 					<input
 						type="text"
@@ -66,12 +67,12 @@ export function ConfirmDeleteDialog({
 							setTyped(e.target.value);
 						}}
 						autoFocus
-						className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 font-mono text-sm focus:border-red-500 focus:outline-none"
+						className="w-full rounded-md border border-border bg-bg px-3 py-1.5 text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-state-error"
 					/>
 				</label>
-				{error !== null && <p className="text-red-400">{error}</p>}
+				{error !== null && <p className="text-state-error">{error}</p>}
 				<div className="mt-2 flex justify-end gap-2">
-					<Button variant="secondary" onClick={onClose} disabled={busy}>
+					<Button onClick={onClose} disabled={busy}>
 						cancel
 					</Button>
 					<Button
