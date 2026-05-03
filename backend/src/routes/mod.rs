@@ -7,6 +7,7 @@ use axum::routing::{get, post};
 use crate::AppState;
 use crate::auth::{handlers as auth, require_session};
 
+pub mod catalog;
 pub mod cluster;
 pub mod health;
 pub mod mc_versions;
@@ -94,6 +95,11 @@ fn api_routes(state: AppState) -> Router<AppState> {
         .route(
             "/api/modpack/curseforge/resolve",
             get(modpack::resolve_curseforge),
+        )
+        .route("/api/catalog/search", get(catalog::search))
+        .route(
+            "/api/catalog/projects/{provider}/{id}/versions",
+            get(catalog::versions),
         )
         .route_layer(from_fn_with_state(state, require_session));
 

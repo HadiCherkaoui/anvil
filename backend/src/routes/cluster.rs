@@ -43,6 +43,10 @@ pub struct ClusterCapabilities {
     /// Whether the backend has a `CurseForge` API key configured. The frontend
     /// hides the `CurseForge` option in the New Server modal when this is false.
     pub cf_api_key_present: bool,
+    /// Whether Modrinth is reachable. Always `true` in B — Modrinth needs no
+    /// API key, the field exists for symmetry with `cf_api_key_present` and
+    /// future failure surfaces.
+    pub modrinth_enabled: bool,
     /// Sum of allocatable CPU across schedulable nodes, in fractional cores.
     /// Surfaces as a hint in the create-page Resources section.
     pub available_cpu_cores: f64,
@@ -112,6 +116,7 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabil
         available_storage_classes: classes,
         default_storage_class: default,
         cf_api_key_present: state.cf_client.is_some(),
+        modrinth_enabled: true,
         available_cpu_cores,
     };
     write_cache(&state.capabilities_cache, &caps);
