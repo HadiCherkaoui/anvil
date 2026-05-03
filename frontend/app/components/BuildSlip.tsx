@@ -7,9 +7,15 @@ import {
 	type ReactNode,
 } from "react";
 
-import type { CfChannel, ExposureMode, SourceKind } from "../lib/api";
+import type {
+	CfChannel,
+	ExposureMode,
+	ModEntry,
+	Runtime,
+	SourceKind,
+} from "../lib/api";
 
-export type CreateType = "vanilla" | "modpack";
+export type CreateType = "vanilla" | "paper" | "modpack" | "modded";
 
 export interface CreateDraft {
 	name: string;
@@ -22,6 +28,9 @@ export interface CreateDraft {
 	exposure_mode: ExposureMode;
 	server_type: SourceKind;
 	curseforge: { project_id: number; channel: CfChannel } | null;
+	modrinth: { project_id: string; channel: CfChannel } | null;
+	runtime: Runtime | null;
+	initial_mods: ModEntry[];
 }
 
 export const CreateFormContext = createContext<CreateDraft | null>(null);
@@ -78,6 +87,18 @@ export function BuildSlip({ status }: { status: Status }): ReactElement {
 						<>
 							<Field label="cf project" value={d.curseforge.project_id} />
 							<Field label="channel" value={d.curseforge.channel} />
+						</>
+					)}
+					{d.type === "modpack" && d.modrinth !== null && (
+						<>
+							<Field label="mr project" value={d.modrinth.project_id} />
+							<Field label="channel" value={d.modrinth.channel} />
+						</>
+					)}
+					{d.type === "modded" && (
+						<>
+							<Field label="runtime" value={d.runtime} />
+							<Field label="picked mods" value={d.initial_mods.length} />
 						</>
 					)}
 				</Section>

@@ -19,6 +19,8 @@ import {
 	type ClusterCapabilities,
 	type CreateServerRequest,
 	type ExposureMode,
+	type ModEntry,
+	type Runtime,
 } from "../../lib/api";
 import { useMcVersions } from "../../lib/use-mc-versions";
 
@@ -30,19 +32,38 @@ import {
 } from "../../components/BuildSlip";
 import { Button } from "../../components/Button";
 import { Card } from "../../components/Card";
+import { CatalogSheet, type CatalogPick } from "../../components/CatalogSheet";
 import { RangeSlider } from "../../components/RangeSlider";
 import { SegmentedControl } from "../../components/SegmentedControl";
 import { useToast } from "../../components/Toast";
 
 const TYPE_OPTIONS: ReadonlyArray<{ value: CreateType; label: string }> = [
 	{ value: "vanilla", label: "vanilla" },
+	{ value: "paper", label: "paper" },
 	{ value: "modpack", label: "modpack" },
+	{ value: "modded", label: "modded" },
 ];
 
 const CHANNEL_OPTIONS: ReadonlyArray<{ value: CfChannel; label: string }> = [
 	{ value: "release", label: "release" },
 	{ value: "beta", label: "beta" },
 	{ value: "alpha", label: "alpha" },
+];
+
+const RUNTIME_OPTIONS: ReadonlyArray<{ value: Runtime; label: string }> = [
+	{ value: "fabric", label: "fabric" },
+	{ value: "forge", label: "forge" },
+	{ value: "neoforge", label: "neoforge" },
+];
+
+type ModpackProvider = "curseforge" | "modrinth";
+
+const PROVIDER_OPTIONS: ReadonlyArray<{
+	value: ModpackProvider;
+	label: string;
+}> = [
+	{ value: "curseforge", label: "curseforge" },
+	{ value: "modrinth", label: "modrinth" },
 ];
 
 const INITIAL: CreateDraft = {
@@ -56,6 +77,9 @@ const INITIAL: CreateDraft = {
 	exposure_mode: "clusterip",
 	server_type: "vanilla",
 	curseforge: null,
+	modrinth: null,
+	runtime: null,
+	initial_mods: [],
 };
 
 function buildExposureOptions(
@@ -82,6 +106,8 @@ export default function NewServerPage(): ReactElement {
 	const [slugInput, setSlugInput] = useState("");
 	const [slugBusy, setSlugBusy] = useState(false);
 	const [slugError, setSlugError] = useState<string | null>(null);
+	const [packProvider, setPackProvider] = useState<ModpackProvider>("modrinth");
+	const [browseOpen, setBrowseOpen] = useState(false);
 
 	useEffect(() => {
 		const ctrl = new AbortController();
@@ -103,10 +129,16 @@ export default function NewServerPage(): ReactElement {
 
 	const missing: string[] = [];
 	if (draft.name === "") missing.push("name");
-	if (draft.mc_version === null || draft.mc_version === "")
-		missing.push("mc version");
-	if (draft.type === "modpack" && draft.curseforge === null)
-		missing.push("modpack");
+	if (draft.type !== "modpack") {
+		if (draft.mc_version === null || draft.mc_version === "")
+			missing.push("mc version");
+	}
+	if (draft.type === "modpack") {
+		if (draft.curseforge === null && draft.modrinth === null)
+			missing.push("modpack");
+	}
+	if (draft.type === "modded" && draft.runtime === null)
+		missing.push("runtime");
 	const valid = missing.length === 0;
 	const status = submitting ? "submitting" : valid ? "valid" : "draft";
 
@@ -116,6 +148,7 @@ export default function NewServerPage(): ReactElement {
 		resolveCurseForgeSlug(slugInput.trim())
 			.then((res) => {
 				set("curseforge", { project_id: res.project_id, channel: "release" });
+				set("modrinth", null);
 				toast.push(`resolved · ${res.name}`, "success");
 			})
 			.catch((err: unknown) => {
@@ -132,10 +165,86 @@ export default function NewServerPage(): ReactElement {
 			});
 	};
 
+	const onCatalogPick = (pick: CatalogPick): void => {
+		if (draft.type === "modpack") {
+			if (pick.hit.provider === "modrinth") {
+				set("modrinth", {
+					project_id: pick.hit.project_id,
+					channel: "release",
+				});
+				set("curseforge", null);
+				set("mc_version", pick.version.version_name);
+			} else {
+				const idNum = Number.parseInt(pick.hit.project_id, 10);
+				if (!Number.isNaN(idNum)) {
+					set("curseforge", { project_id: idNum, channel: "release" });
+					set("modrinth", null);
+					set("mc_version", pick.version.version_name);
+				}
+			}
+		} else if (draft.type === "modded") {
+			const entry: ModEntry = {
+				provider: pick.hit.provider,
+				project_id: pick.hit.project_id,
+				project_slug: pick.hit.slug,
+				project_name: pick.hit.name,
+				version_id: pick.version.version_id,
+				version_name: pick.version.version_name,
+				filename: pick.version.primary_filename,
+				download_url: pick.version.primary_url,
+				sha512: pick.version.primary_sha512,
+			};
+			set("initial_mods", [...draft.initial_mods, entry]);
+		}
+	};
+
+	const switchRuntimeWithGuard = (next: Runtime): void => {
+		if (
+			draft.initial_mods.length > 0 &&
+			!window.confirm(
+				`switching runtime clears ${draft.initial_mods.length.toString()} picked mods. continue?`,
+			)
+		) {
+			return;
+		}
+		set("runtime", next);
+		set("initial_mods", []);
+	};
+
+	const switchMcWithGuard = (next: string | null): void => {
+		if (
+			draft.type === "modded" &&
+			draft.initial_mods.length > 0 &&
+			next !== draft.mc_version &&
+			!window.confirm(
+				`switching mc version clears ${draft.initial_mods.length.toString()} picked mods. continue?`,
+			)
+		) {
+			return;
+		}
+		set("mc_version", next);
+		if (draft.type === "modded") set("initial_mods", []);
+	};
+
 	const submit = (): void => {
-		if (!valid || draft.mc_version === null) return;
+		if (!valid) return;
 		setSubmitting(true);
-		const isModpack = draft.type === "modpack" && draft.curseforge !== null;
+		const isPaper = draft.type === "paper";
+		const isModpack =
+			draft.type === "modpack" &&
+			(draft.curseforge !== null || draft.modrinth !== null);
+		const isModded = draft.type === "modded" && draft.runtime !== null;
+
+		const serverType: CreateServerRequest["server_type"] = isPaper
+			? "paper"
+			: isModpack
+				? draft.modrinth !== null
+					? "modrinth"
+					: "curseforge"
+				: isModded
+					? "modded"
+					: "vanilla";
+
 		const request: CreateServerRequest = {
 			name: draft.name,
 			memory_mi: draft.memory_mi,
@@ -145,9 +254,9 @@ export default function NewServerPage(): ReactElement {
 			...(draft.storage_class !== null && draft.storage_class !== ""
 				? { storage_class: draft.storage_class }
 				: {}),
-			server_type: isModpack ? "curseforge" : "vanilla",
-			...(isModpack ? {} : { mc_version: draft.mc_version }),
-			...(isModpack && draft.curseforge !== null
+			...(draft.mc_version !== null ? { mc_version: draft.mc_version } : {}),
+			server_type: serverType,
+			...(isModpack && draft.curseforge !== null && draft.modrinth === null
 				? {
 						curseforge: {
 							project_id: draft.curseforge.project_id,
@@ -155,11 +264,27 @@ export default function NewServerPage(): ReactElement {
 						},
 					}
 				: {}),
+			...(isModpack && draft.modrinth !== null
+				? {
+						modrinth: {
+							project_id: draft.modrinth.project_id,
+							channel: draft.modrinth.channel,
+						},
+					}
+				: {}),
+			...(isModded && draft.runtime !== null
+				? {
+						modded: {
+							runtime: draft.runtime,
+							initial_mods: draft.initial_mods,
+						},
+					}
+				: {}),
 		};
 		createServer(request)
 			.then((created) => {
 				toast.push(`${created.name} forged`, "success");
-				router.push(`/servers/${encodeURIComponent(created.name)}`);
+				router.push(`/servers?name=${encodeURIComponent(created.name)}`);
 			})
 			.catch((err: unknown) => {
 				const msg =
@@ -172,6 +297,18 @@ export default function NewServerPage(): ReactElement {
 				setSubmitting(false);
 			});
 	};
+
+	const cfDisabled = caps !== null && caps.cf_api_key_present === false;
+	const browseMode: "modpack" | "mod" =
+		draft.type === "modded" ? "mod" : "modpack";
+	const browseLoader: Runtime | undefined =
+		draft.type === "modded" && draft.runtime !== null
+			? draft.runtime
+			: undefined;
+	const browseMc: string | undefined =
+		draft.type === "modded" && draft.mc_version !== null
+			? draft.mc_version
+			: undefined;
 
 	return (
 		<CreateFormContext.Provider value={draft}>
@@ -206,78 +343,143 @@ export default function NewServerPage(): ReactElement {
 								value={draft.type}
 								onChange={(v) => {
 									set("type", v);
-									if (v === "vanilla") set("curseforge", null);
+									if (v !== "modpack") {
+										set("curseforge", null);
+										set("modrinth", null);
+									}
+									if (v !== "modded") {
+										set("runtime", null);
+										set("initial_mods", []);
+									}
 								}}
 								options={TYPE_OPTIONS}
 							/>
-							<p className="mt-2 font-mono text-[11px] text-text-faint">
-								paper, fabric/forge runtimes arrive in v2.1.
-							</p>
 						</Card>
 					</Section>
 
 					<Section number="03" title="source">
 						<Card>
-							{draft.type === "vanilla" ? (
-								<div>
-									<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
-										minecraft version
-									</label>
-									<select
-										value={draft.mc_version ?? ""}
-										onChange={(e) => {
-											set(
-												"mc_version",
-												e.target.value === "" ? null : e.target.value,
-											);
+							{draft.type === "vanilla" || draft.type === "paper" ? (
+								<McVersionPicker
+									value={draft.mc_version}
+									onChange={(v) => {
+										switchMcWithGuard(v);
+									}}
+									versions={versions?.versions ?? []}
+									showFallbackWarning={versions?.source === "fallback"}
+								/>
+							) : draft.type === "modded" ? (
+								<div className="flex flex-col gap-3">
+									<div>
+										<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+											runtime
+										</label>
+										<SegmentedControl
+											ariaLabel="modded runtime"
+											value={draft.runtime ?? "fabric"}
+											onChange={(v) => {
+												switchRuntimeWithGuard(v);
+											}}
+											options={RUNTIME_OPTIONS}
+										/>
+									</div>
+									<McVersionPicker
+										value={draft.mc_version}
+										onChange={(v) => {
+											switchMcWithGuard(v);
 										}}
-										className="rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-[12px] text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-									>
-										<option value="">— select —</option>
-										{(versions?.versions ?? []).map((v) => (
-											<option key={v} value={v}>
-												{v}
-											</option>
-										))}
-									</select>
-									{versions?.source === "fallback" && (
-										<p className="mt-1 font-mono text-[11px] text-state-warning">
-											mojang manifest unreachable · using offline fallback list
-										</p>
-									)}
+										versions={versions?.versions ?? []}
+										showFallbackWarning={versions?.source === "fallback"}
+									/>
+									<div className="flex items-center gap-2">
+										<Button
+											onClick={() => {
+												if (draft.runtime !== null && draft.mc_version !== null)
+													setBrowseOpen(true);
+											}}
+											disabled={
+												draft.runtime === null || draft.mc_version === null
+											}
+										>
+											+ pre-pick mods
+										</Button>
+										<span className="font-mono text-[11px] text-text-faint">
+											{draft.initial_mods.length} picked
+										</span>
+									</div>
 								</div>
 							) : (
 								<div className="flex flex-col gap-3">
-									<label className="block font-mono text-[11px] uppercase tracking-wider text-text-muted">
-										curseforge slug
-									</label>
-									<div className="flex gap-2">
-										<input
-											value={slugInput}
-											onChange={(e) => {
-												setSlugInput(e.target.value);
+									<div>
+										<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+											provider
+										</label>
+										<SegmentedControl
+											ariaLabel="modpack provider"
+											value={packProvider}
+											onChange={(v) => {
+												setPackProvider(v);
+												set("curseforge", null);
+												set("modrinth", null);
+												set("mc_version", null);
 											}}
-											placeholder="all-the-mods-11"
-											className="flex-1 rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-											spellCheck={false}
+											options={PROVIDER_OPTIONS}
 										/>
-										<Button
-											onClick={onResolveSlug}
-											disabled={slugBusy || slugInput.trim().length === 0}
-										>
-											resolve
-										</Button>
+										{cfDisabled && packProvider === "curseforge" && (
+											<p className="mt-1 font-mono text-[11px] text-state-warning">
+												curseforge requires CF_API_KEY in the panel — falling
+												back to modrinth.
+											</p>
+										)}
 									</div>
-									{slugError !== null && (
-										<p className="font-mono text-[11px] text-state-error">
-											{slugError}
-										</p>
-									)}
+									{packProvider === "curseforge" ? (
+										<div>
+											<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+												curseforge slug
+											</label>
+											<div className="flex gap-2">
+												<input
+													value={slugInput}
+													onChange={(e) => {
+														setSlugInput(e.target.value);
+													}}
+													placeholder="all-the-mods-11"
+													className="flex-1 rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+													spellCheck={false}
+													disabled={cfDisabled}
+												/>
+												<Button
+													onClick={onResolveSlug}
+													disabled={
+														slugBusy ||
+														slugInput.trim().length === 0 ||
+														cfDisabled
+													}
+												>
+													resolve
+												</Button>
+											</div>
+											{slugError !== null && (
+												<p className="mt-1 font-mono text-[11px] text-state-error">
+													{slugError}
+												</p>
+											)}
+											{draft.curseforge !== null && (
+												<p className="mt-1 font-mono text-[12px] text-text-body">
+													project · {draft.curseforge.project_id.toString()}
+												</p>
+											)}
+										</div>
+									) : null}
+									<Button
+										onClick={() => {
+											setBrowseOpen(true);
+										}}
+									>
+										browse
+									</Button>
 									{draft.curseforge !== null && (
 										<>
-											<p className="font-mono text-[12px] text-text-body">
-												project · {draft.curseforge.project_id}
-											</p>
 											<div>
 												<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
 													channel
@@ -296,35 +498,49 @@ export default function NewServerPage(): ReactElement {
 													options={CHANNEL_OPTIONS}
 												/>
 											</div>
-											<p className="font-mono text-[11px] text-text-faint">
-												the latest matching ServerFiles file becomes the initial
-												version. mc version is read from the file name.
-											</p>
-											<input
-												type="hidden"
-												value={draft.mc_version ?? ""}
-												onChange={() => undefined}
-											/>
+											<div>
+												<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+													label this build as
+												</label>
+												<input
+													value={draft.mc_version ?? ""}
+													onChange={(e) => {
+														set(
+															"mc_version",
+															e.target.value === "" ? null : e.target.value,
+														);
+													}}
+													placeholder="e.g. atm-11-4.4"
+													className="w-full rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+													spellCheck={false}
+												/>
+											</div>
 										</>
 									)}
-									{draft.curseforge !== null && (
-										<div>
-											<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
-												label this build as
-											</label>
-											<input
-												value={draft.mc_version ?? ""}
-												onChange={(e) => {
-													set(
-														"mc_version",
-														e.target.value === "" ? null : e.target.value,
-													);
-												}}
-												placeholder="e.g. atm-11-4.4"
-												className="w-full rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-												spellCheck={false}
-											/>
-										</div>
+									{draft.modrinth !== null && (
+										<>
+											<p className="font-mono text-[12px] text-text-body">
+												modrinth project · {draft.modrinth.project_id}
+											</p>
+											<div>
+												<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+													channel
+												</label>
+												<SegmentedControl
+													ariaLabel="release channel"
+													value={draft.modrinth.channel}
+													onChange={(v) => {
+														if (draft.modrinth !== null) {
+															set("modrinth", {
+																project_id: draft.modrinth.project_id,
+																channel: v,
+															});
+														}
+													}}
+													options={CHANNEL_OPTIONS}
+												/>
+											</div>
+										</>
 									)}
 								</div>
 							)}
@@ -454,7 +670,57 @@ export default function NewServerPage(): ReactElement {
 					</footer>
 				</div>
 			</div>
+
+			<CatalogSheet
+				isOpen={browseOpen}
+				onClose={() => {
+					setBrowseOpen(false);
+				}}
+				mode={browseMode}
+				{...(browseLoader !== undefined ? { loader: browseLoader } : {})}
+				{...(browseMc !== undefined ? { mc: browseMc } : {})}
+				onPick={onCatalogPick}
+			/>
 		</CreateFormContext.Provider>
+	);
+}
+
+function McVersionPicker({
+	value,
+	onChange,
+	versions,
+	showFallbackWarning,
+}: {
+	value: string | null;
+	onChange: (v: string | null) => void;
+	versions: readonly string[];
+	showFallbackWarning: boolean;
+}): ReactElement {
+	return (
+		<div>
+			<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+				minecraft version
+			</label>
+			<select
+				value={value ?? ""}
+				onChange={(e) => {
+					onChange(e.target.value === "" ? null : e.target.value);
+				}}
+				className="rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-[12px] text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+			>
+				<option value="">— select —</option>
+				{versions.map((v) => (
+					<option key={v} value={v}>
+						{v}
+					</option>
+				))}
+			</select>
+			{showFallbackWarning && (
+				<p className="mt-1 font-mono text-[11px] text-state-warning">
+					mojang manifest unreachable · using offline fallback list
+				</p>
+			)}
+		</div>
 	);
 }
 
