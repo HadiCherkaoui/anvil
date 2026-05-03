@@ -8,12 +8,12 @@
 
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 
 use super::cf_client::CfFile;
-use super::{CurseForgeClient, ModpackProvider, ProviderContext, VersionInfo};
+use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
 /// Container image used for CurseForge-driven servers.
 ///
@@ -139,7 +139,7 @@ impl CurseForgeServerPack {
         // Newest first by `fileDate` (ISO 8601 sorts lexically).
         candidates.sort_by(|a, b| b.file_date.cmp(&a.file_date));
         candidates.first().map(|f| VersionInfo {
-            id: f.id,
+            id: f.id.to_string(),
             name: f.display_name.clone(),
             download_url: f.download_url.clone().unwrap_or_default(),
         })
@@ -152,8 +152,8 @@ impl ModpackProvider for CurseForgeServerPack {
         "curseforge"
     }
 
-    fn project_id(&self) -> Option<u32> {
-        Some(self.config.project_id)
+    fn project_id(&self) -> Option<String> {
+        Some(self.config.project_id.to_string())
     }
 
     fn pod_image(&self) -> &str {
@@ -180,18 +180,28 @@ impl ModpackProvider for CurseForgeServerPack {
         CF_BOOT_TIMEOUT
     }
 
-    async fn latest(&self, http: &CurseForgeClient) -> Result<Option<VersionInfo>> {
-        let files = http.list_files(self.config.project_id).await?;
+    async fn latest(&self, http: &ModpackHttp<'_>) -> Result<Option<VersionInfo>> {
+        let cf = http
+            .cf
+            .ok_or_else(|| anyhow!("CurseForge client unavailable"))?;
+        let files = cf.list_files(self.config.project_id).await?;
         Ok(self.pick_latest(&files))
     }
 
-    async fn fetch_url(&self, http: &CurseForgeClient, version: &VersionInfo) -> Result<String> {
+    async fn fetch_url(&self, http: &ModpackHttp<'_>, version: &VersionInfo) -> Result<String> {
+        let cf = http
+            .cf
+            .ok_or_else(|| anyhow!("CurseForge client unavailable"))?;
+        let id_u32: u32 = version
+            .id
+            .parse()
+            .with_context(|| format!("CF version id {:?} not numeric", version.id))?;
         // The cached download_url may be stale; re-fetch the file list and
         // pick the matching id so the swap Job gets a fresh URL.
-        let files = http.list_files(self.config.project_id).await?;
+        let files = cf.list_files(self.config.project_id).await?;
         let f = files
             .iter()
-            .find(|f| f.id == version.id)
+            .find(|f| f.id == id_u32)
             .ok_or_else(|| anyhow!("file id {} not found in project files", version.id))?;
         f.download_url.clone().ok_or_else(|| {
             anyhow!(
@@ -249,7 +259,7 @@ mod tests {
             cf_file(1, "client", false, 1, "2026-01-01T00:00:00Z"),
             cf_file(2, "server", true, 1, "2026-01-02T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, 2);
+        assert_eq!(p.pick_latest(&files).unwrap().id, "2");
     }
 
     #[test]
@@ -259,7 +269,7 @@ mod tests {
             cf_file(1, "old", true, 1, "2026-01-01T00:00:00Z"),
             cf_file(2, "new", true, 1, "2026-02-01T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, 2);
+        assert_eq!(p.pick_latest(&files).unwrap().id, "2");
     }
 
     #[test]
@@ -269,7 +279,7 @@ mod tests {
             cf_file(1, "old", true, 1, "2026-01-01T00:00:00Z"),
             cf_file(2, "new", true, 1, "2026-02-01T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, 1);
+        assert_eq!(p.pick_latest(&files).unwrap().id, "1");
     }
 
     #[test]
@@ -279,7 +289,7 @@ mod tests {
             cf_file(1, "old", true, 1, "2026-01-01T00:00:00Z"),
             cf_file(2, "new", true, 1, "2026-02-01T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, 1);
+        assert_eq!(p.pick_latest(&files).unwrap().id, "1");
     }
 
     #[test]
@@ -289,7 +299,7 @@ mod tests {
             cf_file(1, "beta", true, 2, "2026-02-01T00:00:00Z"),
             cf_file(2, "release", true, 1, "2026-01-01T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, 2);
+        assert_eq!(p.pick_latest(&files).unwrap().id, "2");
     }
 
     #[test]

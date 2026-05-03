@@ -38,19 +38,29 @@ pub struct ProviderContext<'a> {
     pub memory_mi: i64,
 }
 
-/// Cached information about a `CurseForge` `ServerFiles` version.
+/// Cached information about a modpack version.
 ///
 /// Returned from [`ModpackProvider::latest`] and used by both the poller
 /// (to write into `modpack_versions`) and the update orchestrator (to feed
-/// the swap Job).
+/// the swap Job). The `id` is opaque — `CurseForge` stores its `u32` file
+/// id as a decimal string; Modrinth stores its 8-char base62 version id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionInfo {
-    /// `CurseForge` file id — opaque, used as the version identifier.
-    pub id: u32,
-    /// Human-readable file name (e.g. `"All The Mods 11 - 4.4 - Server Pack"`).
+    /// Opaque upstream version id.
+    pub id: String,
+    /// Human-readable file/version name (e.g. `"All The Mods 11 - 4.4 - Server Pack"`).
     pub name: String,
     /// HTTPS URL the swap Job downloads. May expire — refresh per update.
     pub download_url: String,
+}
+
+/// HTTP context handed to provider methods so they can reach the right upstream.
+///
+/// `cf` is `None` when `CF_API_KEY` is unset — providers that need it must
+/// surface a clear error. `mr` is grown in Phase 2 once `mr_client` lands.
+#[derive(Debug)]
+pub struct ModpackHttp<'a> {
+    pub cf: Option<&'a CurseForgeClient>,
 }
 
 /// One provider per server source. Vanilla + `CurseForge` in M5; Modrinth later.
@@ -59,9 +69,9 @@ pub trait ModpackProvider: Send + Sync + std::fmt::Debug {
     /// Discriminator persisted as `servers.source_kind` (`"vanilla"` | `"curseforge"`).
     fn kind(&self) -> &'static str;
 
-    /// Numeric upstream project id when the provider has one (`CurseForge`,
-    /// Modrinth eventually). Returns `None` for providers without — vanilla.
-    fn project_id(&self) -> Option<u32> {
+    /// Opaque upstream project id when the provider has one (`CurseForge`,
+    /// Modrinth). Returns `None` for providers without — vanilla, modded, paper.
+    fn project_id(&self) -> Option<String> {
         None
     }
 
@@ -77,12 +87,12 @@ pub trait ModpackProvider: Send + Sync + std::fmt::Debug {
     /// How long the orchestrator waits for `Done (` in pod logs before declaring boot failure.
     fn boot_timeout(&self) -> Duration;
 
-    /// Resolves the latest upstream version. Vanilla returns `Ok(None)`.
+    /// Resolves the latest upstream version. Vanilla / modded / paper return `Ok(None)`.
     ///
     /// # Errors
     ///
     /// Returns an error if the upstream call fails or rate-limits.
-    async fn latest(&self, http: &CurseForgeClient) -> Result<Option<VersionInfo>>;
+    async fn latest(&self, http: &ModpackHttp<'_>) -> Result<Option<VersionInfo>>;
 
     /// Returns a fresh download URL for the given version. Called from the orchestrator
     /// just before spawning the swap Job (URLs may be presigned and short-lived).
@@ -93,9 +103,10 @@ pub trait ModpackProvider: Send + Sync + std::fmt::Debug {
     ///
     /// # Panics
     ///
-    /// Vanilla panics — the orchestrator routes by [`ModpackProvider::kind`] and
-    /// must never call this on a vanilla provider.
-    async fn fetch_url(&self, http: &CurseForgeClient, version: &VersionInfo) -> Result<String>;
+    /// Providers without an upstream (vanilla / modded / paper) panic — the
+    /// orchestrator routes by [`ModpackProvider::kind`] and must never call
+    /// this on them.
+    async fn fetch_url(&self, http: &ModpackHttp<'_>, version: &VersionInfo) -> Result<String>;
 }
 
 /// Boxed-trait alias used by handlers, the poller, and the orchestrator.

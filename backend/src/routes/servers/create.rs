@@ -329,12 +329,18 @@ async fn resolve_curseforge(
             ),
         })?;
 
+    let pick_id_u32: u32 = pick.id.parse().map_err(|_| {
+        AppError::Internal(anyhow::anyhow!(
+            "CF pick id {:?} not numeric — provider returned a non-CF id",
+            pick.id
+        ))
+    })?;
     let stored_cfg = CfConfig {
         project_id: cfg.project_id,
         channel: cfg.channel,
         version_skip: Vec::new(),
         force_version: None,
-        current_version_id: pick.id,
+        current_version_id: pick_id_u32,
         current_version_name: pick.name.clone(),
         auto_update_mode: AutoUpdateMode::Notify,
     };

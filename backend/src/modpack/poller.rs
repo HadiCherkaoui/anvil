@@ -14,7 +14,7 @@ use tracing::{Level, event};
 
 use crate::AppState;
 use crate::modpack::guard::UpdateGuard;
-use crate::modpack::{from_db, orchestrator};
+use crate::modpack::{ModpackHttp, from_db, orchestrator};
 
 /// Initial delay before the first poll — gives `axum::serve` time to bind
 /// before we hammer the DB / k8s API.
@@ -41,13 +41,13 @@ pub async fn run(state: AppState) {
     reason = "linear per-server fan-out: fetch latest, gate, upsert, optionally apply"
 )]
 async fn tick(state: &AppState) -> anyhow::Result<()> {
-    let cf = state
-        .cf_client
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("CF disabled, poller should not be running"))?;
+    let http = ModpackHttp {
+        cf: state.cf_client.as_deref(),
+    };
 
     let rows = sqlx::query(
-        "SELECT id, source_kind, source_config FROM servers WHERE source_kind != 'vanilla'",
+        "SELECT id, source_kind, source_config FROM servers
+         WHERE source_kind IN ('curseforge','modrinth')",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -57,8 +57,13 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         let source_kind: String = row.try_get("source_kind")?;
         let source_config: String = row.try_get("source_config")?;
 
-        // One slow CF call per server, every poll_interval; serial is fine
-        // at homelab scale.
+        // CF rows can't poll without the API key — skip with a debug log.
+        if source_kind == "curseforge" && http.cf.is_none() {
+            continue;
+        }
+
+        // One slow upstream call per server, every poll_interval; serial is
+        // fine at homelab scale.
         let provider = match from_db(&source_kind, &source_config) {
             Ok(p) => p,
             Err(err) => {
@@ -73,9 +78,9 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             }
         };
 
-        let latest = match provider.latest(cf).await {
+        let latest = match provider.latest(&http).await {
             Ok(Some(v)) => v,
-            Ok(None) => continue, // vanilla returns None
+            Ok(None) => continue,
             Err(err) => {
                 event!(
                     name: "anvil.modpack.poll.upstream_error",
@@ -92,11 +97,16 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         // auto-apply?
         let cfg: Value =
             serde_json::from_str(&source_config).unwrap_or_else(|_| serde_json::json!({}));
-        let current_id = cfg
+        // current_version_id is stored as a number for legacy CF rows and as
+        // a string for Modrinth — handle both.
+        let current_id_str: String = cfg
             .get("current_version_id")
-            .and_then(Value::as_u64)
-            .and_then(|u| u32::try_from(u).ok())
-            .unwrap_or(0);
+            .map(|v| match v {
+                Value::Number(n) => n.to_string(),
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
         let auto_mode = cfg
             .get("auto_update_mode")
             .and_then(Value::as_str)
@@ -112,11 +122,11 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             })
             .unwrap_or_default();
 
-        let id_str = latest.id.to_string();
-        let skipped = skip_list.iter().any(|s| s == &id_str || s == &latest.name);
+        let skipped = skip_list
+            .iter()
+            .any(|s| s == &latest.id || s == &latest.name);
 
-        if latest.id == current_id || auto_mode == "never" || skipped {
-            // Clear any stale modpack_versions row — current is up to date.
+        if latest.id == current_id_str || auto_mode == "never" || skipped {
             let _ = sqlx::query("DELETE FROM modpack_versions WHERE server_id = ?")
                 .bind(&id)
                 .execute(&state.pool)
@@ -124,6 +134,9 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             continue;
         }
 
+        // modpack_versions.latest_id is INTEGER. CF ids parse cleanly; Modrinth
+        // string ids fall back to 0 — the real id always lives in latest_name.
+        let latest_id_int: i64 = latest.id.parse().unwrap_or(0);
         let now = chrono::Utc::now().timestamp();
         let _ = sqlx::query(
             "INSERT OR REPLACE INTO modpack_versions
@@ -131,7 +144,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
              VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&id)
-        .bind(i64::from(latest.id))
+        .bind(latest_id_int)
         .bind(&latest.name)
         .bind(&latest.download_url)
         .bind(now)
@@ -139,9 +152,6 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         .await;
 
         if auto_mode == "apply" {
-            // Fire the orchestrator inline — same task handles one auto-update
-            // at a time so we don't pile up. Other servers in the same tick
-            // wait for this one to finish.
             event!(
                 name: "anvil.modpack.poll.auto_apply",
                 Level::INFO,
@@ -156,9 +166,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             ) else {
                 continue;
             };
-            // Run synchronously inside the poll tick — keeps things simple
-            // and avoids an unbounded task pile-up.
-            orchestrator::run(state.clone(), id.clone(), latest.id, guard).await;
+            orchestrator::run(state.clone(), id.clone(), latest.id.clone(), guard).await;
         }
     }
     Ok(())

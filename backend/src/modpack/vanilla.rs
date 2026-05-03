@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::Result;
 use k8s_openapi::api::core::v1::{EnvVar, EnvVarSource, SecretKeySelector};
 
-use super::{CurseForgeClient, ModpackProvider, ProviderContext, VersionInfo};
+use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
 /// Container image used for managed vanilla Minecraft servers.
 ///
@@ -89,17 +89,17 @@ impl ModpackProvider for VanillaProvider {
         VANILLA_BOOT_TIMEOUT
     }
 
-    async fn latest(&self, _http: &CurseForgeClient) -> Result<Option<VersionInfo>> {
+    async fn latest(&self, _http: &ModpackHttp<'_>) -> Result<Option<VersionInfo>> {
         Ok(None)
     }
 
-    async fn fetch_url(&self, _http: &CurseForgeClient, _version: &VersionInfo) -> Result<String> {
+    async fn fetch_url(&self, _http: &ModpackHttp<'_>, _version: &VersionInfo) -> Result<String> {
         unreachable!("orchestrator must never call fetch_url on a vanilla provider")
     }
 }
 
 /// `EnvVar { name, value }` constructor.
-fn env_kv(name: &str, value: &str) -> EnvVar {
+pub(super) fn env_kv(name: &str, value: &str) -> EnvVar {
     EnvVar {
         name: name.to_owned(),
         value: Some(value.to_owned()),
@@ -108,7 +108,7 @@ fn env_kv(name: &str, value: &str) -> EnvVar {
 }
 
 /// `EnvVar` sourced from a Secret key.
-fn env_secret(name: &str, secret_name: &str, key: &str) -> EnvVar {
+pub(super) fn env_secret(name: &str, secret_name: &str, key: &str) -> EnvVar {
     EnvVar {
         name: name.to_owned(),
         value: None,

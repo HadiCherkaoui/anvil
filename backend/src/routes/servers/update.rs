@@ -18,9 +18,9 @@ use crate::modpack::orchestrator;
 /// Request body for `POST /api/servers/:id/update`.
 #[derive(Debug, Default, Deserialize)]
 pub struct UpdateRequest {
-    /// `CurseForge` file id to target. `None` ⇒ use cached latest.
+    /// Upstream version id to target. `None` ⇒ use cached latest.
     #[serde(default)]
-    pub version_id: Option<u32>,
+    pub version_id: Option<String>,
 }
 
 /// Response body.
@@ -28,7 +28,7 @@ pub struct UpdateRequest {
 pub struct UpdateResponse {
     pub status: &'static str,
     pub server_id: String,
-    pub target_version_id: u32,
+    pub target_version_id: String,
 }
 
 /// Handler for `POST /api/servers/:id/update`.
@@ -51,33 +51,34 @@ pub async fn handle(
         .fetch_optional(&state.pool)
         .await?;
     let source_kind = row.ok_or(AppError::NotFound)?.0;
-    if source_kind == "vanilla" {
+    if matches!(source_kind.as_str(), "vanilla" | "modded" | "paper") {
         return Err(AppError::BadRequest {
             code: "not_modded",
-            message: "vanilla servers cannot be updated via this endpoint".to_owned(),
+            message: format!("{source_kind} servers cannot be updated via this endpoint"),
         });
     }
 
-    // Pick the target version: body override → modpack_versions.latest_id.
-    let target_version_id = if let Some(v) = req.version_id {
+    // Pick the target version: body override → modpack_versions.latest_id /
+    // latest_name. CF rows store id as a number; Modrinth rows fall back to
+    // latest_name (the real string id lives there per poller convention).
+    let target_version_id: String = if let Some(v) = req.version_id {
         v
     } else {
-        let row: Option<(i64,)> =
-            sqlx::query_as("SELECT latest_id FROM modpack_versions WHERE server_id = ?")
-                .bind(&id)
-                .fetch_optional(&state.pool)
-                .await?;
-        let raw = row
-            .ok_or(AppError::Conflict {
-                code: "no_update_target",
-                message: "no version_id supplied and no cached latest version available".to_owned(),
-            })?
-            .0;
-        u32::try_from(raw).map_err(|_| {
-            AppError::Internal(anyhow::anyhow!(
-                "modpack_versions.latest_id out of u32 range"
-            ))
-        })?
+        let row: Option<(i64, String)> = sqlx::query_as(
+            "SELECT latest_id, latest_name FROM modpack_versions WHERE server_id = ?",
+        )
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?;
+        let (latest_id, latest_name) = row.ok_or(AppError::Conflict {
+            code: "no_update_target",
+            message: "no version_id supplied and no cached latest version available".to_owned(),
+        })?;
+        if source_kind == "modrinth" {
+            latest_name
+        } else {
+            latest_id.to_string()
+        }
     };
 
     let Some(guard) = UpdateGuard::try_acquire(
@@ -93,8 +94,9 @@ pub async fn handle(
 
     let task_state = state.clone();
     let task_id = id.clone();
+    let task_target = target_version_id.clone();
     tokio::spawn(async move {
-        orchestrator::run(task_state, task_id, target_version_id, guard).await;
+        orchestrator::run(task_state, task_id, task_target, guard).await;
     });
 
     Ok((

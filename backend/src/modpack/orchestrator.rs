@@ -6,7 +6,6 @@
 //! through the [`UpdateGuard`]'s watch sender so the WS at
 //! `/api/servers/:id/update/stream` can stream them to the frontend.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -26,10 +25,9 @@ use tracing::{Level, event};
 
 use crate::AppState;
 use crate::k8s_status::RCON_PORT;
-use crate::modpack::cf_client::CurseForgeClient;
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::jobs::{build_backup_job, build_restore_job, build_swap_job};
-use crate::modpack::{ModpackProvider, VersionInfo, from_db};
+use crate::modpack::{ModpackHttp, ModpackProvider, VersionInfo, from_db};
 use crate::routes::servers::create::insert_audit;
 
 /// Phase of the running update.
@@ -87,8 +85,13 @@ const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// Long-running task: spawned by the route handler, runs until completion,
 /// drops the [`UpdateGuard`] which releases the per-server lock + WS bus.
-pub async fn run(state: AppState, server_id: String, target_version_id: u32, guard: UpdateGuard) {
-    let outcome = run_inner(&state, &server_id, target_version_id, &guard).await;
+pub async fn run(
+    state: AppState,
+    server_id: String,
+    target_version_id: String,
+    guard: UpdateGuard,
+) {
+    let outcome = run_inner(&state, &server_id, &target_version_id, &guard).await;
     match outcome {
         Ok(()) => {
             guard.emit(UpdatePhase::Succeeded);
@@ -153,7 +156,7 @@ pub async fn run(state: AppState, server_id: String, target_version_id: u32, gua
 async fn run_inner(
     state: &AppState,
     server_id: &str,
-    target_version_id: u32,
+    target_version_id: &str,
     guard: &UpdateGuard,
 ) -> Result<()> {
     let now_start = Utc::now().timestamp();
@@ -170,20 +173,22 @@ async fn run_inner(
     let (source_kind, source_config) = fetch_source(&state.pool, server_id).await?;
     let mut provider = from_db(&source_kind, &source_config)
         .with_context(|| format!("provider for {server_id}"))?;
-    if provider.kind() == "vanilla" {
-        bail!("vanilla servers cannot be updated via the modpack orchestrator");
+    if matches!(provider.kind(), "vanilla" | "modded" | "paper") {
+        bail!(
+            "source_kind {} cannot be updated via the modpack orchestrator",
+            provider.kind()
+        );
     }
 
-    let cf = state
-        .cf_client
-        .as_ref()
-        .ok_or_else(|| anyhow!("CurseForge support disabled"))?;
+    let http = ModpackHttp {
+        cf: state.cf_client.as_deref(),
+    };
     let snapshots_pvc = state
         .snapshots_pvc
         .as_ref()
         .ok_or_else(|| anyhow!("snapshots PVC not configured"))?;
 
-    let version = pick_target_version(&*provider, cf, target_version_id).await?;
+    let version = pick_target_version(&*provider, &http, target_version_id).await?;
 
     // ─── Phase 1: announce ───────────────────────────────────────────────
     guard.emit(UpdatePhase::Announcing);
@@ -237,7 +242,7 @@ async fn run_inner(
 
     // ─── Phase 4: swap ───────────────────────────────────────────────────
     guard.emit(UpdatePhase::Swapping);
-    let download_url = provider.fetch_url(cf, &version).await?;
+    let download_url = provider.fetch_url(&http, &version).await?;
     let rcon_secret_name = format!("mc-{server_id}-rcon");
     let swap_job = build_swap_job(
         server_id,
@@ -331,33 +336,47 @@ async fn fetch_source(pool: &sqlx::SqlitePool, server_id: &str) -> Result<(Strin
 }
 
 /// Selects the [`VersionInfo`] for `target_version_id` from the provider's
-/// upstream file list.
+/// upstream version list.
 async fn pick_target_version(
     provider: &dyn ModpackProvider,
-    cf: &Arc<CurseForgeClient>,
-    target_version_id: u32,
+    http: &ModpackHttp<'_>,
+    target_version_id: &str,
 ) -> Result<VersionInfo> {
     // Use the provider's `latest` to populate cache; if the target is the
     // latest, we can return immediately.
-    if let Some(latest) = provider.latest(cf).await?
+    if let Some(latest) = provider.latest(http).await?
         && latest.id == target_version_id
     {
         return Ok(latest);
     }
-    // Otherwise, look up by id from the cached file list.
     let project_id = provider
         .project_id()
         .ok_or_else(|| anyhow!("provider {} has no project id", provider.kind()))?;
-    let files = cf.list_files(project_id).await?;
-    let f = files
-        .iter()
-        .find(|f| f.id == target_version_id)
-        .ok_or_else(|| anyhow!("file id {target_version_id} not in project files"))?;
-    Ok(VersionInfo {
-        id: f.id,
-        name: f.display_name.clone(),
-        download_url: f.download_url.clone().unwrap_or_default(),
-    })
+    match provider.kind() {
+        "curseforge" => {
+            let cf = http
+                .cf
+                .ok_or_else(|| anyhow!("CurseForge client unavailable"))?;
+            let project_id_u32: u32 = project_id
+                .parse()
+                .with_context(|| format!("CF project_id {project_id:?} not numeric"))?;
+            let target_id_u32: u32 = target_version_id.parse().with_context(|| {
+                format!("CF target version id {target_version_id:?} not numeric")
+            })?;
+            let files = cf.list_files(project_id_u32).await?;
+            let f = files
+                .iter()
+                .find(|f| f.id == target_id_u32)
+                .ok_or_else(|| anyhow!("file id {target_version_id} not in project files"))?;
+            Ok(VersionInfo {
+                id: f.id.to_string(),
+                name: f.display_name.clone(),
+                download_url: f.download_url.clone().unwrap_or_default(),
+            })
+        }
+        // Modrinth path lands in Phase 4 once ModpackHttp.mr is wired.
+        other => bail!("unsupported provider for target lookup: {other}"),
+    }
 }
 
 /// Best-effort RCON announce + save-all so the world flushes before stop.
