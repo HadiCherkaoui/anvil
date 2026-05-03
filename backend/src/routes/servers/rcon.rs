@@ -1,17 +1,18 @@
 //! `POST /api/servers/{id}/rcon` — send one RCON command and return its
 //! response.
 //!
-//! Per-request: open a TCP connection to the in-cluster headless Service
-//! at `mc-<id>-0.mc-<id>-headless.<ns>.svc:25575`, authenticate with the
-//! per-server password (read from the `mc-<id>-rcon` Secret), send the
-//! command, read the response, close. No connection pool — RCON traffic
-//! from the panel is rare and the open/close overhead is dwarfed by the
-//! Minecraft server's command handling latency.
+//! This module also exposes [`run_rcon_batch`] and [`run_rcon_one`] for
+//! reuse by other handlers (notably the Players bulk-read endpoint, which
+//! issues four commands on a single auth'd connection). Both helpers
+//! open a fresh TCP+RCON session, run the requested commands in order
+//! under a single timeout, and close. There is no connection pool —
+//! RCON traffic from the panel is rare and the open/close overhead is
+//! dwarfed by the Minecraft server's command handling latency.
 
 use std::time::Duration;
 
-use axum::Json;
 use axum::extract::{Path, State};
+use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Secret};
@@ -21,12 +22,12 @@ use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::ServerStatus;
-use crate::k8s_status::{RCON_PORT, derive_status};
+use crate::k8s_status::{derive_status, RCON_PORT};
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
+use crate::AppState;
 
 /// Maximum length of `cmd`, in bytes. Pre-validated before any k8s I/O
 /// to short-circuit obviously-bogus requests.
@@ -110,6 +111,9 @@ pub async fn run_rcon_batch(
     let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let secrets: Api<Secret> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
 
+    // Status gate: only Running servers accept RCON. Mirrors the
+    // derive_status truth table used by the list/detail handlers so
+    // status semantics stay in one place.
     let (replicas, ready) = stsets.get_opt(&resource_name).await?.map_or((0, 0), |s| {
         let r = s.spec.as_ref().and_then(|sp| sp.replicas).unwrap_or(0);
         let ready = s
@@ -127,6 +131,9 @@ pub async fn run_rcon_batch(
         });
     }
 
+    // Read the RCON password. Surface a clear internal error if the
+    // Secret is missing or malformed — this should not happen unless
+    // someone deleted it out-of-band.
     let secret = secrets.get(&secret_name).await?;
     let password = secret
         .data
@@ -144,6 +151,7 @@ pub async fn run_rcon_batch(
         ))
     })?;
 
+    // Connect, send, receive, close — all under one timeout.
     let outputs = timeout(RCON_TIMEOUT, async {
         let mut conn = <rcon::Connection<TcpStream>>::connect(&headless_dns, &password).await?;
         let mut outs = Vec::with_capacity(cmds.len());
@@ -162,16 +170,24 @@ pub async fn run_rcon_batch(
 /// Runs a single RCON command. Convenience wrapper over
 /// [`run_rcon_batch`].
 ///
+/// # Panics
+///
+/// Never in practice — panics only if `run_rcon_batch` returns an empty
+/// Vec when called with one command, which would be a programmer error.
+///
 /// # Errors
 ///
-/// Same as [`run_rcon_batch`].
+/// Same conditions as [`run_rcon_batch`]; the command is always sent,
+/// so 500 is returned for any RCON failure.
 pub async fn run_rcon_one(
     state: &AppState,
     server_id: &str,
     cmd: &str,
 ) -> Result<String, AppError> {
     let mut outs = run_rcon_batch(state, server_id, &[cmd]).await?;
-    Ok(outs.pop().unwrap_or_default())
+    Ok(outs
+        .pop()
+        .expect("run_rcon_batch with one command always returns one output"))
 }
 
 /// Handler for `POST /api/servers/{id}/rcon`.
