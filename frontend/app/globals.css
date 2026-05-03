@@ -2,7 +2,60 @@
 
 @theme {
   /* Hook the next/font CSS variables (set in app/layout.tsx) into Tailwind's
-     font-sans / font-mono utility classes so the entire UI picks them up. */
+     font-sans / font-mono utility classes. */
   --font-sans: var(--font-fira-sans), system-ui, sans-serif;
   --font-mono: var(--font-fira-code), ui-monospace, "SFMono-Regular", monospace;
+
+  /* Surfaces */
+  --color-bg: #0a0a0c;
+  --color-surface: #0e0f12;
+  --color-elevated: #15161b;
+  --color-border: #1e1e22;
+  --color-border-soft: #15151a;
+  --color-border-strong: #2e2e34;
+
+  /* Text */
+  --color-text-primary: #f2f2f5;
+  --color-text-body: #e6e7eb;
+  --color-text-muted: #8a8a92;
+  --color-text-dim: #6b6b73;
+  --color-text-faint: #4f4f56;
+
+  /* Signature accent — copper. Used surgically (brand mark, primary CTA
+     borders/brackets, active-tab underline, source-curseforge bar). */
+  --color-accent: #d29150;
+  --color-accent-bg: #1a1208;
+  --color-accent-border: #3a2a18;
+  --color-accent-bracket: #6e4a26;
+
+  /* State (only for state). */
+  --color-state-running: #8aaf45;
+  --color-state-warning: #cdaa66;
+  --color-state-error: #c97f6f;
+
+  /* Source markers (catalog rows). */
+  --color-source-curseforge: var(--color-accent);
+  --color-source-modrinth: #6cb04a;
+  --color-source-local: var(--color-text-faint);
+
+  /* Radii — the workshop aesthetic stays squared. */
+  --radius-none: 0;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+}
+
+/* Variables outside Tailwind's namespaces — used via style={{ var(--…) }} or
+   inside @utility rules; Tailwind does not auto-generate utilities for these. */
+:root {
+  --color-state-running-glow: rgba(138, 175, 69, 0.18);
+  --motion-fast: 120ms;
+  --motion-default: 150ms;
+  --motion-slow: 250ms;
+}
+
+/* Application baseline. Picks up the new bg/text tokens. */
+body {
+  background: var(--color-bg);
+  color: var(--color-text-body);
+  font-family: var(--font-sans);
 }
