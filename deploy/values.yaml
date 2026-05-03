@@ -116,3 +116,33 @@ oidc:
   # `clientSecret` and `sessionKey` are ignored. Recommended for production
   # so Helm rollbacks don't reset secrets.
   existingSecret: ""
+
+# CurseForge modpack support (M5). When `secrets.cfApiKey` (or
+# `secrets.cfApiKeyExistingSecret`) is set, the backend enables the
+# CurseForge provider, the hourly version poller, and the update
+# orchestrator. The poller writes `modpack_versions` rows the frontend
+# reads to surface "Update available" badges.
+secrets:
+  # CurseForge API key. Get one at https://console.curseforge.com/. Inline
+  # set is fine for `helm install --set`; for sealed-secret deployments,
+  # use `cfApiKeyExistingSecret` instead.
+  cfApiKey: ""
+  # Name of an out-of-band Secret carrying CF_API_KEY. Recommended for
+  # production / sealed-secrets workflows.
+  cfApiKeyExistingSecret: ""
+
+modpack:
+  # How often the backend polls CurseForge for new ServerFiles versions.
+  # Each tick costs one HTTPS request per CF-backed server. 60min is
+  # comfortable; CurseForge rate-limits at much higher rates.
+  pollIntervalMinutes: 60
+  # Shared snapshots PVC for the tar-based backup path. REQUIRED when
+  # cfApiKey is set; the backend startup fails closed otherwise.
+  snapshotsPvc:
+    enabled: false
+    # StorageClass for the snapshots PVC. Defaults to the cluster's
+    # default-marked SC ("" = let k8s pick).
+    storageClass: ""
+    # Sized for ~5 servers × 3 backups × ~7 GB ≈ 105 GiB. Resize when
+    # adding servers or raising the BACKUP_KEEP_COUNT constant in code.
+    size: 100Gi

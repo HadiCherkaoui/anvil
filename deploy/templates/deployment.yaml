@@ -44,6 +44,10 @@ spec:
             - secretRef:
                 name: {{ default (printf "%s-oidc" (include "anvil.fullname" .)) .Values.oidc.existingSecret }}
             {{- end }}
+            {{- if or .Values.secrets.cfApiKey .Values.secrets.cfApiKeyExistingSecret }}
+            - secretRef:
+                name: {{ default (printf "%s-cf" (include "anvil.fullname" .)) .Values.secrets.cfApiKeyExistingSecret }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /api/health

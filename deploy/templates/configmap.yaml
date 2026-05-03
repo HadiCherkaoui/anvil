@@ -31,3 +31,8 @@ data:
   ANVIL_OIDC_REDIRECT_URL: {{ .Values.oidc.redirectUrl | quote }}
   ANVIL_ALLOWED_SUBS: {{ .Values.oidc.allowedSubs | quote }}
   {{- end }}
+  # --- Modpack (M5) --------------------------------------------------------
+  ANVIL_MODPACK_POLL_MINUTES: {{ .Values.modpack.pollIntervalMinutes | quote }}
+  {{- if .Values.modpack.snapshotsPvc.enabled }}
+  ANVIL_MODPACK_SNAPSHOTS_PVC: "mc-snapshots"
+  {{- end }}

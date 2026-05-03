@@ -16,3 +16,25 @@ spec:
   storageClassName: {{ . | quote }}
   {{- end }}
 {{- end }}
+{{- if .Values.modpack.snapshotsPvc.enabled }}
+---
+# Shared snapshots PVC for the M5 modpack-update backup/swap/restore Jobs.
+# Lives in `mcNamespace` so the per-server data PVCs and this one share the
+# same node (RWO is fine on a single-node cluster).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mc-snapshots
+  namespace: {{ .Values.mcNamespace }}
+  labels:
+    {{- include "anvil.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.modpack.snapshotsPvc.size | quote }}
+  {{- with .Values.modpack.snapshotsPvc.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
