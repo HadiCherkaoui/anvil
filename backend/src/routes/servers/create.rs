@@ -525,6 +525,8 @@ async fn resolve_paper(
     let stored = PaperConfig {
         mc_version: mc_v.clone(),
         paper_build: None,
+        plugins: Vec::new(),
+        pending_plugins: Vec::new(),
     };
     let source_config = serde_json::to_string(&stored).map_err(|e| AppError::Internal(e.into()))?;
     Ok(ResolvedSource {
