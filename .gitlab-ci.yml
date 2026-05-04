@@ -124,6 +124,16 @@ pnpm-build:
     paths:
       - frontend/out/
     expire_in: 1 day
+  # Override the shared pnpm rule: pnpm-build also runs on backend changes
+  # because cargo-build-release embeds frontend/out/ via rust-embed and
+  # docker-build's first stage rebuilds it. If we let pnpm-build skip on
+  # backend-only commits, every dependent job's `needs:` becomes unsatisfied
+  # and GitLab fails the whole pipeline.
+  rules:
+    - changes:
+        - backend/**/*
+        - frontend/**/*
+        - .gitlab-ci.yml
 
 # Release binary (only builds on main — feature branches don't need it).
 cargo-build-release:
