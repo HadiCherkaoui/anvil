@@ -112,6 +112,17 @@ fn api_routes(state: AppState) -> Router<AppState> {
             "/api/servers/{id}/players/broadcast",
             post(servers::players::handle_broadcast),
         )
+        .route(
+            "/api/servers/{id}/files",
+            get(servers::files::list).put(servers::files::upload).layer(
+                axum::extract::DefaultBodyLimit::max(servers::files::UPLOAD_CAP_USIZE),
+            ),
+        )
+        .route("/api/servers/{id}/files/raw", get(servers::files::download))
+        .route(
+            "/api/servers/{id}/files/action",
+            post(servers::files::action),
+        )
         .route("/api/cluster/capabilities", get(cluster::handle))
         .route("/api/cluster/mc-versions", get(mc_versions::handle))
         .route(

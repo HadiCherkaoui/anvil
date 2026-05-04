@@ -7,6 +7,7 @@
 
 pub mod create;
 pub mod delete;
+pub mod files;
 pub mod get;
 pub mod logs;
 pub mod logs_stream;
