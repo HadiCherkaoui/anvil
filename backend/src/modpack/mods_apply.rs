@@ -1,8 +1,13 @@
-//! Mod-sync FSM for `modded` servers.
+//! Sync FSM for `modded` mods and Paper plugins.
 //!
-//! Runs from a click on the Mods tab `[apply now]` button. Re-uses
-//! [`UpdateGuard`] + `snapshot_pvc_lock` + the WS-bus pattern. No backup;
-//! `mods/` is recoverable by clicking apply again.
+//! Both flows share an identical scale → Job → scale → verify dance —
+//! only the `source_config` field that is read/written and the
+//! data-relative `target_dir` differ. [`SyncTarget::Mods`] reads
+//! `modded.pending` and commits to `modded.mods`;
+//! [`SyncTarget::Plugins`] reads `paper.pending_plugins` and commits to
+//! `paper.plugins`. Both reuse [`UpdateGuard`] + `snapshot_pvc_lock` +
+//! the WS-bus pattern. No backup; the synced dir is recoverable by
+//! clicking apply again.
 
 use std::time::Duration;
 
@@ -12,15 +17,17 @@ use k8s_openapi::api::batch::v1::Job;
 use kube::Api;
 use kube::api::{DeleteParams, PostParams};
 use serde_json::json;
+use sqlx::SqlitePool;
 use tokio::time::sleep;
 
 use crate::AppState;
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::jobs::build_mod_sync_job;
-use crate::modpack::modded::{Config as ModdedConfig, ModdedRuntime};
+use crate::modpack::modded::{Config as ModdedConfig, ModEntry, ModdedRuntime};
 use crate::modpack::orchestrator::{
     UpdatePhase, scale_to, wait_for_done_marker, wait_job, wait_pod_gone, wait_pod_running,
 };
+use crate::modpack::paper::Config as PaperConfig;
 use crate::routes::servers::create::insert_audit;
 
 const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -28,23 +35,66 @@ const SYNC_JOB_TIMEOUT: Duration = Duration::from_mins(15);
 const POD_RUNNING_TIMEOUT: Duration = Duration::from_mins(2);
 const VERIFY_BOOT_TIMEOUT: Duration = Duration::from_mins(10);
 
-/// Kicks off the mod-sync FSM for `server_id`. Long-running task; spawned
-/// by the route handler; drops `guard` on completion.
-pub async fn run(state: AppState, server_id: String, guard: UpdateGuard) {
-    let outcome = run_inner(&state, &server_id, &guard).await;
+/// Selects which `source_config` field + on-disk subdir the sync FSM operates on.
+#[derive(Debug, Clone, Copy)]
+pub enum SyncTarget {
+    /// Operates on `modded.pending` / `modded.mods`, syncs `/data/mods/`.
+    Mods,
+    /// Operates on `paper.pending_plugins` / `paper.plugins`, syncs `/data/plugins/`.
+    Plugins,
+}
+
+impl SyncTarget {
+    /// Data-relative subdir the sync Job manages.
+    fn target_dir(self) -> &'static str {
+        match self {
+            Self::Mods => "mods",
+            Self::Plugins => "plugins",
+        }
+    }
+    /// `servers.source_kind` discriminator this target is valid for.
+    fn expected_source_kind(self) -> &'static str {
+        match self {
+            Self::Mods => "modded",
+            Self::Plugins => "paper",
+        }
+    }
+    /// Audit-action prefix (`mods_apply_*` / `plugins_apply_*`).
+    fn audit_prefix(self) -> &'static str {
+        match self {
+            Self::Mods => "mods",
+            Self::Plugins => "plugins",
+        }
+    }
+}
+
+/// Kicks off the sync FSM for `server_id`. Long-running task; spawned by
+/// the route handler; drops `guard` on completion.
+pub async fn run(state: AppState, server_id: String, guard: UpdateGuard, target: SyncTarget) {
+    let outcome = run_inner(&state, &server_id, &guard, target).await;
     match outcome {
         Ok(()) => {
             guard.emit(UpdatePhase::Succeeded);
-            tracing::info!(server.id = %server_id, "mod-sync succeeded");
+            tracing::info!(
+                server.id = %server_id,
+                target = target.audit_prefix(),
+                "sync succeeded",
+            );
         }
         Err(err) => {
             guard.emit(UpdatePhase::Failed);
-            tracing::error!(server.id = %server_id, err = %err, "mod-sync failed");
+            tracing::error!(
+                server.id = %server_id,
+                target = target.audit_prefix(),
+                err = %err,
+                "sync failed",
+            );
             let now = Utc::now().timestamp();
+            let action = format!("{}_apply_failed", target.audit_prefix());
             let _ = insert_audit(
                 &state.pool,
                 &server_id,
-                "mods_apply_failed",
+                &action,
                 Some(json!({"err": err.to_string()})),
                 now,
             )
@@ -57,9 +107,15 @@ pub async fn run(state: AppState, server_id: String, guard: UpdateGuard) {
     clippy::too_many_lines,
     reason = "linear FSM reads top-to-bottom; splitting it loses context"
 )]
-async fn run_inner(state: &AppState, server_id: &str, guard: &UpdateGuard) -> Result<()> {
+async fn run_inner(
+    state: &AppState,
+    server_id: &str,
+    guard: &UpdateGuard,
+    target: SyncTarget,
+) -> Result<()> {
     let now = Utc::now().timestamp();
-    insert_audit(&state.pool, server_id, "mods_apply_started", None, now).await?;
+    let started_action = format!("{}_apply_started", target.audit_prefix());
+    insert_audit(&state.pool, server_id, &started_action, None, now).await?;
 
     // Load + validate the config.
     let row: (String, String) =
@@ -68,18 +124,17 @@ async fn run_inner(state: &AppState, server_id: &str, guard: &UpdateGuard) -> Re
             .fetch_one(&state.pool)
             .await
             .with_context(|| format!("loading source for {server_id}"))?;
-    if row.0 != "modded" {
-        bail!("mods_apply only valid for modded servers (got {})", row.0);
+    if row.0 != target.expected_source_kind() {
+        bail!(
+            "{}_apply only valid for {} servers (got {})",
+            target.audit_prefix(),
+            target.expected_source_kind(),
+            row.0
+        );
     }
-    let cfg: ModdedConfig =
-        serde_json::from_str(&row.1).context("source_config not modded JSON")?;
-    if cfg.pending.is_empty() {
-        bail!("no pending changes to apply");
-    }
-    let runtime = ModdedRuntime::new(cfg.clone());
-    let desired = runtime.desired_mods();
+    let desired = compute_desired(&row.1, target)?;
 
-    // Acquire the global Job lock. Mod-sync only mounts the data PVC, but
+    // Acquire the global Job lock. Sync only mounts the data PVC, but
     // serializing all panel-spawned Jobs keeps the cluster gentle and
     // matches the M5 update FSM's pattern.
     let permit = state.snapshot_pvc_lock.lock().await;
@@ -96,7 +151,7 @@ async fn run_inner(state: &AppState, server_id: &str, guard: &UpdateGuard) -> Re
     )
     .await?;
 
-    // Sync mods. UpdatePhase::Swapping is reused as the sync phase so the
+    // Sync. UpdatePhase::Swapping is reused as the sync phase so the
     // existing UpdateSheet phase list keeps working unchanged.
     guard.emit(UpdatePhase::Swapping);
     let keep: Vec<&str> = desired.iter().map(|m| m.filename.as_str()).collect();
@@ -111,7 +166,14 @@ async fn run_inner(state: &AppState, server_id: &str, guard: &UpdateGuard) -> Re
         })
         .collect();
     let ts = Utc::now().timestamp();
-    let sync_job = build_mod_sync_job(server_id, ts, &state.mc_namespace, "mods", &keep, &urls);
+    let sync_job = build_mod_sync_job(
+        server_id,
+        ts,
+        &state.mc_namespace,
+        target.target_dir(),
+        &keep,
+        &urls,
+    );
     let job_name = sync_job
         .metadata
         .name
@@ -155,30 +217,81 @@ async fn run_inner(state: &AppState, server_id: &str, guard: &UpdateGuard) -> Re
     )
     .await?;
 
-    // Persist: replace mods, clear pending.
-    let mut new_cfg = cfg;
-    new_cfg.mods = desired;
-    new_cfg.pending = Vec::new();
-    let new_raw = serde_json::to_string(&new_cfg)?;
-    sqlx::query("UPDATE servers SET source_config = ? WHERE id = ?")
-        .bind(&new_raw)
-        .bind(server_id)
-        .execute(&state.pool)
-        .await?;
-    sqlx::query("UPDATE servers SET last_started_at = ? WHERE id = ?")
-        .bind(Utc::now().timestamp())
-        .bind(server_id)
-        .execute(&state.pool)
-        .await?;
+    // Persist: replace committed list, clear pending.
+    let new_count = commit(&state.pool, server_id, &row.1, target, desired).await?;
 
     let now = Utc::now().timestamp();
+    let succeeded_action = format!("{}_apply_succeeded", target.audit_prefix());
     insert_audit(
         &state.pool,
         server_id,
-        "mods_apply_succeeded",
-        Some(json!({"mods": new_cfg.mods.len()})),
+        &succeeded_action,
+        Some(json!({"count": new_count})),
         now,
     )
     .await?;
     Ok(())
+}
+
+/// Resolves the desired file list from the persisted `source_config`. Errors
+/// when the config has no pending changes — the caller surfaces this as
+/// `nothing_pending` via the route handler.
+fn compute_desired(raw: &str, target: SyncTarget) -> Result<Vec<ModEntry>> {
+    match target {
+        SyncTarget::Mods => {
+            let cfg: ModdedConfig =
+                serde_json::from_str(raw).context("source_config not modded JSON")?;
+            if cfg.pending.is_empty() {
+                bail!("no pending changes to apply");
+            }
+            Ok(ModdedRuntime::new(cfg).desired_mods())
+        }
+        SyncTarget::Plugins => {
+            let cfg: PaperConfig =
+                serde_json::from_str(raw).context("source_config not paper JSON")?;
+            if cfg.pending_plugins.is_empty() {
+                bail!("no pending changes to apply");
+            }
+            Ok(cfg.pending_plugins)
+        }
+    }
+}
+
+/// Persists the post-sync state: the desired list becomes the committed
+/// list, and the pending field is cleared.
+async fn commit(
+    pool: &SqlitePool,
+    server_id: &str,
+    raw: &str,
+    target: SyncTarget,
+    desired: Vec<ModEntry>,
+) -> Result<usize> {
+    let new_count = desired.len();
+    let new_raw = match target {
+        SyncTarget::Mods => {
+            let mut cfg: ModdedConfig =
+                serde_json::from_str(raw).context("source_config not modded JSON")?;
+            cfg.mods = desired;
+            cfg.pending = Vec::new();
+            serde_json::to_string(&cfg)?
+        }
+        SyncTarget::Plugins => {
+            let mut cfg: PaperConfig =
+                serde_json::from_str(raw).context("source_config not paper JSON")?;
+            cfg.plugins = desired;
+            cfg.pending_plugins = Vec::new();
+            serde_json::to_string(&cfg)?
+        }
+    };
+    sqlx::query("UPDATE servers SET source_config = ? WHERE id = ?")
+        .bind(&new_raw)
+        .bind(server_id)
+        .execute(pool)
+        .await?;
+    sqlx::query("UPDATE servers SET last_started_at = ? WHERE id = ?")
+        .bind(Utc::now().timestamp())
+        .bind(server_id)
+        .execute(pool)
+        .await?;
+    Ok(new_count)
 }

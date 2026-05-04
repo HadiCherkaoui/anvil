@@ -101,6 +101,22 @@ fn api_routes(state: AppState) -> Router<AppState> {
             get(servers::mods::apply_stream),
         )
         .route(
+            "/api/servers/{id}/plugins",
+            get(servers::plugins::list).post(servers::plugins::add_pending),
+        )
+        .route(
+            "/api/servers/{id}/plugins/{filename}",
+            axum::routing::delete(servers::plugins::remove_pending),
+        )
+        .route(
+            "/api/servers/{id}/plugins/apply",
+            post(servers::plugins::apply),
+        )
+        .route(
+            "/api/servers/{id}/plugins/apply/stream",
+            get(servers::plugins::apply_stream),
+        )
+        .route(
             "/api/servers/{id}/players",
             get(servers::players::handle_get),
         )

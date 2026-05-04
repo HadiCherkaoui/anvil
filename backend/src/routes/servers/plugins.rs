@@ -1,10 +1,10 @@
-//! `/api/servers/{id}/mods*` — modlist editing + apply + apply-stream WS.
+//! `/api/servers/{id}/plugins*` — Paper plugin list editing + apply + WS.
 //!
-//! Pending ops are appended to `source_config.pending` by `POST /mods` and
-//! removed by `DELETE /mods/pending/{idx}`. `POST /mods/apply` kicks the
-//! mod-sync FSM in [`mods_apply::run`], which uses [`UpdateGuard`] +
-//! `snapshot_pvc_lock` for one-at-a-time semantics. `GET /mods/apply/stream`
-//! mirrors the update WS frame shape so the frontend reuses one phase viewer.
+//! Mirrors the `/mods` shape one-for-one: pending edits go into
+//! `paper.pending_plugins` (the full desired list staged for apply), and
+//! [`POST /plugins/apply`] kicks the shared sync FSM in [`mods_apply`]
+//! with [`SyncTarget::Plugins`]. The WS endpoint reuses the same frame
+//! shape as `mods/apply/stream` so the frontend phase viewer is shared.
 
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures_util::sink::SinkExt as _;
 use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{oneshot, watch};
 use tokio::time::{MissedTickBehavior, interval};
@@ -25,120 +25,118 @@ use tokio::time::{MissedTickBehavior, interval};
 use crate::AppState;
 use crate::error::AppError;
 use crate::modpack::guard::UpdateGuard;
-use crate::modpack::modded::{Config as ModdedConfig, ModEntry, PendingOp};
+use crate::modpack::modded::ModEntry;
 use crate::modpack::mods_apply::{self, SyncTarget};
 use crate::modpack::orchestrator::UpdatePhase;
+use crate::modpack::paper::Config as PaperConfig;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
 use crate::validation::validate_mod_filename;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 
-/// Request body for `POST /api/servers/{id}/mods`.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum PendingOpRequest {
-    Add {
-        mod_entry: ModEntry,
-    },
-    Remove {
-        filename: String,
-    },
-    Bump {
-        filename: String,
-        to_version_id: String,
-        to_version_name: String,
-        to_filename: String,
-        to_download_url: String,
-        #[serde(default)]
-        to_sha512: Option<String>,
-    },
+/// Response body for `GET /api/servers/{id}/plugins`.
+#[derive(Debug, Serialize)]
+pub struct ListResponse {
+    pub plugins: Vec<ModEntry>,
+    pub pending_plugins: Vec<ModEntry>,
 }
 
-impl From<PendingOpRequest> for PendingOp {
-    fn from(r: PendingOpRequest) -> Self {
-        match r {
-            PendingOpRequest::Add { mod_entry } => Self::Add { mod_entry },
-            PendingOpRequest::Remove { filename } => Self::Remove { filename },
-            PendingOpRequest::Bump {
-                filename,
-                to_version_id,
-                to_version_name,
-                to_filename,
-                to_download_url,
-                to_sha512,
-            } => Self::Bump {
-                filename,
-                to_version_id,
-                to_version_name,
-                to_filename,
-                to_download_url,
-                to_sha512,
-            },
-        }
-    }
-}
-
-/// `POST /api/servers/{id}/mods` — append a pending op to the modlist draft.
+/// `GET /api/servers/{id}/plugins` — current and pending plugin lists.
 ///
 /// # Errors
 ///
 /// - 404 if the server doesn't exist.
-/// - 400 `not_modded` if the server isn't a modded source kind.
-/// - 400 `mod_filename_invalid` if any filename fails validation.
+/// - 400 `not_paper` if the server isn't a Paper source kind.
+pub async fn list(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ListResponse>, AppError> {
+    let cfg = load_paper_cfg(&state, &id).await?;
+    Ok(Json(ListResponse {
+        plugins: cfg.plugins,
+        pending_plugins: cfg.pending_plugins,
+    }))
+}
+
+/// `POST /api/servers/{id}/plugins` — stage adding a plugin to the next apply.
+///
+/// The full [`ModEntry`] is supplied by the catalog pick; the handler
+/// initialises `pending_plugins` from `plugins` if it's the first edit
+/// since the last apply, then upserts by filename.
+///
+/// # Errors
+///
+/// - 404 if the server doesn't exist.
+/// - 400 `not_paper` if the server isn't a Paper source kind.
+/// - 400 `mod_filename_invalid` if the filename fails validation.
 pub async fn add_pending(
     Path(id): Path<String>,
     State(state): State<AppState>,
-    Json(req): Json<PendingOpRequest>,
+    Json(entry): Json<ModEntry>,
 ) -> Result<StatusCode, AppError> {
-    match &req {
-        PendingOpRequest::Add { mod_entry } => validate_mod_filename(&mod_entry.filename)?,
-        PendingOpRequest::Remove { filename } => validate_mod_filename(filename)?,
-        PendingOpRequest::Bump {
-            filename,
-            to_filename,
-            ..
-        } => {
-            validate_mod_filename(filename)?;
-            validate_mod_filename(to_filename)?;
-        }
-    }
+    validate_mod_filename(&entry.filename)?;
 
-    let mut cfg = load_modded_cfg(&state, &id).await?;
-    cfg.pending.push(req.into());
-    save_modded_cfg(&state, &id, &cfg).await?;
+    let mut cfg = load_paper_cfg(&state, &id).await?;
+    if cfg.pending_plugins.is_empty() {
+        cfg.pending_plugins = cfg.plugins.clone();
+    }
+    cfg.pending_plugins.retain(|p| p.filename != entry.filename);
+    cfg.pending_plugins.push(entry);
+    save_paper_cfg(&state, &id, &cfg).await?;
+
     let now = Utc::now().timestamp();
     let _ = insert_audit(
         &state.pool,
         &id,
-        "mods_pending_add",
-        Some(json!({"pending_count": cfg.pending.len()})),
+        "plugins_pending_add",
+        Some(json!({"pending_count": cfg.pending_plugins.len()})),
         now,
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `DELETE /api/servers/{id}/mods/pending/{idx}` — drop one pending op.
+/// `DELETE /api/servers/{id}/plugins/{filename}` — stage removing a plugin.
+///
+/// Initialises `pending_plugins` from `plugins` if needed, then drops the
+/// entry by filename. If the result is identical to `plugins`, resets
+/// `pending_plugins` to empty so the UI shows "no pending changes".
 ///
 /// # Errors
 ///
-/// - 404 if the server doesn't exist or `idx` is out of range.
-/// - 400 `not_modded` if the server isn't a modded source kind.
+/// - 404 if the server doesn't exist.
+/// - 400 `not_paper` if the server isn't a Paper source kind.
+/// - 400 `mod_filename_invalid` if the filename fails validation.
 pub async fn remove_pending(
-    Path((id, idx)): Path<(String, usize)>,
+    Path((id, filename)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<StatusCode, AppError> {
-    let mut cfg = load_modded_cfg(&state, &id).await?;
-    if idx >= cfg.pending.len() {
-        return Err(AppError::NotFound);
+    validate_mod_filename(&filename)?;
+
+    let mut cfg = load_paper_cfg(&state, &id).await?;
+    if cfg.pending_plugins.is_empty() {
+        cfg.pending_plugins = cfg.plugins.clone();
     }
-    cfg.pending.remove(idx);
-    save_modded_cfg(&state, &id, &cfg).await?;
+    cfg.pending_plugins.retain(|p| p.filename != filename);
+    if cfg.pending_plugins == cfg.plugins {
+        cfg.pending_plugins = Vec::new();
+    }
+    save_paper_cfg(&state, &id, &cfg).await?;
+
+    let now = Utc::now().timestamp();
+    let _ = insert_audit(
+        &state.pool,
+        &id,
+        "plugins_pending_remove",
+        Some(json!({"filename": filename, "pending_count": cfg.pending_plugins.len()})),
+        now,
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Response body for `POST /api/servers/{id}/mods/apply`.
+/// Response body for `POST /api/servers/{id}/plugins/apply`.
 #[derive(Debug, Serialize)]
 pub struct ApplyResponse {
     pub status: &'static str,
@@ -146,26 +144,26 @@ pub struct ApplyResponse {
     pub pending_count: usize,
 }
 
-/// `POST /api/servers/{id}/mods/apply` — kick the mod-sync FSM.
+/// `POST /api/servers/{id}/plugins/apply` — kick the plugin-sync FSM.
 ///
 /// # Errors
 ///
 /// - 404 if the server doesn't exist.
-/// - 400 `not_modded` if the server isn't a modded source kind.
-/// - 409 `nothing_pending` if there are no pending ops.
+/// - 400 `not_paper` if the server isn't a Paper source kind.
+/// - 409 `nothing_pending` if `pending_plugins` is empty.
 /// - 409 `apply_in_progress` if another update/apply is already running.
 pub async fn apply(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<ApplyResponse>), AppError> {
-    let cfg = load_modded_cfg(&state, &id).await?;
-    if cfg.pending.is_empty() {
+    let cfg = load_paper_cfg(&state, &id).await?;
+    if cfg.pending_plugins.is_empty() {
         return Err(AppError::Conflict {
             code: "nothing_pending",
-            message: "no pending mod changes to apply".to_owned(),
+            message: "no pending plugin changes to apply".to_owned(),
         });
     }
-    let pending_count = cfg.pending.len();
+    let pending_count = cfg.pending_plugins.len();
 
     let Some(guard) = UpdateGuard::try_acquire(
         &id,
@@ -181,7 +179,7 @@ pub async fn apply(
     let task_state = state.clone();
     let task_id = id.clone();
     tokio::spawn(async move {
-        mods_apply::run(task_state, task_id, guard, SyncTarget::Mods).await;
+        mods_apply::run(task_state, task_id, guard, SyncTarget::Plugins).await;
     });
 
     Ok((
@@ -194,10 +192,10 @@ pub async fn apply(
     ))
 }
 
-/// `GET /api/servers/{id}/mods/apply/stream` — WS for the mod-sync FSM phases.
+/// `GET /api/servers/{id}/plugins/apply/stream` — WS for the plugin-sync FSM.
 ///
-/// Frame shape mirrors `update_stream` so the frontend can reuse the phase
-/// viewer.
+/// Frame shape mirrors `mods/apply/stream` and `update/stream` so the
+/// frontend reuses one phase viewer.
 ///
 /// # Errors
 ///
@@ -211,24 +209,24 @@ pub async fn apply_stream(
     Ok(upgrade.on_upgrade(move |socket| run_ws(socket, state, id)))
 }
 
-async fn load_modded_cfg(state: &AppState, id: &str) -> Result<ModdedConfig, AppError> {
+async fn load_paper_cfg(state: &AppState, id: &str) -> Result<PaperConfig, AppError> {
     let row: Option<(String, String)> =
         sqlx::query_as("SELECT source_kind, source_config FROM servers WHERE id = ?")
             .bind(id)
             .fetch_optional(&state.pool)
             .await?;
     let (kind, raw) = row.ok_or(AppError::NotFound)?;
-    if kind != "modded" {
+    if kind != "paper" {
         return Err(AppError::BadRequest {
-            code: "not_modded",
-            message: "modlist endpoints only apply to modded servers".to_owned(),
+            code: "not_paper",
+            message: "plugin endpoints only apply to paper servers".to_owned(),
         });
     }
     serde_json::from_str(&raw)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("source_config not modded JSON: {e}")))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("source_config not paper JSON: {e}")))
 }
 
-async fn save_modded_cfg(state: &AppState, id: &str, cfg: &ModdedConfig) -> Result<(), AppError> {
+async fn save_paper_cfg(state: &AppState, id: &str, cfg: &PaperConfig) -> Result<(), AppError> {
     let raw = serde_json::to_string(cfg).map_err(|e| AppError::Internal(e.into()))?;
     sqlx::query("UPDATE servers SET source_config = ? WHERE id = ?")
         .bind(&raw)
