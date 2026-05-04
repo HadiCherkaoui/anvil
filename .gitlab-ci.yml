@@ -90,11 +90,12 @@ rust-clippy:
   stage: test
   script:
     - set -euo pipefail
+    - cd backend
     # Both feature flavours need to be linted independently — `--all-features`
     # would activate `serve-dir` *and* `embed`, which is a hard
     # `compile_error!` (mutex). Two passes keep both code paths honest.
-    - cd backend && cargo clippy --all-targets --features serve-dir --locked -- -D warnings
-    - cd backend && cargo clippy --all-targets --features embed --locked -- -D warnings
+    - cargo clippy --all-targets --features serve-dir --locked -- -D warnings
+    - cargo clippy --all-targets --features embed --locked -- -D warnings
 
 rust-test:
   <<: *rust_defaults
