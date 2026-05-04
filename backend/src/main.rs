@@ -81,6 +81,7 @@ async fn main() -> Result<()> {
         update_locks: Arc::new(Mutex::new(HashSet::new())),
         update_phase_buses: Arc::new(Mutex::new(HashMap::new())),
         snapshot_pvc_lock: Arc::new(AsyncMutex::new(())),
+        files_helper_image: config.files_helper_image.clone(),
     };
 
     // Hourly poller — covers both CF and Modrinth modpack rows. Skips CF

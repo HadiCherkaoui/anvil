@@ -87,6 +87,8 @@ pub struct AppState {
     /// Serializes backup + swap + restore Jobs panel-wide so one Job at a
     /// time mounts the shared snapshots PVC (RWO on single-node ZFS).
     pub snapshot_pvc_lock: Arc<AsyncMutex<()>>,
+    /// Image used for the per-server "files-helper" Pod (sub-project D).
+    pub files_helper_image: String,
 }
 
 // `kube::Client` doesn't impl `Debug`, so the derive on `AppState` would
@@ -115,6 +117,7 @@ impl fmt::Debug for AppState {
             .field("update_locks", &"<lock>")
             .field("update_phase_buses", &"<map>")
             .field("snapshot_pvc_lock", &"<lock>")
+            .field("files_helper_image", &self.files_helper_image)
             .finish()
     }
 }

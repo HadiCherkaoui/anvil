@@ -63,6 +63,7 @@ fn test_state(allowed: Vec<String>) -> AppState {
             std::collections::HashMap::new(),
         )),
         snapshot_pvc_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        files_helper_image: "alpine@sha256:test".to_owned(),
     }
 }
 
