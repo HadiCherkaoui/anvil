@@ -5,6 +5,7 @@ import { useState, type ReactElement } from "react";
 
 import {
 	ApiError,
+	deleteServer,
 	updateServerSettings,
 	type AutoUpdateMode,
 } from "../../lib/api";
@@ -169,10 +170,10 @@ export function SettingsBody(): ReactElement {
 				onClose={() => {
 					setConfirmOpen(false);
 				}}
-				serverId={detail.id}
-				serverName={detail.name}
-				onDeleted={() => {
-					setConfirmOpen(false);
+				targetName={detail.name}
+				description="this permanently removes the StatefulSet, PVC, Service, and RCON Secret. the server's world data is lost."
+				onConfirm={async () => {
+					await deleteServer(detail.id);
 					toast.push(`${detail.name} deleted`, "success");
 					router.push("/");
 				}}
