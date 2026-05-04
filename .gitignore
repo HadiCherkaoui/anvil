@@ -45,6 +45,9 @@ Thumbs.db
 # Superpowers brainstorm session state
 .superpowers/
 
+# Claude Code session state
+.claude/
+
 # Local dev SQLite artifacts (the panel writes here when ANVIL_DATABASE_URL
 # is the default; production uses the PVC mount path).
 /backend/anvil.db
