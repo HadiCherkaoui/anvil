@@ -49,17 +49,17 @@ stages:
 # pnpm cache anchor
 # ----------------------------------------------------------------------------
 .pnpm_defaults: &pnpm_defaults
-  # Full `node:22` (Debian-based, not slim/alpine). The slim/alpine variants
-  # were tripping the GitLab Kubernetes runner with
-  # "exec: sh: not found in $PATH" during pod init; the full image carries
-  # /bin/sh in the standard PATH and just works. Empty entrypoint to bypass
-  # docker-entrypoint.sh, which the runner's command override doesn't expect.
-  image:
-    name: node:22
-    entrypoint: [""]
+  # Every official `node:*` tag (slim, bookworm-slim, alpine, full) tripped
+  # the GitLab Kubernetes runner with "exec: sh: not found in $PATH" during
+  # pod init, regardless of `entrypoint: [""]`. The runner is happy with
+  # `rust:1-bookworm` (built on debian:bookworm-slim), so we use the same
+  # base and install Node + pnpm via NodeSource. ~30 s extra for apt + curl
+  # but the build container actually starts.
+  image: debian:bookworm-slim
   variables:
     PNPM_HOME: $CI_PROJECT_DIR/.pnpm
     PATH: "$CI_PROJECT_DIR/.pnpm:$PATH"
+    DEBIAN_FRONTEND: noninteractive
   cache:
     key:
       files:
@@ -69,6 +69,10 @@ stages:
       - .pnpm-store/
     policy: pull-push
   before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends curl ca-certificates gnupg
+    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    - apt-get install -y --no-install-recommends nodejs
     - corepack enable
     - cd frontend
     - pnpm config set store-dir "$CI_PROJECT_DIR/.pnpm-store"
