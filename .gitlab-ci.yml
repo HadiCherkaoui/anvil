@@ -170,7 +170,14 @@ docker-build:
     - docker:27-dind
   variables:
     DOCKER_BUILDKIT: "1"
+    # DinD-with-TLS: the docker CLI needs DOCKER_HOST + cert paths to reach
+    # the sidecar container, otherwise it falls back to /var/run/docker.sock
+    # (which doesn't exist in the K8s runner pod) and bails with
+    # "Cannot connect to the Docker daemon".
     DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_CERT_PATH: "/certs/client"
+    DOCKER_TLS_VERIFY: "1"
   # `needs:` here is for sequencing — the Dockerfile re-runs `pnpm build`
   # internally in stage 1, so we don't actually consume the artifact. Holding
   # the dependency stops us from spending image-build minutes when the
