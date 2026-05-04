@@ -1,20 +1,21 @@
 # anvil CI/CD pipeline.
 #
-# Three stages: test (parallel lint + unit tests), build (frontend bundle and
-# release binary), image (multi-stage Docker push). No deploy stage — Flux
-# pulls from the registry on its own cadence.
+# Two stages: test (parallel rust lint + tests) and image (docker push +
+# helm chart push). The Dockerfile is multi-stage so it owns the
+# pnpm-build / cargo-build-release flow internally — splitting them into
+# CI jobs duplicated work and added zero coverage. No deploy stage —
+# Flux pulls from the registry on its own cadence.
 #
 # Reproducibility:
-#   - cargo: --locked, --frozen on all build/test invocations
-#   - pnpm:  --frozen-lockfile
-#   - base images: pinned to a major (rust:1, node:22-slim) — bump deliberately
+#   - cargo: --locked on every invocation
+#   - pnpm:  --frozen-lockfile inside the Dockerfile
+#   - base images: pinned to a major (rust:1, docker:27) — bump deliberately
 #
 # Path filters keep feature branches cheap: only the relevant jobs run when
 # the matching subtree changes.
 
 stages:
   - test
-  - build
   - image
 
 # ----------------------------------------------------------------------------
@@ -46,37 +47,6 @@ stages:
         - .gitlab-ci.yml
 
 # ----------------------------------------------------------------------------
-# pnpm cache anchor
-# ----------------------------------------------------------------------------
-.pnpm_defaults: &pnpm_defaults
-  # NOTE: do NOT set PATH in `variables:` — GitLab runner does not expand
-  # nested $vars there, so a `PATH: "$X:$PATH"` becomes the literal string
-  # `$X:$PATH`. runc then can't find /bin/sh and the pod fails to start.
-  # Extend PATH inside before_script (real shell, real expansion) instead.
-  image: node:22
-  variables:
-    PNPM_HOME: /builds/HadiCherkaoui/anvil/.pnpm
-    DEBIAN_FRONTEND: noninteractive
-  cache:
-    key:
-      files:
-        - frontend/pnpm-lock.yaml
-    paths:
-      - frontend/node_modules/
-      - .pnpm-store/
-    policy: pull-push
-  before_script:
-    - export PATH="$PNPM_HOME:$PATH"
-    - corepack enable
-    - cd frontend
-    - pnpm config set store-dir "$CI_PROJECT_DIR/.pnpm-store"
-    - pnpm install --frozen-lockfile
-  rules:
-    - changes:
-        - frontend/**/*
-        - .gitlab-ci.yml
-
-# ----------------------------------------------------------------------------
 # test stage — parallel
 # ----------------------------------------------------------------------------
 rust-fmt:
@@ -97,10 +67,9 @@ rust-clippy:
     # `compile_error!` (mutex). Two passes keep both code paths honest.
     - cargo clippy --all-targets --features serve-dir --locked -- -D warnings
     # `embed` reads ../frontend/out/ at compile time via rust-embed's derive.
-    # The `pnpm-build` job that populates it lives in a later stage, so for
-    # clippy we plant an empty placeholder — the derive expands to an `Assets`
-    # impl with zero bundled files but the `get` method is still in scope,
-    # which is all the lints need.
+    # Plant an empty placeholder — the derive expands to an `Assets` impl
+    # with zero bundled files but the `get` method is still in scope, which
+    # is all the lints need.
     - mkdir -p ../frontend/out
     - cargo clippy --all-targets --features embed --locked -- -D warnings
 
@@ -111,54 +80,8 @@ rust-test:
     - set -euo pipefail
     - cd backend && cargo test --features serve-dir --locked
 
-# Typecheck + lint are run locally before commits — keeping them out of CI
-# avoids the GitLab K8s runner's flakiness with the pnpm container while
-# still leaving pnpm-build below to validate the bundle compiles.
-
-# ----------------------------------------------------------------------------
-# build stage — produces the frontend bundle and the release binary
-# ----------------------------------------------------------------------------
-pnpm-build:
-  <<: *pnpm_defaults
-  stage: build
-  script:
-    - set -euo pipefail
-    - pnpm build
-  artifacts:
-    paths:
-      - frontend/out/
-    expire_in: 1 day
-  # Override the shared pnpm rule: pnpm-build also runs on backend changes
-  # because cargo-build-release embeds frontend/out/ via rust-embed and
-  # docker-build's first stage rebuilds it. If we let pnpm-build skip on
-  # backend-only commits, every dependent job's `needs:` becomes unsatisfied
-  # and GitLab fails the whole pipeline.
-  rules:
-    - changes:
-        - backend/**/*
-        - frontend/**/*
-        - .gitlab-ci.yml
-
-# Release binary (only builds on main — feature branches don't need it).
-cargo-build-release:
-  <<: *rust_defaults
-  stage: build
-  needs:
-    - job: pnpm-build
-      artifacts: true
-  script:
-    - set -euo pipefail
-    - cd backend && cargo build --release --locked --features embed
-  artifacts:
-    paths:
-      - backend/target/release/anvil
-    expire_in: 1 day
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      changes:
-        - backend/**/*
-        - frontend/**/*
-        - .gitlab-ci.yml
+# Frontend typecheck + lint run locally pre-commit; the Dockerfile's
+# pnpm-build stage will fail the image build if the bundle doesn't compile.
 
 # ----------------------------------------------------------------------------
 # image stage — pushes :<sha> + :latest to the GitLab project registry
@@ -178,13 +101,6 @@ docker-build:
     DOCKER_BUILDKIT: "1"
     DOCKER_HOST: "tcp://docker:2375"
     DOCKER_TLS_CERTDIR: ""
-  # `needs:` here is for sequencing — the Dockerfile re-runs `pnpm build`
-  # internally in stage 1, so we don't actually consume the artifact. Holding
-  # the dependency stops us from spending image-build minutes when the
-  # frontend already failed.
-  needs:
-    - job: pnpm-build
-      artifacts: true
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
