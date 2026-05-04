@@ -100,6 +100,18 @@ fn api_routes(state: AppState) -> Router<AppState> {
             "/api/servers/{id}/mods/apply/stream",
             get(servers::mods::apply_stream),
         )
+        .route(
+            "/api/servers/{id}/players",
+            get(servers::players::handle_get),
+        )
+        .route(
+            "/api/servers/{id}/players/action",
+            post(servers::players::handle_action),
+        )
+        .route(
+            "/api/servers/{id}/players/broadcast",
+            post(servers::players::handle_broadcast),
+        )
         .route("/api/cluster/capabilities", get(cluster::handle))
         .route("/api/cluster/mc-versions", get(mc_versions::handle))
         .route(

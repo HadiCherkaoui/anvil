@@ -11,8 +11,8 @@
 
 use std::time::Duration;
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Secret};
@@ -22,12 +22,12 @@ use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::ServerStatus;
-use crate::k8s_status::{derive_status, RCON_PORT};
+use crate::k8s_status::{RCON_PORT, derive_status};
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
-use crate::AppState;
 
 /// Maximum length of `cmd`, in bytes. Pre-validated before any k8s I/O
 /// to short-circuit obviously-bogus requests.

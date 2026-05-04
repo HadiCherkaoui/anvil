@@ -6,26 +6,21 @@
 //! ~2000 pod log lines for join/leave events; that scrape is best-effort
 //! (history is empty on error, the rest of the response succeeds).
 
-// Imports used only by the handlers in Tasks 5 and 6 are commented out here
-// and will be uncommented when those handlers are added.
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-
-// Handler-only imports (uncommented in Tasks 5 + 6):
 use axum::Json;
 use axum::extract::{Path, State};
-// use axum::http::StatusCode;
-// use chrono::Utc;
-use crate::AppState;
-use crate::players::{self, BanEntry, BanIpEntry, OnlinePlayers, PlayerEvent, PlayerEventKind};
+use axum::http::StatusCode;
+use chrono::Utc;
 use k8s_openapi::api::core::v1::Pod;
 use kube::Api;
 use kube::api::LogParams;
-// use crate::routes::servers::create::insert_audit;
-use crate::routes::servers::rcon::run_rcon_batch;
-// use crate::routes::servers::rcon::run_rcon_one;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
+use crate::AppState;
 use crate::error::AppError;
+use crate::players::{self, BanEntry, BanIpEntry, OnlinePlayers, PlayerEvent, PlayerEventKind};
+use crate::routes::servers::create::insert_audit;
+use crate::routes::servers::rcon::{run_rcon_batch, run_rcon_one};
 use crate::validation::{
     validate_chat_message, validate_gamemode, validate_ip_v4_or_v6, validate_kick_reason,
     validate_mc_username,
@@ -193,10 +188,9 @@ const HISTORY_MAX_EVENTS: usize = 50;
 /// Returns [`AppError::BadRequest`] if any of the variant's fields fails
 /// its validator (`validate_mc_username`, `validate_kick_reason`,
 /// `validate_chat_message`, `validate_gamemode`, `validate_ip_v4_or_v6`).
-// `dead_code` here is removed by Task 6 once handle_action() consumes
-// build_action(). `clippy::too_many_lines` stays — the 11-variant match
-// is inherently > 100 lines and shouldn't be split for the sake of it.
-#[allow(dead_code, clippy::too_many_lines)]
+// `clippy::too_many_lines` stays — the 11-variant match is inherently
+// > 100 lines and shouldn't be split for the sake of it.
+#[allow(clippy::too_many_lines)]
 fn build_action(
     action: &PlayerAction,
 ) -> Result<(&'static str, serde_json::Value, String), AppError> {
@@ -401,6 +395,59 @@ async fn scrape_history(state: &AppState, id: &str) -> Vec<PlayerEventDto> {
     evs.reverse();
     evs.truncate(HISTORY_MAX_EVENTS);
     evs.into_iter().map(PlayerEventDto::from).collect()
+}
+
+// --- action + broadcast handlers --------------------------------------------
+
+/// Handler for `POST /api/servers/{id}/players/action`.
+///
+/// Validates the discriminated body, runs the corresponding RCON
+/// command, writes one audit row, returns 204.
+///
+/// # Errors
+///
+/// - 400 with the validator's specific code (e.g. `username_invalid`).
+/// - 404 / 409 / 500 from RCON failures (see [`run_rcon_one`]).
+pub async fn handle_action(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(action): Json<PlayerAction>,
+) -> Result<StatusCode, AppError> {
+    let (audit_action, audit_details, cmd) = build_action(&action)?;
+    run_rcon_one(&state, &id, &cmd).await?;
+    insert_audit(
+        &state.pool,
+        &id,
+        audit_action,
+        Some(audit_details),
+        Utc::now().timestamp(),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Handler for `POST /api/servers/{id}/players/broadcast`.
+///
+/// # Errors
+///
+/// - 400 `message_too_long` / `message_has_control_char`.
+/// - 404 / 409 / 500 from RCON failures.
+pub async fn handle_broadcast(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<BroadcastRequest>,
+) -> Result<StatusCode, AppError> {
+    let msg = validate_chat_message(&req.message)?.to_owned();
+    run_rcon_one(&state, &id, &format!("say {msg}")).await?;
+    insert_audit(
+        &state.pool,
+        &id,
+        "player.broadcast",
+        Some(json!({ "message_len": msg.len() })),
+        Utc::now().timestamp(),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
