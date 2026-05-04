@@ -49,11 +49,14 @@ stages:
 # pnpm cache anchor
 # ----------------------------------------------------------------------------
 .pnpm_defaults: &pnpm_defaults
-  # The debian-based slim node images (both -slim and -bookworm-slim) trip
-  # the GitLab Kubernetes runner's attach strategy with
-  # "exec: sh: not found in $PATH" during pod init. Alpine ships /bin/sh
-  # via busybox in a stable location and is the runner's happy path.
-  image: node:22-alpine
+  # The official node images set ENTRYPOINT to docker-entrypoint.sh, which
+  # mangles PATH for the runner's command override and surfaces as
+  # "exec: sh: not found in $PATH" during pod init on the GitLab Kubernetes
+  # runner. Empty entrypoint lets the runner exec sh directly — documented
+  # workaround. Alpine keeps the image small.
+  image:
+    name: node:22-alpine
+    entrypoint: [""]
   variables:
     PNPM_HOME: $CI_PROJECT_DIR/.pnpm
     PATH: "$CI_PROJECT_DIR/.pnpm:$PATH"
