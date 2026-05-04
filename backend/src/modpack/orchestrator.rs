@@ -199,10 +199,11 @@ async fn run_inner(
     // ─── Phase 2: stop ───────────────────────────────────────────────────
     guard.emit(UpdatePhase::Stopping);
     scale_to(&state.kube, &state.mc_namespace, server_id, 0).await?;
+    let mc_pod = format!("mc-{server_id}-0");
     wait_pod_gone(
         &state.kube,
         &state.mc_namespace,
-        server_id,
+        &mc_pod,
         POD_TERMINATE_TIMEOUT,
     )
     .await?;
@@ -285,7 +286,7 @@ async fn run_inner(
     wait_pod_running(
         &state.kube,
         &state.mc_namespace,
-        server_id,
+        &mc_pod,
         POD_RUNNING_TIMEOUT,
     )
     .await?;
@@ -444,18 +445,17 @@ pub(crate) async fn scale_to(
     Ok(())
 }
 
-/// Polls `mc-{id}-0` until it disappears or the deadline elapses.
+/// Polls `pod_name` until it disappears or the deadline elapses.
 pub(crate) async fn wait_pod_gone(
     client: &kube::Client,
     ns: &str,
-    server_id: &str,
+    pod_name: &str,
     timeout_dur: Duration,
 ) -> Result<()> {
     let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
-    let pod_name = format!("mc-{server_id}-0");
     let deadline = Instant::now() + timeout_dur;
     loop {
-        if pods.get_opt(&pod_name).await?.is_none() {
+        if pods.get_opt(pod_name).await?.is_none() {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -465,18 +465,17 @@ pub(crate) async fn wait_pod_gone(
     }
 }
 
-/// Polls `mc-{id}-0` until its phase reaches `Running`.
+/// Polls `pod_name` until its phase reaches `Running`.
 pub(crate) async fn wait_pod_running(
     client: &kube::Client,
     ns: &str,
-    server_id: &str,
+    pod_name: &str,
     timeout_dur: Duration,
 ) -> Result<()> {
     let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
-    let pod_name = format!("mc-{server_id}-0");
     let deadline = Instant::now() + timeout_dur;
     loop {
-        if let Some(p) = pods.get_opt(&pod_name).await? {
+        if let Some(p) = pods.get_opt(pod_name).await? {
             let phase = p
                 .status
                 .as_ref()
@@ -621,10 +620,11 @@ async fn rollback(state: &AppState, server_id: &str, _guard: &UpdateGuard) -> Re
     // Stop again (the failed run may have left replicas=1 if it failed
     // during `Starting`/`Verifying`).
     scale_to(&state.kube, &state.mc_namespace, server_id, 0).await?;
+    let mc_pod = format!("mc-{server_id}-0");
     wait_pod_gone(
         &state.kube,
         &state.mc_namespace,
-        server_id,
+        &mc_pod,
         POD_TERMINATE_TIMEOUT,
     )
     .await?;
@@ -678,7 +678,7 @@ async fn rollback(state: &AppState, server_id: &str, _guard: &UpdateGuard) -> Re
     wait_pod_running(
         &state.kube,
         &state.mc_namespace,
-        server_id,
+        &mc_pod,
         POD_RUNNING_TIMEOUT,
     )
     .await?;

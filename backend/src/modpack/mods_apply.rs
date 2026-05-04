@@ -87,10 +87,11 @@ async fn run_inner(state: &AppState, server_id: &str, guard: &UpdateGuard) -> Re
     // Stop.
     guard.emit(UpdatePhase::Stopping);
     scale_to(&state.kube, &state.mc_namespace, server_id, 0).await?;
+    let mc_pod = format!("mc-{server_id}-0");
     wait_pod_gone(
         &state.kube,
         &state.mc_namespace,
-        server_id,
+        &mc_pod,
         POD_TERMINATE_TIMEOUT,
     )
     .await?;
@@ -142,7 +143,7 @@ async fn run_inner(state: &AppState, server_id: &str, guard: &UpdateGuard) -> Re
     wait_pod_running(
         &state.kube,
         &state.mc_namespace,
-        server_id,
+        &mc_pod,
         POD_RUNNING_TIMEOUT,
     )
     .await?;
