@@ -2,7 +2,10 @@
 
 import type { ReactElement } from "react";
 
-import { useModApplyStream } from "../lib/use-mod-apply-stream";
+import {
+	useModApplyStream,
+	type ApplyTarget,
+} from "../lib/use-mod-apply-stream";
 import type { UpdatePhase } from "../lib/update-stream";
 import { cn } from "../lib/cn";
 
@@ -17,32 +20,42 @@ const ORDER: ReadonlyArray<UpdatePhase> = [
 	"succeeded",
 ];
 
-const LABELS: Record<UpdatePhase, string> = {
-	queued: "queued",
-	announcing: "announcing",
-	stopping: "stopping",
-	"backing-up": "backing up",
-	swapping: "syncing mods",
-	starting: "starting",
-	verifying: "verifying",
-	succeeded: "succeeded",
-	"rolling-back": "rolling back",
-	"rolled-back": "rolled back",
-	failed: "failed",
-};
+function labels(target: ApplyTarget): Record<UpdatePhase, string> {
+	return {
+		queued: "queued",
+		announcing: "announcing",
+		stopping: "stopping",
+		"backing-up": "backing up",
+		swapping: target === "plugins" ? "syncing plugins" : "syncing mods",
+		starting: "starting",
+		verifying: "verifying",
+		succeeded: "succeeded",
+		"rolling-back": "rolling back",
+		"rolled-back": "rolled back",
+		failed: "failed",
+	};
+}
 
 interface Props {
 	serverId: string | null;
 	isOpen: boolean;
 	onClose: () => void;
+	target?: ApplyTarget;
 }
 
-export function ApplySheet({ serverId, isOpen, onClose }: Props): ReactElement {
-	const stream = useModApplyStream(isOpen ? serverId : null);
+export function ApplySheet({
+	serverId,
+	isOpen,
+	onClose,
+	target = "mods",
+}: Props): ReactElement {
+	const stream = useModApplyStream(isOpen ? serverId : null, target);
 	const activeIdx = stream.phase ? ORDER.indexOf(stream.phase) : -1;
+	const sheetTitle = target === "plugins" ? "apply plugins" : "apply mods";
+	const labelMap = labels(target);
 
 	return (
-		<Sheet isOpen={isOpen} onClose={onClose} title="apply mods" width={640}>
+		<Sheet isOpen={isOpen} onClose={onClose} title={sheetTitle} width={640}>
 			<div className="p-5">
 				<ol className="flex flex-col gap-2 font-mono text-[12px]">
 					{ORDER.map((p, i) => {
@@ -67,7 +80,7 @@ export function ApplySheet({ serverId, isOpen, onClose }: Props): ReactElement {
 												: "bg-text-faint",
 									)}
 								/>
-								{LABELS[p]}
+								{labelMap[p]}
 							</li>
 						);
 					})}

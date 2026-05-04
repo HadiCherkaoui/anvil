@@ -14,8 +14,8 @@ import { Button } from "./Button";
 import { Sheet } from "./Sheet";
 import { Skeleton } from "./Skeleton";
 
-type Mode = "modpack" | "mod";
-type Loader = "fabric" | "forge" | "neoforge";
+type Mode = "modpack" | "mod" | "plugin";
+type Loader = "fabric" | "forge" | "neoforge" | "paper";
 
 export interface CatalogPick {
 	hit: CatalogHit;
@@ -29,6 +29,28 @@ interface Props {
 	loader?: Loader;
 	mc?: string;
 	onPick: (pick: CatalogPick) => void;
+}
+
+function sheetTitle(mode: Mode): string {
+	switch (mode) {
+		case "mod":
+			return "browse mods";
+		case "plugin":
+			return "browse plugins";
+		case "modpack":
+			return "browse modpacks";
+	}
+}
+
+function searchPlaceholder(mode: Mode): string {
+	switch (mode) {
+		case "mod":
+			return "search mods";
+		case "plugin":
+			return "search plugins";
+		case "modpack":
+			return "search modpacks";
+	}
 }
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -67,8 +89,9 @@ export function CatalogSheet({
 				type: mode,
 				q: q.trim(),
 			};
-			if (mode === "mod" && loader !== undefined) params.loader = loader;
-			if (mode === "mod" && mc !== undefined) params.mc = mc;
+			const filtered = mode === "mod" || mode === "plugin";
+			if (filtered && loader !== undefined) params.loader = loader;
+			if (filtered && mc !== undefined) params.mc = mc;
 			searchCatalog(params, ctrl.signal)
 				.then((r) => {
 					setHits(r);
@@ -117,7 +140,7 @@ export function CatalogSheet({
 		<Sheet
 			isOpen={isOpen}
 			onClose={handleClose}
-			title={mode === "mod" ? "browse mods" : "browse modpacks"}
+			title={sheetTitle(mode)}
 			width={720}
 		>
 			<div className="flex h-full flex-col">
@@ -128,11 +151,11 @@ export function CatalogSheet({
 							setQ(e.target.value);
 							setActiveHit(null);
 						}}
-						placeholder={mode === "mod" ? "search mods" : "search modpacks"}
+						placeholder={searchPlaceholder(mode)}
 						className="w-full rounded-md border border-border bg-bg px-3 py-2 font-mono text-[13px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 						spellCheck={false}
 					/>
-					{mode === "mod" && (
+					{(mode === "mod" || mode === "plugin") && (
 						<p className="mt-2 font-mono text-[11px] text-text-faint">
 							filtered to {loader ?? "any loader"} ·{" "}
 							{mc ?? "any minecraft version"}

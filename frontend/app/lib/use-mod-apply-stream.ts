@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 
 import type { UpdatePhase } from "./update-stream";
 
+export type ApplyTarget = "mods" | "plugins";
+
 export interface ModApplyStream {
 	status: "connecting" | "open" | "reconnecting" | "closed";
 	phase: UpdatePhase | null;
@@ -25,7 +27,10 @@ interface ApplyFrame {
 	reason?: string;
 }
 
-export function useModApplyStream(serverId: string | null): ModApplyStream {
+export function useModApplyStream(
+	serverId: string | null,
+	target: ApplyTarget = "mods",
+): ModApplyStream {
 	const [state, setState] = useState<ModApplyStream>(INITIAL);
 	const cancelled = useRef(false);
 
@@ -36,7 +41,7 @@ export function useModApplyStream(serverId: string | null): ModApplyStream {
 			window.location.protocol === "https:" ? "wss:" : "ws:"
 		}//${window.location.host}/api/servers/${encodeURIComponent(
 			serverId,
-		)}/mods/apply/stream`;
+		)}/${target}/apply/stream`;
 		let socket: WebSocket | null = null;
 		let backoff = 1_000;
 		const connect = (): void => {
@@ -78,7 +83,7 @@ export function useModApplyStream(serverId: string | null): ModApplyStream {
 			cancelled.current = true;
 			socket?.close();
 		};
-	}, [serverId]);
+	}, [serverId, target]);
 
 	return state;
 }

@@ -506,7 +506,7 @@ export type Runtime = z.infer<typeof runtimeSchema>;
 export type ModEntry = z.infer<typeof modEntrySchema>;
 
 export interface CatalogSearchParams {
-	type: "mod" | "modpack";
+	type: "mod" | "modpack" | "plugin";
 	q: string;
 	loader?: "fabric" | "forge" | "neoforge" | "paper";
 	mc?: string;
@@ -616,6 +616,84 @@ export async function applyMods(
 		{ method: "POST" },
 	);
 	return jsonOrThrow(res, modsApplyResponseSchema);
+}
+
+// --- plugins (paper servers) ---------------------------------------------
+
+export const paperConfigSchema = z.object({
+	mc_version: z.string(),
+	paper_build: z.string().nullable().default(null),
+	plugins: z.array(modEntrySchema).default([]),
+	pending_plugins: z.array(modEntrySchema).default([]),
+});
+
+export const pluginsListResponseSchema = z.object({
+	plugins: z.array(modEntrySchema),
+	pending_plugins: z.array(modEntrySchema),
+});
+
+export const pluginsApplyResponseSchema = z.object({
+	status: z.string(),
+	server_id: z.string(),
+	pending_count: z.number().int().nonnegative(),
+});
+
+export type PaperConfig = z.infer<typeof paperConfigSchema>;
+export type PluginsListResponse = z.infer<typeof pluginsListResponseSchema>;
+
+/// Lists committed and pending plugins for a Paper server.
+export async function listServerPlugins(
+	serverId: string,
+	signal?: AbortSignal,
+): Promise<PluginsListResponse> {
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/plugins`,
+		init,
+	);
+	return jsonOrThrow(res, pluginsListResponseSchema);
+}
+
+/// Stages adding a plugin to a Paper server's pending list.
+export async function addServerPlugin(
+	serverId: string,
+	entry: ModEntry,
+): Promise<void> {
+	const validated = modEntrySchema.parse(entry);
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/plugins`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(validated),
+		},
+	);
+	await noContentOrThrow(res);
+}
+
+/// Stages removing a plugin from a Paper server's pending list.
+export async function removeServerPlugin(
+	serverId: string,
+	filename: string,
+): Promise<void> {
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/plugins/${encodeURIComponent(
+			filename,
+		)}`,
+		{ method: "DELETE" },
+	);
+	await noContentOrThrow(res);
+}
+
+/// Kicks the plugin-sync FSM. WebSocket at /plugins/apply/stream surfaces phases.
+export async function applyServerPlugins(
+	serverId: string,
+): Promise<{ status: string; server_id: string; pending_count: number }> {
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/plugins/apply`,
+		{ method: "POST" },
+	);
+	return jsonOrThrow(res, pluginsApplyResponseSchema);
 }
 
 // --- players (sub-project C) --------------------------------------------------

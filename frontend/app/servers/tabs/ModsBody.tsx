@@ -1,13 +1,18 @@
 "use client";
 
-import { useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 
 import {
 	ApiError,
 	addPendingMod,
+	addServerPlugin,
 	applyMods,
+	applyServerPlugins,
+	listServerPlugins,
 	moddedConfigSchema,
+	paperConfigSchema,
 	removePendingMod,
+	removeServerPlugin,
 	type ModEntry,
 	type ModPendingOp,
 	type ModdedConfig,
@@ -38,12 +43,17 @@ export function ModsBody(): ReactElement {
 
 	if (detail.source_kind === "paper") {
 		return (
-			<Card>
-				<p className="font-mono text-[12px] text-text-muted">
-					paper plugin browsing arrives later. install plugins via FileBrowser
-					at files.cherkaoui.ch for now.
-				</p>
-			</Card>
+			<PaperPluginsBody
+				serverId={detail.id}
+				sourceConfig={detail.source_config}
+				browseOpen={browseOpen}
+				setBrowseOpen={setBrowseOpen}
+				applyOpen={applyOpen}
+				setApplyOpen={setApplyOpen}
+				onToast={(msg, kind) => {
+					toast.push(msg, kind);
+				}}
+			/>
 		);
 	}
 
@@ -273,5 +283,319 @@ function PendingLabel({ op }: { op: ModPendingOp }): ReactElement {
 			<span className="mr-2 text-accent">↑</span>
 			bump · {op.filename} → {op.to_version_name}
 		</span>
+	);
+}
+
+interface PaperPluginsProps {
+	serverId: string;
+	sourceConfig: unknown;
+	browseOpen: boolean;
+	setBrowseOpen: (v: boolean) => void;
+	applyOpen: boolean;
+	setApplyOpen: (v: boolean) => void;
+	onToast: (msg: string, kind: "success" | "error") => void;
+}
+
+interface PendingPluginChange {
+	kind: "add" | "remove";
+	filename: string;
+	label: string;
+}
+
+function diffPending(
+	plugins: readonly ModEntry[],
+	pending: readonly ModEntry[],
+): PendingPluginChange[] {
+	if (pending.length === 0) return [];
+	const installedByName = new Map(plugins.map((p) => [p.filename, p]));
+	const desiredByName = new Map(pending.map((p) => [p.filename, p]));
+	const changes: PendingPluginChange[] = [];
+	for (const p of pending) {
+		if (!installedByName.has(p.filename)) {
+			changes.push({
+				kind: "add",
+				filename: p.filename,
+				label: `${p.project_name} ${p.version_name}`,
+			});
+		}
+	}
+	for (const p of plugins) {
+		if (!desiredByName.has(p.filename)) {
+			changes.push({
+				kind: "remove",
+				filename: p.filename,
+				label: p.filename,
+			});
+		}
+	}
+	return changes;
+}
+
+function PaperPluginsBody({
+	serverId,
+	sourceConfig,
+	browseOpen,
+	setBrowseOpen,
+	applyOpen,
+	setApplyOpen,
+	onToast,
+}: PaperPluginsProps): ReactElement {
+	const cfgParse = paperConfigSchema.safeParse(sourceConfig);
+	const initialPlugins = cfgParse.success ? cfgParse.data.plugins : [];
+	const initialPending = cfgParse.success ? cfgParse.data.pending_plugins : [];
+
+	const [plugins, setPlugins] = useState<readonly ModEntry[]>(initialPlugins);
+	const [pending, setPending] = useState<readonly ModEntry[]>(initialPending);
+	const [mcVersion] = useState<string>(
+		cfgParse.success ? cfgParse.data.mc_version : "",
+	);
+
+	useEffect(() => {
+		const ctrl = new AbortController();
+		listServerPlugins(serverId, ctrl.signal)
+			.then((r) => {
+				setPlugins(r.plugins);
+				setPending(r.pending_plugins);
+			})
+			.catch((err: unknown) => {
+				if (err instanceof DOMException && err.name === "AbortError") return;
+				onToast(
+					`load failed · ${err instanceof ApiError ? err.code : "unknown"}`,
+					"error",
+				);
+			});
+		return () => {
+			ctrl.abort();
+		};
+	}, [serverId, onToast]);
+
+	if (!cfgParse.success) {
+		return (
+			<Card>
+				<p className="font-mono text-[12px] text-state-error">
+					source_config did not parse as a paper config
+				</p>
+			</Card>
+		);
+	}
+
+	const changes = diffPending(plugins, pending);
+
+	const refresh = (): void => {
+		const ctrl = new AbortController();
+		listServerPlugins(serverId, ctrl.signal)
+			.then((r) => {
+				setPlugins(r.plugins);
+				setPending(r.pending_plugins);
+			})
+			.catch((err: unknown) => {
+				if (err instanceof DOMException && err.name === "AbortError") return;
+				onToast(
+					`refresh failed · ${err instanceof ApiError ? err.code : "unknown"}`,
+					"error",
+				);
+			});
+	};
+
+	const onPick = (pick: CatalogPick): void => {
+		const entry: ModEntry = {
+			provider: pick.hit.provider,
+			project_id: pick.hit.project_id,
+			project_slug: pick.hit.slug,
+			project_name: pick.hit.name,
+			version_id: pick.version.version_id,
+			version_name: pick.version.version_name,
+			filename: pick.version.primary_filename,
+			download_url: pick.version.primary_url,
+			sha512: pick.version.primary_sha512,
+		};
+		addServerPlugin(serverId, entry)
+			.then(() => {
+				onToast(`queued · ${entry.project_name}`, "success");
+				refresh();
+			})
+			.catch((err: unknown) => {
+				onToast(
+					`queue failed · ${err instanceof ApiError ? err.code : "unknown"}`,
+					"error",
+				);
+			});
+	};
+
+	const removeInstalled = (filename: string): void => {
+		removeServerPlugin(serverId, filename)
+			.then(() => {
+				onToast(`queued removal · ${filename}`, "success");
+				refresh();
+			})
+			.catch((err: unknown) => {
+				onToast(
+					`queue failed · ${err instanceof ApiError ? err.code : "unknown"}`,
+					"error",
+				);
+			});
+	};
+
+	const discardChange = (change: PendingPluginChange): void => {
+		if (change.kind === "add") {
+			removeServerPlugin(serverId, change.filename)
+				.then(() => {
+					onToast("discarded", "success");
+					refresh();
+				})
+				.catch((err: unknown) => {
+					onToast(
+						`discard failed · ${
+							err instanceof ApiError ? err.code : "unknown"
+						}`,
+						"error",
+					);
+				});
+			return;
+		}
+		const original = plugins.find((p) => p.filename === change.filename);
+		if (!original) return;
+		addServerPlugin(serverId, original)
+			.then(() => {
+				onToast("discarded", "success");
+				refresh();
+			})
+			.catch((err: unknown) => {
+				onToast(
+					`discard failed · ${err instanceof ApiError ? err.code : "unknown"}`,
+					"error",
+				);
+			});
+	};
+
+	const onApply = (): void => {
+		applyServerPlugins(serverId)
+			.then(() => {
+				setApplyOpen(true);
+			})
+			.catch((err: unknown) => {
+				onToast(
+					`apply failed · ${err instanceof ApiError ? err.code : "unknown"}`,
+					"error",
+				);
+			});
+	};
+
+	return (
+		<>
+			<Card>
+				<div className="flex items-baseline justify-between">
+					<p className="font-mono text-[13px] text-text-primary">
+						{plugins.length} installed
+						{changes.length > 0 && (
+							<span className="ml-3 text-state-warning">
+								· {changes.length} pending
+							</span>
+						)}
+					</p>
+					<Button
+						onClick={() => {
+							setBrowseOpen(true);
+						}}
+					>
+						+ add plugins
+					</Button>
+				</div>
+
+				<ul className="mt-4 flex flex-col">
+					{plugins.length === 0 && (
+						<li className="py-2 font-mono text-[12px] text-text-faint">
+							no plugins installed yet — click `+ add plugins` to start.
+						</li>
+					)}
+					{plugins.map((p) => (
+						<li
+							key={p.filename}
+							className="group flex items-center justify-between border-b border-border-soft py-2 font-mono text-[12px]"
+						>
+							<div className="flex items-center gap-3">
+								<span
+									className="h-3.5 w-1 rounded-sm"
+									style={{ background: "var(--color-source-modrinth)" }}
+								/>
+								<span className="text-text-body">{p.project_name}</span>
+								<span className="text-text-faint">{p.version_name}</span>
+							</div>
+							<button
+								type="button"
+								onClick={() => {
+									removeInstalled(p.filename);
+								}}
+								className="opacity-0 transition-opacity hover:text-state-error focus-visible:opacity-100 group-hover:opacity-100"
+							>
+								remove
+							</button>
+						</li>
+					))}
+				</ul>
+
+				{changes.length > 0 && (
+					<>
+						<p className="mt-6 font-mono text-[11px] uppercase tracking-wider text-text-muted">
+							pending changes
+						</p>
+						<ul className="mt-2 flex flex-col">
+							{changes.map((c) => (
+								<li
+									key={`${c.kind}-${c.filename}`}
+									className="group flex items-center justify-between border-b border-border-soft py-2 font-mono text-[12px]"
+								>
+									<span>
+										<span
+											className={
+												c.kind === "add"
+													? "mr-2 text-state-running"
+													: "mr-2 text-state-error"
+											}
+										>
+											{c.kind === "add" ? "+" : "−"}
+										</span>
+										{c.kind === "add" ? "add" : "remove"} · {c.label}
+									</span>
+									<button
+										type="button"
+										onClick={() => {
+											discardChange(c);
+										}}
+										className="opacity-0 transition-opacity hover:text-state-error focus-visible:opacity-100 group-hover:opacity-100"
+									>
+										discard
+									</button>
+								</li>
+							))}
+						</ul>
+						<div className="mt-4 flex justify-end gap-2">
+							<Button onClick={onApply} variant="primary">
+								apply now
+							</Button>
+						</div>
+					</>
+				)}
+			</Card>
+
+			<CatalogSheet
+				isOpen={browseOpen}
+				onClose={() => {
+					setBrowseOpen(false);
+				}}
+				mode="plugin"
+				loader="paper"
+				mc={mcVersion}
+				onPick={onPick}
+			/>
+			<ApplySheet
+				serverId={serverId}
+				isOpen={applyOpen}
+				onClose={() => {
+					setApplyOpen(false);
+				}}
+				target="plugins"
+			/>
+		</>
 	);
 }
