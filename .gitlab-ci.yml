@@ -167,17 +167,17 @@ docker-build:
   stage: image
   image: docker:27
   services:
-    - docker:27-dind
+    # K8s runner doesn't share /certs between the dind sidecar and the
+    # build container, so TLS-enabled DinD breaks with "open
+    # /certs/client/ca.pem: no such file". Disable TLS — dind listens
+    # on plain :2375, only reachable inside the per-job pod network so
+    # the trust boundary is the same.
+    - name: docker:27-dind
+      command: ["--tls=false"]
   variables:
     DOCKER_BUILDKIT: "1"
-    # DinD-with-TLS: the docker CLI needs DOCKER_HOST + cert paths to reach
-    # the sidecar container, otherwise it falls back to /var/run/docker.sock
-    # (which doesn't exist in the K8s runner pod) and bails with
-    # "Cannot connect to the Docker daemon".
-    DOCKER_TLS_CERTDIR: "/certs"
-    DOCKER_HOST: tcp://docker:2376
-    DOCKER_CERT_PATH: "/certs/client"
-    DOCKER_TLS_VERIFY: "1"
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
   # `needs:` here is for sequencing — the Dockerfile re-runs `pnpm build`
   # internally in stage 1, so we don't actually consume the artifact. Holding
   # the dependency stops us from spending image-build minutes when the
