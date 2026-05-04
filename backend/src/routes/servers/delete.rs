@@ -19,6 +19,7 @@ use kube::api::DeleteParams;
 
 use crate::AppState;
 use crate::error::AppError;
+use crate::files_helper::tear_down_helper;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
 
@@ -63,6 +64,10 @@ pub async fn handle(
             });
         }
     }
+
+    // 0. Sub-project D: best-effort tear-down of the files-helper Pod
+    //    so we don't leak it when the server is deleted while stopped.
+    let _ = tear_down_helper(&state, &id).await;
 
     // 1. StatefulSet
     delete_tolerate_404(

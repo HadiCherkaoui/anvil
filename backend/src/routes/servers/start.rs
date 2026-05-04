@@ -14,6 +14,7 @@ use serde_json::json;
 
 use crate::AppState;
 use crate::error::AppError;
+use crate::files_helper::tear_down_helper;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::{ServerDetail, fetch_detail, fetch_server_row};
 
@@ -29,6 +30,11 @@ pub async fn handle(
 ) -> Result<Json<ServerDetail>, AppError> {
     // Verify the server is registered before touching k8s.
     let _row = fetch_server_row(&state.pool, &id).await?;
+
+    // Sub-project D: tear down the files-helper Pod before the MC pod
+    // re-attaches the RWO data PVC. Fail-fast so we don't end up with
+    // two pods racing for the volume.
+    tear_down_helper(&state, &id).await?;
 
     let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let resource_name = format!("mc-{id}");
