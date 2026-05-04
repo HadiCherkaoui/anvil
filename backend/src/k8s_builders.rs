@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetSpec};
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, PersistentVolumeClaim, PersistentVolumeClaimSpec, PodSpec,
-    PodTemplateSpec, ResourceRequirements, Secret, Service, ServicePort, ServiceSpec, VolumeMount,
-    VolumeResourceRequirements,
+    Container, ContainerPort, EnvVar, PersistentVolumeClaim, PersistentVolumeClaimSpec,
+    PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec, ResourceRequirements, Secret,
+    Service, ServicePort, ServiceSpec, Volume, VolumeMount, VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
@@ -308,6 +308,67 @@ pub fn rcon_password() -> String {
         .take(RCON_PASSWORD_LEN)
         .map(char::from)
         .collect()
+}
+
+/// Builds the files-helper Pod for sub-project D. Mounts the existing
+/// data PVC (`data-mc-{id}-0`) so anvil can run `pods/exec` against
+/// `/data` while the MC server is stopped. Owned and torn down by
+/// anvil; no controller wraps it.
+#[must_use]
+pub fn build_files_helper_pod(id: &str, namespace: &str, image: &str) -> Pod {
+    let pod_name = format!("mc-{id}-files");
+    let pvc_name = format!("data-mc-{id}-0");
+
+    let mut labels = server_labels(id);
+    labels.insert("app.anvil.io/role".to_owned(), "files-helper".to_owned());
+
+    let mut limits: BTreeMap<String, Quantity> = BTreeMap::new();
+    limits.insert("cpu".to_owned(), Quantity("100m".to_owned()));
+    limits.insert("memory".to_owned(), Quantity("32Mi".to_owned()));
+    let resources = ResourceRequirements {
+        requests: None,
+        limits: Some(limits),
+        claims: None,
+    };
+
+    let container = Container {
+        name: "files-helper".to_owned(),
+        image: Some(image.to_owned()),
+        command: Some(vec!["sleep".to_owned(), "infinity".to_owned()]),
+        working_dir: Some("/data".to_owned()),
+        resources: Some(resources),
+        volume_mounts: Some(vec![VolumeMount {
+            name: "data".to_owned(),
+            mount_path: "/data".to_owned(),
+            ..VolumeMount::default()
+        }]),
+        ..Container::default()
+    };
+
+    let volume = Volume {
+        name: "data".to_owned(),
+        persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+            claim_name: pvc_name,
+            read_only: Some(false),
+        }),
+        ..Volume::default()
+    };
+
+    Pod {
+        metadata: ObjectMeta {
+            name: Some(pod_name),
+            namespace: Some(namespace.to_owned()),
+            labels: Some(labels),
+            ..ObjectMeta::default()
+        },
+        spec: Some(PodSpec {
+            containers: vec![container],
+            volumes: Some(vec![volume]),
+            restart_policy: Some("Always".to_owned()),
+            ..PodSpec::default()
+        }),
+        status: None,
+    }
 }
 
 /// Returns CPU and memory limits for the Minecraft container.
@@ -645,5 +706,73 @@ mod tests {
         let p = rcon_password();
         assert_eq!(p.len(), 24);
         assert!(p.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn helper_pod_name_and_namespace() {
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        assert_eq!(pod.metadata.name.as_deref(), Some("mc-abcd1234-files"));
+        assert_eq!(pod.metadata.namespace.as_deref(), Some("mc"));
+    }
+
+    #[test]
+    fn helper_pod_carries_managed_labels_plus_role() {
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        let labels = pod.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get(MANAGED_BY_LABEL).map(String::as_str),
+            Some(MANAGED_BY_VALUE),
+        );
+        assert_eq!(
+            labels.get(LABEL_SERVER).map(String::as_str),
+            Some("abcd1234"),
+        );
+        assert_eq!(
+            labels.get("app.anvil.io/role").map(String::as_str),
+            Some("files-helper"),
+        );
+    }
+
+    #[test]
+    fn helper_pod_runs_sleep_infinity() {
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        let container = &pod.spec.as_ref().unwrap().containers[0];
+        assert_eq!(container.image.as_deref(), Some("alpine@sha256:beef"));
+        assert_eq!(
+            container.command.as_ref().unwrap(),
+            &vec!["sleep".to_owned(), "infinity".to_owned()],
+        );
+        assert_eq!(container.working_dir.as_deref(), Some("/data"));
+    }
+
+    #[test]
+    fn helper_pod_mounts_data_pvc_by_claim_name() {
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        let spec = pod.spec.as_ref().unwrap();
+        let volume = spec
+            .volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|v| v.name == "data")
+            .unwrap();
+        let pvc = volume.persistent_volume_claim.as_ref().unwrap();
+        assert_eq!(pvc.claim_name, "data-mc-abcd1234-0");
+        let mount = &spec.containers[0].volume_mounts.as_ref().unwrap()[0];
+        assert_eq!(mount.name, "data");
+        assert_eq!(mount.mount_path, "/data");
+    }
+
+    #[test]
+    fn helper_pod_resource_limits_are_modest() {
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        let res = pod.spec.as_ref().unwrap().containers[0]
+            .resources
+            .as_ref()
+            .unwrap();
+        assert!(res.requests.is_none());
+        let limits = res.limits.as_ref().unwrap();
+        assert_eq!(limits.get("cpu").unwrap().0, "100m");
+        assert_eq!(limits.get("memory").unwrap().0, "32Mi");
     }
 }
