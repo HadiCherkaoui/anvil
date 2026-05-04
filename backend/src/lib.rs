@@ -25,6 +25,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod files;
+pub mod files_helper;
 pub mod k8s;
 pub mod k8s_builders;
 pub mod k8s_status;
