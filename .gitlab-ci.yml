@@ -95,6 +95,12 @@ rust-clippy:
     # would activate `serve-dir` *and* `embed`, which is a hard
     # `compile_error!` (mutex). Two passes keep both code paths honest.
     - cargo clippy --all-targets --features serve-dir --locked -- -D warnings
+    # `embed` reads ../frontend/out/ at compile time via rust-embed's derive.
+    # The `pnpm-build` job that populates it lives in a later stage, so for
+    # clippy we plant an empty placeholder — the derive expands to an `Assets`
+    # impl with zero bundled files but the `get` method is still in scope,
+    # which is all the lints need.
+    - mkdir -p ../frontend/out
     - cargo clippy --all-targets --features embed --locked -- -D warnings
 
 rust-test:
