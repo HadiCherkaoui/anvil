@@ -19,13 +19,19 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims", "services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Pod inspection + log streaming.
+  # Pod inspection + log streaming. Sub-project D adds create+delete on
+  # the helper Pod (mc-{id}-files) which mounts the data PVC while the
+  # server is stopped; we own its full lifecycle.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get", "list", "watch"]
+  # File browser (sub-project D) — exec into pods for streamed file ops.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
   # RCON Secrets land in M5; surface RBAC now so the chart contract is stable.
   - apiGroups: [""]
     resources: ["secrets"]

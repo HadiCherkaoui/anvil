@@ -57,6 +57,13 @@ mcDefaults:
   # exposure_mode=loadbalancer are rejected with 502 lb_unavailable.
   # Homelab default per cluster-profile.md: true.
   loadbalancerSupported: true
+  # Pinned image for the per-server "files-helper" Pod (sub-project D).
+  # Mounted into alpine + sleep infinity so anvil can pods/exec into the
+  # data PVC while the MC server is stopped. Pin by digest, not tag —
+  # this Pod runs unprivileged but still shares the data PVC, so a
+  # tag-mutation supply-chain attack must not be able to swap the image
+  # out from under us. Default is alpine:3.20 from public.ecr.aws.
+  filesHelperImage: "alpine@sha256:21dc6063fd678b478f57c0e13f47560d0ea4b4e6c19720b88d02a8c01cf91d04"
 
 # Persistence for the panel's own SQLite database. The PVC mounts at
 # /var/lib/anvil; ANVIL_DATABASE_URL points the backend at that path.

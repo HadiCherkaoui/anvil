@@ -36,3 +36,7 @@ data:
   {{- if .Values.modpack.snapshotsPvc.enabled }}
   ANVIL_MODPACK_SNAPSHOTS_PVC: "mc-snapshots"
   {{- end }}
+  # --- File browser (sub-project D) ---------------------------------------
+  # Image used for the per-server "files-helper" Pod, lazy-spawned when
+  # the MC server is stopped so anvil can pods/exec into /data.
+  ANVIL_FILES_HELPER_IMAGE: {{ .Values.mcDefaults.filesHelperImage | quote }}
