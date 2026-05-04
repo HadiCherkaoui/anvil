@@ -49,16 +49,13 @@ stages:
 # pnpm cache anchor
 # ----------------------------------------------------------------------------
 .pnpm_defaults: &pnpm_defaults
-  # Every official `node:*` tag (slim, bookworm-slim, alpine, full) tripped
-  # the GitLab Kubernetes runner with "exec: sh: not found in $PATH" during
-  # pod init, regardless of `entrypoint: [""]`. The runner is happy with
-  # `rust:1-bookworm` (built on debian:bookworm-slim), so we use the same
-  # base and install Node + pnpm via NodeSource. ~30 s extra for apt + curl
-  # but the build container actually starts.
-  image: debian:bookworm-slim
+  # NOTE: do NOT set PATH in `variables:` — GitLab runner does not expand
+  # nested $vars there, so a `PATH: "$X:$PATH"` becomes the literal string
+  # `$X:$PATH`. runc then can't find /bin/sh and the pod fails to start.
+  # Extend PATH inside before_script (real shell, real expansion) instead.
+  image: node:22
   variables:
-    PNPM_HOME: $CI_PROJECT_DIR/.pnpm
-    PATH: "$CI_PROJECT_DIR/.pnpm:$PATH"
+    PNPM_HOME: /builds/HadiCherkaoui/anvil/.pnpm
     DEBIAN_FRONTEND: noninteractive
   cache:
     key:
@@ -69,10 +66,7 @@ stages:
       - .pnpm-store/
     policy: pull-push
   before_script:
-    - apt-get update -qq
-    - apt-get install -y --no-install-recommends curl ca-certificates gnupg
-    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    - apt-get install -y --no-install-recommends nodejs
+    - export PATH="$PNPM_HOME:$PATH"
     - corepack enable
     - cd frontend
     - pnpm config set store-dir "$CI_PROJECT_DIR/.pnpm-store"
