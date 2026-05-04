@@ -111,7 +111,7 @@ async fn run_inner(state: &AppState, server_id: &str, guard: &UpdateGuard) -> Re
         })
         .collect();
     let ts = Utc::now().timestamp();
-    let sync_job = build_mod_sync_job(server_id, ts, &state.mc_namespace, &keep, &urls);
+    let sync_job = build_mod_sync_job(server_id, ts, &state.mc_namespace, "mods", &keep, &urls);
     let job_name = sync_job
         .metadata
         .name

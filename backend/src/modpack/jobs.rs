@@ -183,14 +183,17 @@ pub fn build_swap_job(
 
 /// Builds the mod-sync Job.
 ///
-/// Wipes any `/data/mods/*.jar` not in `keep_filenames`, then downloads any
-/// `desired_urls` line whose filename isn't yet present. Verifies sha512 when
-/// supplied. The data PVC is the only mount; no snapshots PVC needed.
+/// Wipes any `/data/{target_dir}/*.jar` not in `keep_filenames`, then
+/// downloads any `desired_urls` line whose filename isn't yet present.
+/// Verifies sha512 when supplied. The data PVC is the only mount; no
+/// snapshots PVC needed. `target_dir` is `"mods"` for modded servers and
+/// `"plugins"` for Paper servers.
 #[must_use]
 pub fn build_mod_sync_job(
     server_id: &str,
     ts: i64,
     namespace: &str,
+    target_dir: &str,
     keep_filenames: &[&str],
     desired_urls: &[(&str, &str, Option<&str>)],
 ) -> Job {
@@ -206,6 +209,7 @@ pub fn build_mod_sync_job(
         .join("\n");
 
     let env = vec![
+        env_kv("TARGET_DIR", target_dir),
         env_kv("KEEP_FILENAMES", &keep),
         env_kv("DESIRED_URLS", &desired),
     ];
@@ -237,17 +241,21 @@ pub fn build_mod_sync_job(
 }
 
 /// Inline shell script the mod-sync container runs.
+///
+/// Reads `$TARGET_DIR` for the data-relative subdir to manage (`mods` or
+/// `plugins`). The same script handles modded mods and Paper plugins.
 const MOD_SYNC_SCRIPT: &str = r#"
 set -eu
 apk add --no-cache curl >/dev/null
 
-mkdir -p /data/mods
+DEST="/data/$TARGET_DIR"
+mkdir -p "$DEST"
 
 # 1. Build the keep-set in a temp file.
 echo "$KEEP_FILENAMES" > /tmp/keep.txt
 
-# 2. Remove any jar in /data/mods/ that isn't in the keep set.
-for jar in /data/mods/*.jar; do
+# 2. Remove any jar in $DEST that isn't in the keep set.
+for jar in "$DEST"/*.jar; do
   [ -e "$jar" ] || continue
   base=$(basename "$jar")
   if ! grep -qxF "$base" /tmp/keep.txt; then
@@ -259,7 +267,7 @@ done
 # 3. Download every DESIRED_URLS line whose filename isn't yet present.
 echo "$DESIRED_URLS" | while IFS="$(printf '\t')" read -r filename url sha; do
   [ -z "$filename" ] && continue
-  target="/data/mods/$filename"
+  target="$DEST/$filename"
   if [ -e "$target" ]; then
     continue
   fi
@@ -271,7 +279,7 @@ echo "$DESIRED_URLS" | while IFS="$(printf '\t')" read -r filename url sha; do
   mv "$target.tmp" "$target"
 done
 
-echo "mod-sync complete"
+echo "mod-sync complete ($TARGET_DIR)"
 "#;
 
 /// Inline shell script the swap container runs.
@@ -537,6 +545,7 @@ mod tests {
             "abc",
             1,
             "mc",
+            "mods",
             &["sodium.jar", "lithium.jar"],
             &[("iris.jar", "https://example/iris.jar", Some("ffff"))],
         );
@@ -559,7 +568,7 @@ mod tests {
 
     #[test]
     fn mod_sync_job_uses_data_pvc_only() {
-        let j = build_mod_sync_job("abc", 1, "mc", &[], &[]);
+        let j = build_mod_sync_job("abc", 1, "mc", "mods", &[], &[]);
         let v = j.spec.unwrap().template.spec.unwrap().volumes.unwrap();
         assert_eq!(v.len(), 1);
         let data = v.iter().find(|x| x.name == "data").unwrap();
@@ -569,10 +578,28 @@ mod tests {
 
     #[test]
     fn mod_sync_job_name_includes_server_id_and_ts() {
-        let j = build_mod_sync_job("abc", 1_700_000_000, "mc", &[], &[]);
+        let j = build_mod_sync_job("abc", 1_700_000_000, "mc", "mods", &[], &[]);
         assert_eq!(
             j.metadata.name.as_deref(),
             Some("mod-sync-mc-abc-1700000000")
         );
+    }
+
+    #[test]
+    fn mod_sync_job_target_dir_is_passed_via_env() {
+        let j = build_mod_sync_job("abc", 1, "mc", "plugins", &[], &[]);
+        let env = j.spec.unwrap().template.spec.unwrap().containers[0]
+            .env
+            .clone()
+            .unwrap();
+        let td = env.iter().find(|e| e.name == "TARGET_DIR").unwrap();
+        assert_eq!(td.value.as_deref(), Some("plugins"));
+    }
+
+    #[test]
+    fn mod_sync_script_uses_target_dir_var() {
+        // Guard the script never reverts to a hardcoded /data/mods path.
+        assert!(MOD_SYNC_SCRIPT.contains("DEST=\"/data/$TARGET_DIR\""));
+        assert!(!MOD_SYNC_SCRIPT.contains("/data/mods/*.jar"));
     }
 }
