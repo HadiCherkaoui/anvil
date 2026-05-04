@@ -23,6 +23,7 @@ embed = ["dep:rust-embed", "dep:mime_guess"]
 
 [dependencies]
 anyhow = "1.0.102"
+async-stream = "0.3"
 async-trait = "0.1.89"
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-extra = { version = "0.10", features = ["cookie", "cookie-key-expansion", "cookie-private", "cookie-signed"] }
