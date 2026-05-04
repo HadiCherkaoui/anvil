@@ -15,7 +15,7 @@ use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
 const MODDED_IMAGE: &str = "itzg/minecraft-server:java21";
-const MODDED_BOOT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const MODDED_BOOT_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// One installed mod (persisted in `source_config.mods`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -22,7 +22,7 @@ const MR_USER_AGENT: &str = concat!(
     " (https://gitlab.cherkaoui.ch/HadiCherkaoui/anvil)"
 );
 /// Version-list cache TTL.
-const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const CACHE_TTL: Duration = Duration::from_hours(1);
 
 /// Project metadata from `/project/{id_or_slug}`.
 #[derive(Debug, Clone, Deserialize)]

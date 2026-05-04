@@ -30,7 +30,7 @@ const CF_LAUNCH_CMD: &[&str] = &["bash", "startserver.sh"];
 /// then unpacks ~400 mods. 15min is comfortably above the observed P99 on
 /// a warm cache; first-boot can take longer and operators should override
 /// per-server in a future revision if they hit the ceiling.
-const CF_BOOT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const CF_BOOT_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Release channel filter applied when picking the latest server-pack file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

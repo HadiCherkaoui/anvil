@@ -27,7 +27,7 @@ use crate::auth::types::OidcStateCookie;
 use crate::error::AppError;
 
 /// Provider metadata is refreshed (re-discovery + JWKS re-fetch) when older than this.
-const METADATA_TTL: Duration = Duration::from_secs(60 * 60);
+const METADATA_TTL: Duration = Duration::from_hours(1);
 
 /// Authentik exposes `end_session_endpoint` in the discovery doc; teach
 /// `openidconnect` about it via [`AdditionalProviderMetadata`].

@@ -20,7 +20,7 @@ use crate::AppState;
 use crate::error::AppError;
 
 /// How long to cache the `StorageClass` list before re-querying.
-pub const CAPABILITIES_TTL: Duration = Duration::from_secs(5 * 60);
+pub const CAPABILITIES_TTL: Duration = Duration::from_mins(5);
 
 /// Cluster capabilities response shape.
 #[allow(

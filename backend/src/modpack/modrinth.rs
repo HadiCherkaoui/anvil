@@ -16,7 +16,7 @@ use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
 const MR_IMAGE: &str = "itzg/minecraft-server:java21";
-const MR_BOOT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const MR_BOOT_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Persisted Modrinth modpack config (lives in `servers.source_config`).
 #[derive(Debug, Clone, Serialize, Deserialize)]

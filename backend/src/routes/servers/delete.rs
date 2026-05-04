@@ -24,7 +24,7 @@ use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
 
 /// Maximum time to wait for the pod to disappear before bailing.
-const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(120);
+const POD_TERMINATE_TIMEOUT: Duration = Duration::from_mins(2);
 /// Poll interval while waiting for the pod.
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 

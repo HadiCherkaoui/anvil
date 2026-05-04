@@ -112,7 +112,7 @@ fn parse_exit_code(status: Option<&str>, message: Option<&str>) -> Option<i32> {
 /// 60-second idle-read timeout for streaming variants. The total
 /// duration is unbounded — anvil keeps the connection open as long as
 /// data flows.
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Streams a request body into the named pod's exec stdin. Aborts
 /// mid-stream and returns `payload_too_large` if the cap is exceeded.

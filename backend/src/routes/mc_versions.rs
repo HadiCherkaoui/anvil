@@ -22,7 +22,7 @@ pub type McVersionsCache = Arc<Mutex<Option<(Vec<String>, Instant)>>>;
 /// Maximum number of release versions returned to clients.
 pub const MAX_VERSIONS: usize = 20;
 /// How long to keep a fetched manifest before re-fetching.
-const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const CACHE_TTL: Duration = Duration::from_hours(24);
 /// Mojang version manifest URL.
 const MANIFEST_URL: &str = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
 /// Per-fetch HTTP timeout.

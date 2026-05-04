@@ -21,7 +21,7 @@ const CF_API: &str = "https://api.curseforge.com/v1";
 const MINECRAFT_GAME_ID: u32 = 432;
 
 /// File-list cache TTL.
-const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const CACHE_TTL: Duration = Duration::from_hours(1);
 
 /// Upstream `CurseForge` file (one entry of `/mods/{id}/files.data`).
 ///

@@ -21,7 +21,7 @@ const VANILLA_IMAGE: &str = "itzg/minecraft-server:java21";
 ///
 /// Plain Vanilla starts in well under a minute; allow 5 to absorb a slow
 /// pull or a cold ZFS PVC mount.
-const VANILLA_BOOT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const VANILLA_BOOT_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Vanilla MC server provider — itzg/minecraft-server with env-var config.
 #[derive(Debug, Clone, Copy, Default)]

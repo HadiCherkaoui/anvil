@@ -57,7 +57,7 @@ fn test_state(allowed: Vec<String>) -> AppState {
             anvil::modpack::ModrinthClient::new().expect("test Modrinth client"),
         ),
         snapshots_pvc: std::sync::Arc::new("mc-snapshots".to_owned()),
-        modpack_poll_interval: std::time::Duration::from_secs(3600),
+        modpack_poll_interval: std::time::Duration::from_hours(1),
         update_locks: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         update_phase_buses: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),

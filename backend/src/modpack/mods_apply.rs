@@ -24,9 +24,9 @@ use crate::modpack::orchestrator::{
 use crate::routes::servers::create::insert_audit;
 
 const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);
-const SYNC_JOB_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const POD_RUNNING_TIMEOUT: Duration = Duration::from_secs(120);
-const VERIFY_BOOT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const SYNC_JOB_TIMEOUT: Duration = Duration::from_mins(15);
+const POD_RUNNING_TIMEOUT: Duration = Duration::from_mins(2);
+const VERIFY_BOOT_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// Kicks off the mod-sync FSM for `server_id`. Long-running task; spawned
 /// by the route handler; drops `guard` on completion.

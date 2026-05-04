@@ -42,7 +42,7 @@ use crate::ws::{EndReason, Frame};
 /// WS Ping interval.
 const HEARTBEAT: Duration = Duration::from_secs(30);
 /// Maximum time we wait for a pod to be Running before sending End.
-const POD_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const POD_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
 /// Sleep between pod-status polls while waiting for Running.
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 

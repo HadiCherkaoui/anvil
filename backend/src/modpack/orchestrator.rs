@@ -66,17 +66,17 @@ const WIPE_LIST: &[&str] = &["mods", "config", "defaultconfigs", "kubejs", "libr
 const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Backup Job ceiling — ATM-11 ~5–10 GB on ZFS finishes in well under a
 /// minute; 10 absorbs the cold-pod / pull-image cases.
-const BACKUP_JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const BACKUP_JOB_TIMEOUT: Duration = Duration::from_mins(10);
 /// Swap Job ceiling — alpine apk add + curl + unzip; 10 covers a slow CDN.
-const SWAP_JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const SWAP_JOB_TIMEOUT: Duration = Duration::from_mins(10);
 /// Restore Job ceiling — symmetric with backup.
-const RESTORE_JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const RESTORE_JOB_TIMEOUT: Duration = Duration::from_mins(10);
 /// Pod-status poll interval, mirrors restart.rs / delete.rs.
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Job-status poll interval — Job objects update infrequently.
 const JOB_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// Pod-Running wait used before tailing logs for boot verification.
-const POD_RUNNING_TIMEOUT: Duration = Duration::from_secs(120);
+const POD_RUNNING_TIMEOUT: Duration = Duration::from_mins(2);
 /// RCON announce + save-all timeout. Best-effort; orchestrator carries on
 /// if RCON is unavailable.
 const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -685,12 +685,12 @@ async fn rollback(state: &AppState, server_id: &str, _guard: &UpdateGuard) -> Re
     // Best-effort boot verification — use 15min default; we don't know the
     // provider here without re-reading. Vanilla updates don't reach this code.
     let _ = timeout(
-        Duration::from_secs(15 * 60),
+        Duration::from_mins(15),
         wait_for_done_marker(
             &state.kube,
             &state.mc_namespace,
             server_id,
-            Duration::from_secs(15 * 60),
+            Duration::from_mins(15),
         ),
     )
     .await;

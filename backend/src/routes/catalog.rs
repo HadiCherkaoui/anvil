@@ -112,7 +112,7 @@ pub async fn search(
         }
     }
 
-    results.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+    results.sort_by_key(|r| std::cmp::Reverse(r.downloads));
     Ok(Json(SearchResponse { results }))
 }
 
