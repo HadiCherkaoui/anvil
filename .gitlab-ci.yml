@@ -37,6 +37,9 @@ stages:
     <<: *rust_cache
   before_script:
     - rustc --version && cargo --version
+    # `rust:1-bookworm` no longer ships rustfmt/clippy in the toolchain since
+    # the 1.95 base bump (cargo fmt/clippy fail otherwise). Idempotent.
+    - rustup component add rustfmt clippy
   rules:
     - changes:
         - backend/**/*
@@ -46,7 +49,11 @@ stages:
 # pnpm cache anchor
 # ----------------------------------------------------------------------------
 .pnpm_defaults: &pnpm_defaults
-  image: node:22-slim
+  # `node:22-slim` floating tag rebased onto debian:trixie-slim and broke the
+  # GitLab Kubernetes runner's attach strategy ("exec: sh: not found"). Pin
+  # to the bookworm slim variant — same family as rust:1-bookworm, which the
+  # runner already runs cleanly.
+  image: node:22-bookworm-slim
   variables:
     PNPM_HOME: $CI_PROJECT_DIR/.pnpm
     PATH: "$CI_PROJECT_DIR/.pnpm:$PATH"
