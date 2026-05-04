@@ -100,15 +100,14 @@ pub async fn search(
         Err(e) => tracing::warn!(error = %e, "modrinth search failed"),
     }
 
-    // CurseForge — only for modpacks, only when configured. Slim path: try
-    // resolving the query as a slug; if it matches, surface as a single hit.
-    // Full CF search support extends cf_client.rs and is left for B.1.
+    // CurseForge — only for modpacks, only when configured. Full-text
+    // search via /mods/search?searchFilter=...&classId=4471 (modpacks).
     if p.kind == "modpack"
         && let Some(cf) = state.cf_client.as_ref()
     {
-        match cf.resolve_slug(&p.q).await {
-            Ok(project) => results.push(cf_project_to_catalog(project)),
-            Err(e) => tracing::debug!(error = %e, "curseforge slug lookup miss"),
+        match cf.search(&p.q, limit, offset).await {
+            Ok(hits) => results.extend(hits.into_iter().map(cf_project_to_catalog)),
+            Err(e) => tracing::warn!(error = %e, "curseforge search failed"),
         }
     }
 
@@ -244,20 +243,47 @@ fn modrinth_hit_to_catalog(h: MrSearchHit) -> CatalogHit {
 }
 
 fn cf_project_to_catalog(p: CfProject) -> CatalogHit {
+    use std::collections::BTreeSet;
+
+    let mut loaders: BTreeSet<&'static str> = BTreeSet::new();
+    let mut game_versions: BTreeSet<String> = BTreeSet::new();
+    for f in &p.latest_files_indexes {
+        if let Some(name) = f.mod_loader.and_then(cf_loader_id_to_name) {
+            loaders.insert(name);
+        }
+        if !f.game_version.is_empty() {
+            game_versions.insert(f.game_version.clone());
+        }
+    }
+
     CatalogHit {
         provider: "curseforge",
         project_id: p.id.to_string(),
         slug: p.slug,
         name: p.name,
-        summary: String::new(),
-        icon_url: None,
-        downloads: 0,
-        follows: 0,
+        summary: p.summary,
+        icon_url: p.logo.map(|l| l.url),
+        downloads: p.download_count,
+        follows: p.thumbs_up_count,
         project_type: "modpack".to_owned(),
-        loaders: vec![],
-        game_versions: vec![],
-        author: None,
-        updated: String::new(),
+        loaders: loaders.into_iter().map(str::to_owned).collect(),
+        game_versions: game_versions.into_iter().collect(),
+        author: p.authors.into_iter().next().map(|a| a.name),
+        updated: p.date_modified,
+    }
+}
+
+/// Maps `CurseForge` `modLoader` enum ids to the loader names the panel uses.
+/// Per the public `CurseForge` schema: 1 `Forge`, 4 `Fabric`, 5 `Quilt`,
+/// 6 `NeoForge`. Unknown ids are dropped silently — the catalog UI just
+/// shows fewer chips.
+fn cf_loader_id_to_name(id: u8) -> Option<&'static str> {
+    match id {
+        1 => Some("forge"),
+        4 => Some("fabric"),
+        5 => Some("quilt"),
+        6 => Some("neoforge"),
+        _ => None,
     }
 }
 

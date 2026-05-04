@@ -20,6 +20,10 @@ const CF_API: &str = "https://api.curseforge.com/v1";
 /// Minecraft game id on `CurseForge` — used to scope project searches.
 const MINECRAFT_GAME_ID: u32 = 432;
 
+/// `CurseForge` class id for Minecraft modpacks. Without this filter
+/// `/mods/search` returns mods, modpacks, worlds and resource packs mixed.
+const MODPACK_CLASS_ID: u32 = 4471;
+
 /// File-list cache TTL.
 const CACHE_TTL: Duration = Duration::from_hours(1);
 
@@ -57,6 +61,52 @@ pub struct CfProject {
     pub name: String,
     /// URL slug (`"all-the-mods-11"`).
     pub slug: String,
+    /// One-line description shown in catalog cards.
+    #[serde(default)]
+    pub summary: String,
+    /// Total downloads across all files.
+    #[serde(rename = "downloadCount", default)]
+    pub download_count: u64,
+    /// `CurseForge` "thumbs up" count — surfaced as `follows` in the
+    /// merged catalog so the panel can sort / display popularity.
+    #[serde(rename = "thumbsUpCount", default)]
+    pub thumbs_up_count: u64,
+    /// Logo image; only the URL is consumed.
+    #[serde(default)]
+    pub logo: Option<CfLogo>,
+    /// Project authors. The catalog UI shows the first.
+    #[serde(default)]
+    pub authors: Vec<CfAuthor>,
+    /// Per-file index used to derive the loader/game-version chips in
+    /// the catalog UI without re-paginating `/mods/{id}/files`.
+    #[serde(rename = "latestFilesIndexes", default)]
+    pub latest_files_indexes: Vec<CfFileIndex>,
+    /// ISO 8601 last-modified timestamp.
+    #[serde(rename = "dateModified", default)]
+    pub date_modified: String,
+}
+
+/// `CurseForge` logo wrapper — only `url` is used.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CfLogo {
+    pub url: String,
+}
+
+/// `CurseForge` author entry — only `name` is used.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CfAuthor {
+    pub name: String,
+}
+
+/// One row of `CfProject.latest_files_indexes`. The id mapping comes from
+/// the `CurseForge` `modLoaderType` enum: 1 `Forge`, 4 `Fabric`, 5 `Quilt`,
+/// 6 `NeoForge`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CfFileIndex {
+    #[serde(rename = "gameVersion")]
+    pub game_version: String,
+    #[serde(rename = "modLoader", default)]
+    pub mod_loader: Option<u8>,
 }
 
 /// One-field generic envelope for `CurseForge` API responses (everything
@@ -185,6 +235,36 @@ impl CurseForgeClient {
             .into_iter()
             .find(|p| p.slug == slug)
             .ok_or_else(|| anyhow!("no Minecraft project with slug {slug:?}"))
+    }
+
+    /// Searches `CurseForge` modpacks by free-text query. Returns up to
+    /// `page_size` hits starting at `index`, sorted by `CurseForge`'s
+    /// default ranking (popularity-weighted).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the upstream call fails or the response shape
+    /// is not what we expect.
+    pub async fn search(&self, query: &str, page_size: u32, index: u32) -> Result<Vec<CfProject>> {
+        let url = format!("{CF_API}/mods/search");
+        let resp = self
+            .inner
+            .http
+            .get(&url)
+            .query(&[
+                ("gameId", MINECRAFT_GAME_ID.to_string().as_str()),
+                ("classId", MODPACK_CLASS_ID.to_string().as_str()),
+                ("searchFilter", query),
+                ("pageSize", page_size.to_string().as_str()),
+                ("index", index.to_string().as_str()),
+            ])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            bail!("CurseForge search failed: HTTP {}", resp.status());
+        }
+        let wrap: Envelope<Vec<CfProject>> = resp.json().await.context("decoding /mods/search")?;
+        Ok(wrap.data)
     }
 
     async fn peek_cache(&self, project_id: u32) -> Option<Arc<Vec<CfFile>>> {
