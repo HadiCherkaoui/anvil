@@ -21,7 +21,7 @@ use crate::validation::{
 /// `GET /api/catalog/search` query.
 #[derive(Debug, Deserialize)]
 pub struct SearchParams {
-    /// `mod` | `modpack`
+    /// `mod` | `modpack` | `plugin`
     #[serde(rename = "type")]
     pub kind: String,
     pub q: String,
@@ -63,17 +63,17 @@ pub struct SearchResponse {
 ///
 /// # Errors
 ///
-/// - 400 `catalog_type_invalid` if `type` is not `mod` or `modpack`.
+/// - 400 `catalog_type_invalid` if `type` is not `mod`, `modpack`, or `plugin`.
 /// - 400 `search_query_invalid` if `q` is blank or too long.
 /// - 400 `runtime_invalid` if `loader` is set to an unknown value.
 pub async fn search(
     State(state): State<AppState>,
     Query(p): Query<SearchParams>,
 ) -> Result<Json<SearchResponse>, AppError> {
-    if p.kind != "mod" && p.kind != "modpack" {
+    if p.kind != "mod" && p.kind != "modpack" && p.kind != "plugin" {
         return Err(AppError::BadRequest {
             code: "catalog_type_invalid",
-            message: format!("type must be mod or modpack, got {:?}", p.kind),
+            message: format!("type must be mod, modpack, or plugin, got {:?}", p.kind),
         });
     }
     validate_search_query(&p.q)?;
@@ -86,10 +86,16 @@ pub async fn search(
 
     let mut results: Vec<CatalogHit> = Vec::new();
 
-    // Modrinth — both modpack and mod queries hit it.
+    // Modrinth — mod, modpack, and plugin queries all hit it. CurseForge
+    // does not host Bukkit-style plugins meaningfully, so plugin queries
+    // are Modrinth-only.
     let mr_q = SearchQuery {
         query: &p.q,
-        project_type: if p.kind == "mod" { "mod" } else { "modpack" },
+        project_type: match p.kind.as_str() {
+            "mod" => "mod",
+            "plugin" => "plugin",
+            _ => "modpack",
+        },
         loader: p.loader.as_deref(),
         game_version: p.mc.as_deref(),
         limit,
