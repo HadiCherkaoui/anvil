@@ -185,3 +185,24 @@ Per-server backup retention controls — hardcoded to keep last 3.
 **Deferred UI** (the API is in place — incremental work for the next pass):
 NewServerModal CF sub-form (project_id input + URL paste + channel selector),
 ServerTable update-available badge, server detail page tab bar with Update + Settings tabs.
+
+---
+
+## v2 series — foundation rehaul + capability bump
+
+The deferred UI from M5 plus the larger capability gaps (mods, players, files)
+were decomposed into four sub-projects:
+
+- **A — Foundation rehaul** ✅ (2026-05-03): design system, CommandBar, multi-tab
+  detail page, `/servers/new` page, CPU control, expanded MC versions. Spec:
+  `docs/superpowers/specs/2026-05-03-anvil-v2-foundation-design.md`.
+- **B — Mod ecosystem** ✅ (2026-05-03): Modrinth provider, Paper / Modded
+  runtimes, unified `/api/catalog/search`, mod-sync FSM with `/mods/apply` WS,
+  `CatalogSheet`, full `ModsBody` for modded servers. Spec:
+  `docs/superpowers/specs/2026-05-03-anvil-v2-mod-ecosystem-design.md`.
+- **C — Player management** ✅ (2026-05-03): full Players tab body, RCON-only,
+  bulk-read endpoint + 11-variant action endpoint + broadcast endpoint, recent
+  activity from pod logs. **No new RBAC, no new DB migration, no new
+  dependencies.** Spec:
+  `docs/superpowers/specs/2026-05-03-anvil-v2-player-management-design.md`.
+- **D — File browser sidecar** — pending.
