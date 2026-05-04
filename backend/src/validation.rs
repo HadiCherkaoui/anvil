@@ -463,6 +463,85 @@ pub fn validate_ip_v4_or_v6(s: &str) -> Result<&str, AppError> {
     }
 }
 
+/// Maximum total length of a `/data`-relative path (bytes).
+const DATA_PATH_MAX_LEN: usize = 4096;
+/// Maximum length of a single path segment (bytes).
+const DATA_PATH_SEGMENT_MAX_LEN: usize = 255;
+
+/// Validates a path under the managed server's `/data` PVC. Empty input
+/// is normalised to `"/"`. The validated string is the input as-is so
+/// callers can interpolate it into argv as `/data{path}`.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with one of: `path_too_long`,
+/// `segment_empty`, `segment_traversal`, `segment_dot`,
+/// `segment_leading_dash`, `segment_too_long`, `segment_invalid_char`.
+pub fn validate_data_path(s: &str) -> Result<&str, AppError> {
+    if s.is_empty() {
+        return Ok("/");
+    }
+    if !s.starts_with('/') {
+        return Err(bad_path("path_invalid", "path must start with /"));
+    }
+    if s.len() > DATA_PATH_MAX_LEN {
+        return Err(bad_path(
+            "path_too_long",
+            &format!("path must be ≤ {DATA_PATH_MAX_LEN} bytes"),
+        ));
+    }
+    if s == "/" {
+        return Ok(s);
+    }
+    // Strip the leading slash and split on '/'. Any empty segment means
+    // a "//" or trailing "/" — both rejected.
+    for seg in s[1..].split('/') {
+        validate_segment(seg)?;
+    }
+    Ok(s)
+}
+
+fn validate_segment(seg: &str) -> Result<(), AppError> {
+    if seg.is_empty() {
+        return Err(bad_path("segment_empty", "empty path segment"));
+    }
+    if seg == "." {
+        return Err(bad_path("segment_dot", "'.' segment not allowed"));
+    }
+    if seg == ".." {
+        return Err(bad_path("segment_traversal", "'..' segment not allowed"));
+    }
+    if seg.len() > DATA_PATH_SEGMENT_MAX_LEN {
+        return Err(bad_path(
+            "segment_too_long",
+            &format!("segment exceeds {DATA_PATH_SEGMENT_MAX_LEN} bytes"),
+        ));
+    }
+    if seg.as_bytes()[0] == b'-' {
+        return Err(bad_path(
+            "segment_leading_dash",
+            "segment may not start with '-'",
+        ));
+    }
+    for &b in seg.as_bytes() {
+        let valid = (0x20..=0x7E).contains(&b) && b != b'\'' && b != b'\\';
+        if !valid {
+            return Err(bad_path(
+                "segment_invalid_char",
+                "segment contains a disallowed byte (control char, single-quote, or backslash)",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn bad_path(code: &'static str, message: &str) -> AppError {
+    AppError::BadRequest {
+        code,
+        message: message.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,5 +769,88 @@ mod tests {
         for ip in ["", "not.an.ip", "999.999.999.999", "10.0.0.0/24"] {
             assert!(validate_ip_v4_or_v6(ip).is_err());
         }
+    }
+
+    #[test]
+    fn data_path_accepts_root_and_normal_paths() {
+        for p in [
+            "/",
+            "/world",
+            "/world/region",
+            "/.fabric",
+            "/.cache/seeds",
+            "/server.properties",
+            "/World 2.zip",
+            "/mods/sodium.jar",
+        ] {
+            assert!(validate_data_path(p).is_ok(), "expected {p:?} to pass");
+        }
+    }
+
+    #[test]
+    fn data_path_treats_empty_as_root() {
+        assert_eq!(validate_data_path("").unwrap(), "/");
+    }
+
+    #[test]
+    fn data_path_rejects_relative_paths() {
+        for p in ["world", "./world", "world/level.dat", "  "] {
+            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+        }
+    }
+
+    #[test]
+    fn data_path_rejects_traversal_segments() {
+        for p in ["/..", "/world/..", "/foo/../bar", "/../etc/passwd"] {
+            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+        }
+    }
+
+    #[test]
+    fn data_path_rejects_dot_segments() {
+        for p in ["/.", "/world/.", "/./bar"] {
+            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+        }
+    }
+
+    #[test]
+    fn data_path_rejects_double_slash() {
+        for p in ["//", "/foo//bar", "/foo/"] {
+            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+        }
+    }
+
+    #[test]
+    fn data_path_rejects_leading_dash() {
+        for p in ["/-rf", "/foo/-bar"] {
+            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+        }
+    }
+
+    #[test]
+    fn data_path_rejects_control_chars() {
+        for bad in ["/foo\nbar", "/foo\tbar", "/foo\0bar", "/foo\x7fbar"] {
+            assert!(validate_data_path(bad).is_err(), "expected {bad:?} to fail");
+        }
+    }
+
+    #[test]
+    fn data_path_rejects_quote_and_backslash() {
+        for bad in ["/foo'bar", "/foo\\bar"] {
+            assert!(validate_data_path(bad).is_err(), "expected {bad:?} to fail");
+        }
+    }
+
+    #[test]
+    fn data_path_rejects_oversize_segment() {
+        let long = "a".repeat(256);
+        let p = format!("/{long}");
+        assert!(validate_data_path(&p).is_err());
+    }
+
+    #[test]
+    fn data_path_rejects_oversize_total() {
+        let big = format!("/{}", "a/".repeat(2050)); // > 4096 chars total
+        assert!(validate_data_path(&big).is_err());
     }
 }
