@@ -744,3 +744,130 @@ export async function broadcastMessage(
 	);
 	await noContentOrThrow(res);
 }
+
+// --- Sub-project D: file browser ----------------------------------------
+
+export const fileEntryTypeSchema = z.enum(["f", "d", "l", "o"]);
+export type FileEntryType = z.infer<typeof fileEntryTypeSchema>;
+
+export const fileEntrySchema = z.object({
+	name: z.string().min(1),
+	type: fileEntryTypeSchema,
+	size: z.number().nonnegative(),
+	mtime: z.number(),
+});
+export type FileEntry = z.infer<typeof fileEntrySchema>;
+
+export const fileListResponseSchema = z.object({
+	path: z.string().startsWith("/"),
+	entries: z.array(fileEntrySchema),
+});
+export type FileListResponse = z.infer<typeof fileListResponseSchema>;
+
+export const fileActionSchema = z.discriminatedUnion("action", [
+	z.object({ action: z.literal("mkdir"), path: z.string().min(1) }),
+	z.object({
+		action: z.literal("rename"),
+		from: z.string().min(1),
+		to: z.string().min(1),
+	}),
+	z.object({
+		action: z.literal("delete"),
+		path: z.string().min(1),
+		recursive: z.boolean(),
+	}),
+]);
+export type FileAction = z.infer<typeof fileActionSchema>;
+
+/// Lists entries under `path` for `serverId`. Backend lazy-spawns the
+/// helper Pod when the server is stopped, so the first call after a
+/// stop may take 5–15 s; the `useFiles` hook surfaces this as the
+/// "warming" status.
+export async function fetchFileList(
+	serverId: string,
+	path: string,
+	signal: AbortSignal,
+): Promise<FileListResponse> {
+	const url = `/api/servers/${encodeURIComponent(serverId)}/files?path=${encodeURIComponent(path)}`;
+	const res = await fetch(url, { signal });
+	return jsonOrThrow(res, fileListResponseSchema);
+}
+
+/// Returns the URL to issue a GET against to download the file.
+/// Used by `<a download>` and progressive enhancement; not all callers
+/// need to invoke fetch directly.
+export function downloadFileUrl(serverId: string, path: string): string {
+	return `/api/servers/${encodeURIComponent(serverId)}/files/raw?path=${encodeURIComponent(path)}`;
+}
+
+/// Streams a file body to the backend with progress events. Uses
+/// XMLHttpRequest because `fetch` does not expose `upload.onprogress`.
+export async function uploadFile(
+	serverId: string,
+	path: string,
+	blob: Blob,
+	opts: { onProgress?: (frac: number) => void; signal?: AbortSignal } = {},
+): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		const xhr = new XMLHttpRequest();
+		const url = `/api/servers/${encodeURIComponent(serverId)}/files?path=${encodeURIComponent(path)}`;
+		xhr.open("PUT", url);
+		xhr.responseType = "json";
+		xhr.upload.onprogress = (e): void => {
+			if (opts.onProgress && e.lengthComputable) {
+				opts.onProgress(e.loaded / e.total);
+			}
+		};
+		xhr.onload = (): void => {
+			if (xhr.status === 401) {
+				if (typeof window !== "undefined") {
+					window.location.replace("/api/auth/login");
+				}
+				reject(new ApiError(401, "unauthorized", "redirecting to login"));
+				return;
+			}
+			if (xhr.status === 204) {
+				resolve();
+				return;
+			}
+			const body = xhr.response as { error?: string; code?: string } | null;
+			reject(
+				new ApiError(
+					xhr.status,
+					body?.code ?? "unknown",
+					body?.error ?? xhr.statusText,
+				),
+			);
+		};
+		xhr.onerror = (): void => {
+			reject(new ApiError(0, "network", "network error during upload"));
+		};
+		xhr.onabort = (): void => {
+			reject(new ApiError(0, "aborted", "upload cancelled"));
+		};
+		if (opts.signal) {
+			const onAbort = (): void => {
+				xhr.abort();
+			};
+			opts.signal.addEventListener("abort", onAbort, { once: true });
+		}
+		xhr.send(blob);
+	});
+}
+
+/// Runs one file action (mkdir, rename, delete). 204 on success.
+export async function runFileAction(
+	serverId: string,
+	action: FileAction,
+): Promise<void> {
+	const validated = fileActionSchema.parse(action);
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/files/action`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(validated),
+		},
+	);
+	await noContentOrThrow(res);
+}
