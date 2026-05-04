@@ -49,11 +49,11 @@ stages:
 # pnpm cache anchor
 # ----------------------------------------------------------------------------
 .pnpm_defaults: &pnpm_defaults
-  # `node:22-slim` floating tag rebased onto debian:trixie-slim and broke the
-  # GitLab Kubernetes runner's attach strategy ("exec: sh: not found"). Pin
-  # to the bookworm slim variant — same family as rust:1-bookworm, which the
-  # runner already runs cleanly.
-  image: node:22-bookworm-slim
+  # The debian-based slim node images (both -slim and -bookworm-slim) trip
+  # the GitLab Kubernetes runner's attach strategy with
+  # "exec: sh: not found in $PATH" during pod init. Alpine ships /bin/sh
+  # via busybox in a stable location and is the runner's happy path.
+  image: node:22-alpine
   variables:
     PNPM_HOME: $CI_PROJECT_DIR/.pnpm
     PATH: "$CI_PROJECT_DIR/.pnpm:$PATH"
