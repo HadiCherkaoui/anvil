@@ -205,4 +205,12 @@ were decomposed into four sub-projects:
   activity from pod logs. **No new RBAC, no new DB migration, no new
   dependencies.** Spec:
   `docs/superpowers/specs/2026-05-03-anvil-v2-player-management-design.md`.
-- **D — File browser sidecar** — pending.
+- **D — File browser** ✅ (2026-05-04): in-anvil FS endpoints over `kube-rs`
+  pods/exec — list / download / upload (≤ 100 MiB, streamed) / mkdir / rename /
+  delete (single + recursive). Stopped servers handled by a lazy-spawned
+  helper Pod (`mc-{id}-files`) torn down on Start. **Adds one new RBAC
+  verb (`pods/exec: create`) and extends the existing pods rule with
+  `create+delete` for the helper Pod, one Helm value (`mcDefaults.filesHelperImage`),
+  no DB migration, no new top-level dependencies (kube `ws`+`runtime`
+  features enabled, `async-stream@0.3` added).** Spec:
+  `docs/superpowers/specs/2026-05-03-anvil-v2-file-browser-design.md`.
