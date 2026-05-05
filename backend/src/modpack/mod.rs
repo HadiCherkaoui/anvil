@@ -182,8 +182,11 @@ mod tests {
         let cfg = r#"{
             "project_id": "AANobbMI",
             "channel": "release",
+            "version_skip": [],
+            "force_version": null,
             "current_version_id": "",
-            "current_version_name": ""
+            "current_version_name": "",
+            "auto_update_mode": "notify"
         }"#;
         let p = from_db("modrinth", cfg).expect("modrinth provider");
         assert_eq!(p.kind(), "modrinth");

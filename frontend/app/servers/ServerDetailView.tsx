@@ -226,7 +226,7 @@ export function ServerDetailView(): ReactElement {
 						</h1>
 						<div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[12px] text-text-muted">
 							<Badge variant={STATUS_VARIANT[detail.status]} />
-							<span>runtime · {detail.server_type}</span>
+							<span>runtime · {detail.source_kind}</span>
 							<span>version · {detail.mc_version}</span>
 							<span>memory · {detail.memory_mi} MiB</span>
 							<span>storage · {detail.storage_size_gi} GiB</span>

@@ -24,13 +24,10 @@ pub struct Config {
     /// Modrinth project id (8-char base62) or slug.
     pub project_id: String,
     pub channel: Channel,
-    #[serde(default)]
     pub version_skip: Vec<String>,
-    #[serde(default)]
     pub force_version: Option<String>,
     pub current_version_id: String,
     pub current_version_name: String,
-    #[serde(default)]
     pub auto_update_mode: AutoUpdateMode,
 }
 
@@ -110,10 +107,15 @@ impl ModpackProvider for ModrinthServerPack {
     }
 
     fn extra_env(&self, ctx: &ProviderContext<'_>) -> Vec<EnvVar> {
-        let mut env = vec![
+        // MODRINTH_VERSION pins the deployed version so the orchestrator
+        // can bump it via env patch on update — itzg's mc-image-helper
+        // compares the env var to its stored install marker and reinstalls
+        // when they differ.
+        vec![
             env_kv("EULA", "TRUE"),
             env_kv("TYPE", "AUTO_MODRINTH"),
             env_kv("MODRINTH_PROJECT", &self.config.project_id),
+            env_kv("MODRINTH_VERSION", &self.config.current_version_id),
             env_kv("MODRINTH_DOWNLOAD_DEPENDENCIES", "required"),
             env_kv("MEMORY", &format!("{}M", ctx.memory_mi)),
             env_kv("ENABLE_RCON", "true"),
@@ -122,17 +124,7 @@ impl ModpackProvider for ModrinthServerPack {
                 &format!("mc-{}-rcon", ctx.server_id),
                 "password",
             ),
-        ];
-        // Pinning a specific version is what lets the update orchestrator
-        // bump the deployed pack — itzg compares MODRINTH_VERSION to its
-        // stored install marker and reinstalls when the env var changes.
-        // First-create rows have an empty current_version_id (the create
-        // handler resolves it before the StatefulSet build), so guard the
-        // empty case to keep the env minimal in that path.
-        if !self.config.current_version_id.is_empty() {
-            env.push(env_kv("MODRINTH_VERSION", &self.config.current_version_id));
-        }
-        env
+        ]
     }
 
     fn boot_timeout(&self) -> Duration {

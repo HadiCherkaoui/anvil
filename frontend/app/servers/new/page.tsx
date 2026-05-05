@@ -195,7 +195,7 @@ export default function NewServerPage(): ReactElement {
 			(draft.curseforge !== null || draft.modrinth !== null);
 		const isModded = draft.type === "modded" && draft.runtime !== null;
 
-		const serverType: CreateServerRequest["server_type"] = isPaper
+		const sourceKind: CreateServerRequest["source_kind"] = isPaper
 			? "paper"
 			: isModpack
 				? draft.modrinth !== null
@@ -214,7 +214,7 @@ export default function NewServerPage(): ReactElement {
 				? { storage_class: draft.storage_class }
 				: {}),
 			...(draft.mc_version !== null ? { mc_version: draft.mc_version } : {}),
-			server_type: serverType,
+			source_kind: sourceKind,
 			...(isModpack && draft.curseforge !== null && draft.modrinth === null
 				? {
 						curseforge: {

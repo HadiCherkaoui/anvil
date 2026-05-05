@@ -105,7 +105,7 @@ export function OverviewBody(): ReactElement {
 			<Card header="at a glance">
 				<dl className="grid grid-cols-[8rem_1fr] gap-y-1 font-mono text-[12px]">
 					<dt className="text-text-muted">runtime</dt>
-					<dd className="text-text-body">{detail.server_type}</dd>
+					<dd className="text-text-body">{detail.source_kind}</dd>
 					<dt className="text-text-muted">mc version</dt>
 					<dd className="text-text-body">{detail.mc_version}</dd>
 					<dt className="text-text-muted">memory limit</dt>

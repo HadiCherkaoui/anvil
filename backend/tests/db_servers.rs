@@ -36,7 +36,7 @@ async fn insert_and_query_round_trips() {
     let id = "9b0e0c8a-1234-5678-9abc-def012345678";
     sqlx::query(
         "INSERT INTO servers (
-            id, name, mc_version, memory_mi, server_type, exposure_mode,
+            id, name, mc_version, memory_mi, source_kind, exposure_mode,
             storage_class, storage_size_gi, source_config, nodeport,
             created_at, last_started_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -75,7 +75,7 @@ async fn nodeport_stored_when_assigned() {
     let pool = db::init("sqlite::memory:").await.unwrap();
     sqlx::query(
         "INSERT INTO servers (
-            id, name, mc_version, memory_mi, server_type, exposure_mode,
+            id, name, mc_version, memory_mi, source_kind, exposure_mode,
             storage_size_gi, source_config, nodeport, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -105,7 +105,7 @@ async fn nodeport_stored_when_assigned() {
 async fn name_unique_constraint() {
     let pool = db::init("sqlite::memory:").await.unwrap();
     let stmt = "INSERT INTO servers (
-            id, name, mc_version, memory_mi, server_type, exposure_mode,
+            id, name, mc_version, memory_mi, source_kind, exposure_mode,
             storage_size_gi, source_config, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
     let bind = |id: &'static str| {
@@ -163,7 +163,7 @@ async fn last_started_at_nullable_then_set() {
     let pool = db::init("sqlite::memory:").await.unwrap();
     sqlx::query(
         "INSERT INTO servers (
-            id, name, mc_version, memory_mi, server_type, exposure_mode,
+            id, name, mc_version, memory_mi, source_kind, exposure_mode,
             storage_size_gi, source_config, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )

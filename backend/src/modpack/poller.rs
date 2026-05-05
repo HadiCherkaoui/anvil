@@ -98,8 +98,9 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         // auto-apply?
         let cfg: Value =
             serde_json::from_str(&source_config).unwrap_or_else(|_| serde_json::json!({}));
-        // current_version_id is stored as a number for legacy CF rows and as
-        // a string for Modrinth — handle both.
+        // CF persists `current_version_id` as a JSON number (u32 file id),
+        // Modrinth as a string (8-char base62 version id). Normalise both
+        // to a string for comparison against `latest.id`.
         let current_id_str: String = cfg
             .get("current_version_id")
             .map(|v| match v {

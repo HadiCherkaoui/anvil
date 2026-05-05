@@ -64,7 +64,6 @@ export const serversResponseSchema = z.object({
 // --- detail ---------------------------------------------------------------
 
 export const serverDetailSchema = serverSummarySchema.extend({
-	server_type: z.string(),
 	storage_class: z.string().nullable(),
 	storage_size_gi: z.number().int().nonnegative(),
 	nodeport: z.number().int().nullable(),
@@ -159,8 +158,9 @@ export const createServerRequestSchema = z.object({
 	exposure_mode: exposureModeSchema.optional(),
 	storage_class: z.string().optional(),
 	storage_size_gi: z.number().int().min(10).max(500).optional(),
-	// B: server_type discriminator widens to 5; sub-configs for cf/modrinth/modded.
-	server_type: sourceKindSchema.optional(),
+	// Provider discriminator (vanilla | curseforge | modrinth | modded | paper);
+	// when modpack/modded, the matching sub-config below is required.
+	source_kind: sourceKindSchema.optional(),
 	curseforge: curseforgeCreateSchema.optional(),
 	modrinth: modrinthCreateSchema.optional(),
 	modded: moddedCreateSchema.optional(),

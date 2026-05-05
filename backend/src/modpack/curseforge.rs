@@ -91,19 +91,14 @@ pub struct Config {
     /// create-time via the project endpoint and shipped to itzg as
     /// `CF_SLUG` — `mc-image-helper install-curseforge` rejects calls
     /// without one (`requireNonNull(slug)` in `CurseForgeInstaller`).
-    /// `serde(default)` for forward compatibility with rows written
-    /// before this field existed; the create handler always sets it now.
-    #[serde(default)]
     pub slug: String,
     pub channel: Channel,
     /// Version names (or numeric file ids as strings) the user has chosen
     /// to skip. Compared against the CLIENT file id stored in
     /// `current_version_id`, since that's what we surface in the UI.
-    #[serde(default)]
     pub version_skip: Vec<String>,
     /// When set, the orchestrator targets exactly this client file id and
     /// bypasses the latest-version logic.
-    #[serde(default)]
     pub force_version: Option<String>,
     /// CLIENT file id currently deployed (the one with `manifest.json`).
     /// itzg unpacks the client zip, reads its manifest, and downloads the
@@ -113,7 +108,6 @@ pub struct Config {
     /// Display name of the currently deployed CLIENT file.
     pub current_version_name: String,
     /// Auto-update behaviour for this server.
-    #[serde(default)]
     pub auto_update_mode: AutoUpdateMode,
 }
 
@@ -223,17 +217,19 @@ impl ModpackProvider for CurseForgeServerPack {
     }
 
     fn extra_env(&self, ctx: &ProviderContext<'_>) -> Vec<EnvVar> {
-        // itzg's `AUTO_CURSEFORGE`: CF_SLUG identifies the modpack, CF_FILE_ID
-        // pins the CLIENT file, and CF_API_KEY (mounted from the per-namespace
+        // itzg's AUTO_CURSEFORGE: CF_SLUG identifies the modpack, CF_FILE_ID
+        // pins the CLIENT file, CF_API_KEY (mounted from the per-namespace
         // Secret the chart provisions) authorises the API calls. itzg writes
         // /data/.install-curseforge.env after install; on subsequent boots
         // mc-image-helper compares the requested CF_FILE_ID to the persisted
         // one and reinstalls when they differ — the orchestrator just patches
         // this env var to apply an update.
-        let mut env = vec![
+        vec![
             env_kv("EULA", "TRUE"),
             env_kv("TYPE", "AUTO_CURSEFORGE"),
             env_secret("CF_API_KEY", CF_API_KEY_SECRET, CF_API_KEY_SECRET_FIELD),
+            env_kv("CF_SLUG", &self.config.slug),
+            env_kv("CF_FILE_ID", &self.config.current_version_id.to_string()),
             env_kv("MEMORY", &format!("{}M", ctx.memory_mi)),
             env_kv("ENABLE_RCON", "true"),
             env_secret(
@@ -241,17 +237,7 @@ impl ModpackProvider for CurseForgeServerPack {
                 &format!("mc-{}-rcon", ctx.server_id),
                 "password",
             ),
-        ];
-        if !self.config.slug.is_empty() {
-            env.push(env_kv("CF_SLUG", &self.config.slug));
-        }
-        if self.config.current_version_id != 0 {
-            env.push(env_kv(
-                "CF_FILE_ID",
-                &self.config.current_version_id.to_string(),
-            ));
-        }
-        env
+        ]
     }
 
     fn boot_timeout(&self) -> Duration {
@@ -508,33 +494,6 @@ mod tests {
             .unwrap();
         assert_eq!(sk.name, "mc-abcd-rcon");
         assert_eq!(sk.key, "password");
-    }
-
-    #[test]
-    fn extra_env_omits_cf_file_id_when_unresolved() {
-        let p = pack_with_file(0);
-        let ctx = ProviderContext {
-            server_id: "abcd",
-            memory_mi: 4096,
-        };
-        let env = p.extra_env(&ctx);
-        assert!(env.iter().all(|e| e.name != "CF_FILE_ID"));
-    }
-
-    #[test]
-    fn extra_env_omits_cf_slug_when_unresolved() {
-        // Belt-and-suspenders: legacy rows persisted before `slug` existed
-        // deserialize with an empty string. Better to omit the env var
-        // than send an empty CF_SLUG that mc-image-helper will reject.
-        let mut cfg = pack_with_file(7_777).config.clone();
-        cfg.slug = String::new();
-        let p = CurseForgeServerPack::new(cfg);
-        let ctx = ProviderContext {
-            server_id: "abcd",
-            memory_mi: 4096,
-        };
-        let env = p.extra_env(&ctx);
-        assert!(env.iter().all(|e| e.name != "CF_SLUG"));
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! with the new server's id+name. The user must call `POST /:id/start`
 //! afterwards to bring up the pod.
 //!
-//! M5: the request now carries an optional `server_type` (defaults to
+//! M5: the request carries an optional `source_kind` (defaults to
 //! `"vanilla"`); when set to `"curseforge"`, the handler resolves the
 //! latest `ServerFiles` file from the `CurseForge` API and persists the
 //! provider config so the update orchestrator can re-instantiate it later.
@@ -49,15 +49,15 @@ const NODEPORT_MAX: i32 = 30_099;
 /// Default storage size (GiB) when the request omits the field.
 const DEFAULT_STORAGE_SIZE_GI: i64 = 10;
 /// Source kind discriminator persisted in `servers.source_kind`.
-const SERVER_TYPE_VANILLA: &str = "vanilla";
+const SOURCE_KIND_VANILLA: &str = "vanilla";
 /// Source kind discriminator for `CurseForge` `ServerFiles` servers.
-const SERVER_TYPE_CURSEFORGE: &str = "curseforge";
+const SOURCE_KIND_CURSEFORGE: &str = "curseforge";
 /// Source kind discriminator for Modrinth `.mrpack` servers.
-const SERVER_TYPE_MODRINTH: &str = "modrinth";
+const SOURCE_KIND_MODRINTH: &str = "modrinth";
 /// Source kind discriminator for `modded` (Fabric/Forge/NeoForge) servers.
-const SERVER_TYPE_MODDED: &str = "modded";
+const SOURCE_KIND_MODDED: &str = "modded";
 /// Source kind discriminator for Paper servers (Bukkit-API plugin host).
-const SERVER_TYPE_PAPER: &str = "paper";
+const SOURCE_KIND_PAPER: &str = "paper";
 
 /// Request body for `POST /api/servers`.
 #[derive(Debug, Deserialize)]
@@ -83,14 +83,14 @@ pub struct CreateRequest {
     pub storage_size_gi: Option<i64>,
     /// `vanilla` (default) | `curseforge` | `modrinth` | `modded` | `paper`.
     #[serde(default)]
-    pub server_type: Option<String>,
-    /// Required when `server_type == "curseforge"`.
+    pub source_kind: Option<String>,
+    /// Required when `source_kind == "curseforge"`.
     #[serde(default)]
     pub curseforge: Option<CurseForgeCreateConfig>,
-    /// Required when `server_type == "modrinth"`.
+    /// Required when `source_kind == "modrinth"`.
     #[serde(default)]
     pub modrinth: Option<ModrinthCreateConfig>,
-    /// Required when `server_type == "modded"`.
+    /// Required when `source_kind == "modded"`.
     #[serde(default)]
     pub modded: Option<ModdedCreateConfig>,
 }
@@ -157,7 +157,7 @@ pub async fn handle(
         exposure_mode,
         storage_class,
         storage_size_gi,
-        server_type,
+        source_kind,
         curseforge,
         modrinth,
         modded,
@@ -165,18 +165,18 @@ pub async fn handle(
     validate_name(&name)?;
     validate_memory_mi(memory_mi)?;
 
-    let server_type = server_type.unwrap_or_else(|| SERVER_TYPE_VANILLA.to_owned());
+    let source_kind = source_kind.unwrap_or_else(|| SOURCE_KIND_VANILLA.to_owned());
     if !matches!(
-        server_type.as_str(),
-        SERVER_TYPE_VANILLA
-            | SERVER_TYPE_CURSEFORGE
-            | SERVER_TYPE_MODRINTH
-            | SERVER_TYPE_MODDED
-            | SERVER_TYPE_PAPER
+        source_kind.as_str(),
+        SOURCE_KIND_VANILLA
+            | SOURCE_KIND_CURSEFORGE
+            | SOURCE_KIND_MODRINTH
+            | SOURCE_KIND_MODDED
+            | SOURCE_KIND_PAPER
     ) {
         return Err(AppError::BadRequest {
-            code: "server_type_invalid",
-            message: format!("server_type {server_type:?} not supported"),
+            code: "source_kind_invalid",
+            message: format!("source_kind {source_kind:?} not supported"),
         });
     }
 
@@ -216,10 +216,10 @@ pub async fn handle(
     let rcon_pwd = rcon_password();
     let now = Utc::now().timestamp();
 
-    // Branch on server_type to resolve the provider, the version label, and the
+    // Branch on source_kind to resolve the provider, the version label, and the
     // source_config JSON to persist.
-    let resolved = match server_type.as_str() {
-        SERVER_TYPE_VANILLA => {
+    let resolved = match source_kind.as_str() {
+        SOURCE_KIND_VANILLA => {
             // Vanilla requires an `mc_version`; CF rows don't.
             let mc_v = mc_version.ok_or_else(|| AppError::BadRequest {
                 code: "mc_version_required",
@@ -229,14 +229,14 @@ pub async fn handle(
             ResolvedSource {
                 provider: Box::new(VanillaProvider::new()),
                 mc_version: mc_v,
-                source_kind: SERVER_TYPE_VANILLA,
+                source_kind: SOURCE_KIND_VANILLA,
                 source_config: "{}".to_owned(),
             }
         }
-        SERVER_TYPE_CURSEFORGE => resolve_curseforge(&state, curseforge).await?,
-        SERVER_TYPE_MODRINTH => resolve_modrinth(&state, modrinth).await?,
-        SERVER_TYPE_MODDED => resolve_modded(mc_version, modded)?,
-        SERVER_TYPE_PAPER => resolve_paper(&state, mc_version).await?,
+        SOURCE_KIND_CURSEFORGE => resolve_curseforge(&state, curseforge).await?,
+        SOURCE_KIND_MODRINTH => resolve_modrinth(&state, modrinth).await?,
+        SOURCE_KIND_MODDED => resolve_modded(mc_version, modded)?,
+        SOURCE_KIND_PAPER => resolve_paper(&state, mc_version).await?,
         _ => unreachable!("validated above"),
     };
 
@@ -340,7 +340,7 @@ async fn resolve_curseforge(
     }
     let cfg = cfg.ok_or(AppError::BadRequest {
         code: "cf_config_missing",
-        message: "curseforge.{project_id, channel} required for server_type=curseforge".to_owned(),
+        message: "curseforge.{project_id, channel} required for source_kind=curseforge".to_owned(),
     })?;
 
     // Resolve the project's slug now (itzg's mc-image-helper rejects calls
@@ -414,7 +414,7 @@ async fn resolve_curseforge(
     Ok(ResolvedSource {
         provider: Box::new(CurseForgeServerPack::new(stored_cfg)),
         mc_version: pick.name,
-        source_kind: SERVER_TYPE_CURSEFORGE,
+        source_kind: SOURCE_KIND_CURSEFORGE,
         source_config,
     })
 }
@@ -426,7 +426,7 @@ async fn resolve_modrinth(
 ) -> Result<ResolvedSource, AppError> {
     let cfg = cfg.ok_or(AppError::BadRequest {
         code: "modrinth_config_missing",
-        message: "modrinth.{project_id, channel} required for server_type=modrinth".to_owned(),
+        message: "modrinth.{project_id, channel} required for source_kind=modrinth".to_owned(),
     })?;
     validate_modrinth_id_or_slug(&cfg.project_id)?;
 
@@ -470,7 +470,7 @@ async fn resolve_modrinth(
     Ok(ResolvedSource {
         provider: Box::new(ModrinthServerPack::new(stored_cfg)),
         mc_version: pick.name,
-        source_kind: SERVER_TYPE_MODRINTH,
+        source_kind: SOURCE_KIND_MODRINTH,
         source_config,
     })
 }
@@ -483,7 +483,7 @@ fn resolve_modded(
 ) -> Result<ResolvedSource, AppError> {
     let cfg = cfg.ok_or(AppError::BadRequest {
         code: "modded_config_missing",
-        message: "modded.{runtime} required for server_type=modded".to_owned(),
+        message: "modded.{runtime} required for source_kind=modded".to_owned(),
     })?;
     validate_runtime(&cfg.runtime)?;
     let runtime = match cfg.runtime.as_str() {
@@ -521,7 +521,7 @@ fn resolve_modded(
     Ok(ResolvedSource {
         provider: Box::new(ModdedRuntime::new(stored)),
         mc_version: mc_v,
-        source_kind: SERVER_TYPE_MODDED,
+        source_kind: SOURCE_KIND_MODDED,
         source_config,
     })
 }
@@ -547,7 +547,7 @@ async fn resolve_paper(
     Ok(ResolvedSource {
         provider: Box::new(PaperServerProvider::new(stored)),
         mc_version: mc_v,
-        source_kind: SERVER_TYPE_PAPER,
+        source_kind: SOURCE_KIND_PAPER,
         source_config,
     })
 }
@@ -607,18 +607,15 @@ async fn insert_server(
 ) -> Result<(), AppError> {
     let result = sqlx::query(
         "INSERT INTO servers (
-            id, name, mc_version, memory_mi, server_type,
+            id, name, mc_version, memory_mi,
             exposure_mode, storage_class, storage_size_gi, source_config,
             source_kind, nodeport, created_at, last_started_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
     )
     .bind(id)
     .bind(name)
     .bind(mc_version)
     .bind(memory_mi)
-    // Legacy `server_type` column kept in lockstep with `source_kind` so
-    // callers reading the M2 schema continue to see the same value.
-    .bind(source_kind)
     .bind(exposure_mode)
     .bind(storage_class)
     .bind(storage_size_gi)
@@ -673,7 +670,7 @@ mod tests {
             name,
             "1.21.4",
             4096,
-            SERVER_TYPE_VANILLA,
+            SOURCE_KIND_VANILLA,
             "nodeport",
             None,
             10,
@@ -764,7 +761,7 @@ mod tests {
             "atm11",
             "ATM-11 4.4 Server",
             8192,
-            SERVER_TYPE_CURSEFORGE,
+            SOURCE_KIND_CURSEFORGE,
             "loadbalancer",
             Some("tank"),
             20,
