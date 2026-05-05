@@ -28,6 +28,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get", "list", "watch"]
+  # Live CPU/memory from metrics-server for GET /api/servers/{id}/metrics.
+  # Separate API group from core pods, so it needs its own rule.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get"]
   # File browser (sub-project D) — exec into pods for streamed file ops.
   - apiGroups: [""]
     resources: ["pods/exec"]
