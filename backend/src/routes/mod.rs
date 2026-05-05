@@ -11,7 +11,6 @@ pub mod catalog;
 pub mod cluster;
 pub mod health;
 pub mod mc_versions;
-pub mod modpack;
 pub mod servers;
 
 /// Builds the stateful application router (production path).
@@ -141,10 +140,6 @@ fn api_routes(state: AppState) -> Router<AppState> {
         )
         .route("/api/cluster/capabilities", get(cluster::handle))
         .route("/api/cluster/mc-versions", get(mc_versions::handle))
-        .route(
-            "/api/modpack/curseforge/resolve",
-            get(modpack::resolve_curseforge),
-        )
         .route("/api/catalog/search", get(catalog::search))
         .route(
             "/api/catalog/projects/{provider}/{id}/versions",

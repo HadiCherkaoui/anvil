@@ -14,7 +14,6 @@ import {
 	ApiError,
 	createServer,
 	fetchCapabilities,
-	resolveCurseForgeSlug,
 	type CfChannel,
 	type ClusterCapabilities,
 	type CreateServerRequest,
@@ -56,16 +55,6 @@ const RUNTIME_OPTIONS: ReadonlyArray<{ value: Runtime; label: string }> = [
 	{ value: "neoforge", label: "neoforge" },
 ];
 
-type ModpackProvider = "curseforge" | "modrinth";
-
-const PROVIDER_OPTIONS: ReadonlyArray<{
-	value: ModpackProvider;
-	label: string;
-}> = [
-	{ value: "curseforge", label: "curseforge" },
-	{ value: "modrinth", label: "modrinth" },
-];
-
 const INITIAL: CreateDraft = {
 	name: "",
 	type: "vanilla",
@@ -103,10 +92,6 @@ export default function NewServerPage(): ReactElement {
 	const [draft, setDraft] = useState<CreateDraft>(INITIAL);
 	const [submitting, setSubmitting] = useState(false);
 	const [caps, setCaps] = useState<ClusterCapabilities | null>(null);
-	const [slugInput, setSlugInput] = useState("");
-	const [slugBusy, setSlugBusy] = useState(false);
-	const [slugError, setSlugError] = useState<string | null>(null);
-	const [packProvider, setPackProvider] = useState<ModpackProvider>("modrinth");
 	const [browseOpen, setBrowseOpen] = useState(false);
 
 	useEffect(() => {
@@ -141,29 +126,6 @@ export default function NewServerPage(): ReactElement {
 		missing.push("runtime");
 	const valid = missing.length === 0;
 	const status = submitting ? "submitting" : valid ? "valid" : "draft";
-
-	const onResolveSlug = (): void => {
-		setSlugError(null);
-		setSlugBusy(true);
-		resolveCurseForgeSlug(slugInput.trim())
-			.then((res) => {
-				set("curseforge", { project_id: res.project_id, channel: "release" });
-				set("modrinth", null);
-				toast.push(`resolved · ${res.name}`, "success");
-			})
-			.catch((err: unknown) => {
-				const msg =
-					err instanceof ApiError
-						? `${err.code}: ${err.message}`
-						: err instanceof Error
-							? err.message
-							: "unknown error";
-				setSlugError(msg);
-			})
-			.finally(() => {
-				setSlugBusy(false);
-			});
-	};
 
 	const onCatalogPick = (pick: CatalogPick): void => {
 		if (draft.type === "modpack") {
@@ -298,7 +260,6 @@ export default function NewServerPage(): ReactElement {
 			});
 	};
 
-	const cfDisabled = caps !== null && caps.cf_api_key_present === false;
 	const browseMode: "modpack" | "mod" =
 		draft.type === "modded" ? "mod" : "modpack";
 	const browseLoader: Runtime | undefined =
@@ -410,67 +371,6 @@ export default function NewServerPage(): ReactElement {
 								</div>
 							) : (
 								<div className="flex flex-col gap-3">
-									<div>
-										<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
-											provider
-										</label>
-										<SegmentedControl
-											ariaLabel="modpack provider"
-											value={packProvider}
-											onChange={(v) => {
-												setPackProvider(v);
-												set("curseforge", null);
-												set("modrinth", null);
-												set("mc_version", null);
-											}}
-											options={PROVIDER_OPTIONS}
-										/>
-										{cfDisabled && packProvider === "curseforge" && (
-											<p className="mt-1 font-mono text-[11px] text-state-warning">
-												curseforge requires CF_API_KEY in the panel — falling
-												back to modrinth.
-											</p>
-										)}
-									</div>
-									{packProvider === "curseforge" ? (
-										<div>
-											<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
-												curseforge slug
-											</label>
-											<div className="flex gap-2">
-												<input
-													value={slugInput}
-													onChange={(e) => {
-														setSlugInput(e.target.value);
-													}}
-													placeholder="all-the-mods-11"
-													className="flex-1 rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-													spellCheck={false}
-													disabled={cfDisabled}
-												/>
-												<Button
-													onClick={onResolveSlug}
-													disabled={
-														slugBusy ||
-														slugInput.trim().length === 0 ||
-														cfDisabled
-													}
-												>
-													resolve
-												</Button>
-											</div>
-											{slugError !== null && (
-												<p className="mt-1 font-mono text-[11px] text-state-error">
-													{slugError}
-												</p>
-											)}
-											{draft.curseforge !== null && (
-												<p className="mt-1 font-mono text-[12px] text-text-body">
-													project · {draft.curseforge.project_id.toString()}
-												</p>
-											)}
-										</div>
-									) : null}
 									<Button
 										onClick={() => {
 											setBrowseOpen(true);
@@ -480,6 +380,10 @@ export default function NewServerPage(): ReactElement {
 									</Button>
 									{draft.curseforge !== null && (
 										<>
+											<p className="font-mono text-[12px] text-text-body">
+												curseforge project ·{" "}
+												{draft.curseforge.project_id.toString()}
+											</p>
 											<div>
 												<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
 													channel

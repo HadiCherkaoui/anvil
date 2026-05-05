@@ -35,9 +35,6 @@ const STORAGE_SIZE_GI_MIN: i64 = 10;
 /// Maximum PVC size (GiB). Generous ceiling; anything more is a misconfig.
 const STORAGE_SIZE_GI_MAX: i64 = 500;
 
-/// Maximum length of a `CurseForge` slug.
-const SLUG_MAX_LEN: usize = 200;
-
 /// Maximum length of a `force_version` string.
 const FORCE_VERSION_MAX_LEN: usize = 128;
 
@@ -188,22 +185,6 @@ pub fn validate_storage_size_gi(gi: i64) -> Result<(), AppError> {
             message: format!(
                 "storage_size_gi must be in [{STORAGE_SIZE_GI_MIN}..={STORAGE_SIZE_GI_MAX}]"
             ),
-        });
-    }
-    Ok(())
-}
-
-/// Validates a `CurseForge` slug — non-blank, ≤ 200 characters after trimming.
-///
-/// # Errors
-///
-/// Returns [`AppError::BadRequest`] with `code = "slug_invalid"`.
-pub fn validate_slug(s: &str) -> Result<(), AppError> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() || trimmed.len() > SLUG_MAX_LEN {
-        return Err(AppError::BadRequest {
-            code: "slug_invalid",
-            message: format!("slug must be 1..={SLUG_MAX_LEN} non-blank characters"),
         });
     }
     Ok(())
@@ -617,15 +598,6 @@ mod tests {
         assert!(validate_storage_size_gi(10).is_ok());
         assert!(validate_storage_size_gi(500).is_ok());
         assert!(validate_storage_size_gi(501).is_err());
-    }
-
-    #[test]
-    fn slug_length_cap() {
-        assert!(validate_slug("ok").is_ok());
-        assert!(validate_slug("").is_err());
-        assert!(validate_slug("   ").is_err());
-        assert!(validate_slug(&"a".repeat(200)).is_ok());
-        assert!(validate_slug(&"a".repeat(201)).is_err());
     }
 
     #[test]

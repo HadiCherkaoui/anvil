@@ -186,12 +186,6 @@ const restartResponseSchema = z.object({
 
 // --- modpack --------------------------------------------------------------
 
-export const updateResolveResponseSchema = z.object({
-	project_id: z.number().int().positive(),
-	name: z.string(),
-	slug: z.string(),
-});
-
 export const updateStartResponseSchema = z.object({
 	status: z.string(),
 	server_id: z.string(),
@@ -221,7 +215,6 @@ export type SourceKind = z.infer<typeof sourceKindSchema>;
 export type CfChannel = z.infer<typeof cfChannelSchema>;
 export type AutoUpdateMode = z.infer<typeof autoUpdateModeSchema>;
 export type SettingsRequest = z.infer<typeof settingsRequestSchema>;
-export type UpdateResolveResponse = z.infer<typeof updateResolveResponseSchema>;
 export type UpdateStartResponse = z.infer<typeof updateStartResponseSchema>;
 export type McVersionsResponse = z.infer<typeof mcVersionsResponseSchema>;
 
@@ -411,20 +404,6 @@ export async function logout(): Promise<string> {
 }
 
 // --- modpack endpoints ----------------------------------------------------
-
-/// Resolves a CurseForge URL slug to a project id via the backend (which
-/// holds the API key — never exposed to the browser).
-export async function resolveCurseForgeSlug(
-	slug: string,
-	signal?: AbortSignal,
-): Promise<UpdateResolveResponse> {
-	const init: RequestInit = signal ? { signal } : {};
-	const res = await fetch(
-		`/api/modpack/curseforge/resolve?slug=${encodeURIComponent(slug)}`,
-		init,
-	);
-	return jsonOrThrow(res, updateResolveResponseSchema);
-}
 
 /// Kicks off an update for a modpack-backed server. `versionId` omits to use
 /// the poller's cached latest.

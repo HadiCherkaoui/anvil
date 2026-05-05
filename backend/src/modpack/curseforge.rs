@@ -118,11 +118,46 @@ impl CurseForgeServerPack {
         &self.config
     }
 
-    /// Picks the newest server-pack file matching the channel and not in the
-    /// skip list. Returns `None` if no candidates qualify.
+    /// Picks the file id of the newest server pack matching this config.
+    ///
+    /// Returns `None` if nothing qualifies. The returned id may be a linked
+    /// server-pack file (most modpacks) or a directly-listed `isServerPack`
+    /// file (legacy uploads); the caller resolves the metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let id = pack.pick_latest_server_pack_id(&files);
+    /// // For ATM-11 every file is a client with `serverPackFileId` set;
+    /// // the picker follows the link of the newest matching client.
+    /// ```
     #[must_use]
-    pub fn pick_latest(&self, files: &[CfFile]) -> Option<VersionInfo> {
-        let mut candidates: Vec<&CfFile> = files
+    pub fn pick_latest_server_pack_id(&self, files: &[CfFile]) -> Option<u32> {
+        // Linked path: every modern modpack uploads its server pack as a
+        // sibling file referenced by `serverPackFileId` on each client. The
+        // sibling file does not appear in `/mods/{id}/files`, so filtering
+        // for `is_server_pack` here would exclude every candidate.
+        let linked = files
+            .iter()
+            .filter(|f| !f.is_server_pack)
+            .filter(|f| self.config.channel.accepts(f.release_type))
+            .filter_map(|f| f.server_pack_file_id.map(|sp| (f, sp)))
+            // Skip-list values for linked packs are matched against the
+            // sibling id (what the user was notified about), not the client
+            // file id or name.
+            .filter(|(_, sp)| {
+                let id_str = sp.to_string();
+                !self.config.version_skip.iter().any(|s| s == &id_str)
+            })
+            .max_by(|(a, _), (b, _)| a.file_date.cmp(&b.file_date));
+
+        if let Some((_, sp_id)) = linked {
+            return Some(sp_id);
+        }
+
+        // Direct path (legacy): some projects upload the server pack into
+        // the main listing with `isServerPack: true`. Fall through to that.
+        files
             .iter()
             .filter(|f| f.is_server_pack)
             .filter(|f| f.download_url.is_some())
@@ -135,13 +170,31 @@ impl CurseForgeServerPack {
                     .iter()
                     .any(|s| s == &id_str || s == &f.display_name)
             })
-            .collect();
-        // Newest first by `fileDate` (ISO 8601 sorts lexically).
-        candidates.sort_by(|a, b| b.file_date.cmp(&a.file_date));
-        candidates.first().map(|f| VersionInfo {
+            .max_by(|a, b| a.file_date.cmp(&b.file_date))
+            .map(|f| f.id)
+    }
+
+    /// Resolves a picked server-pack file id to a [`VersionInfo`]. If the id
+    /// matches a directly-listed server-pack file, returns its cached fields;
+    /// otherwise fetches the linked sibling via the supplied client.
+    async fn resolve_pick(
+        &self,
+        cf: &super::cf_client::CurseForgeClient,
+        files: &[CfFile],
+        sp_id: u32,
+    ) -> Result<VersionInfo> {
+        if let Some(direct) = files.iter().find(|f| f.id == sp_id && f.is_server_pack) {
+            return Ok(VersionInfo {
+                id: direct.id.to_string(),
+                name: direct.display_name.clone(),
+                download_url: direct.download_url.clone().unwrap_or_default(),
+            });
+        }
+        let f = cf.file(self.config.project_id, sp_id).await?;
+        Ok(VersionInfo {
             id: f.id.to_string(),
-            name: f.display_name.clone(),
-            download_url: f.download_url.clone().unwrap_or_default(),
+            name: f.display_name,
+            download_url: f.download_url.unwrap_or_default(),
         })
     }
 }
@@ -185,7 +238,10 @@ impl ModpackProvider for CurseForgeServerPack {
             .cf
             .ok_or_else(|| anyhow!("CurseForge client unavailable"))?;
         let files = cf.list_files(self.config.project_id).await?;
-        Ok(self.pick_latest(&files))
+        let Some(sp_id) = self.pick_latest_server_pack_id(&files) else {
+            return Ok(None);
+        };
+        Ok(Some(self.resolve_pick(cf, &files, sp_id).await?))
     }
 
     async fn fetch_url(&self, http: &ModpackHttp<'_>, version: &VersionInfo) -> Result<String> {
@@ -197,13 +253,19 @@ impl ModpackProvider for CurseForgeServerPack {
             .parse()
             .with_context(|| format!("CF version id {:?} not numeric", version.id))?;
         // The cached download_url may be stale; re-fetch the file list and
-        // pick the matching id so the swap Job gets a fresh URL.
-        let files = cf.list_files(self.config.project_id).await?;
-        let f = files
-            .iter()
-            .find(|f| f.id == id_u32)
-            .ok_or_else(|| anyhow!("file id {} not found in project files", version.id))?;
-        f.download_url.clone().ok_or_else(|| {
+        // look for the matching id. Linked server-pack files don't appear in
+        // the listing — fall through to a per-id lookup.
+        let listed = cf.list_files(self.config.project_id).await?;
+        if let Some(f) = listed.iter().find(|f| f.id == id_u32) {
+            return f.download_url.clone().ok_or_else(|| {
+                anyhow!(
+                    "file {} has no download_url (project disabled API distribution)",
+                    version.id
+                )
+            });
+        }
+        let f = cf.file(self.config.project_id, id_u32).await?;
+        f.download_url.ok_or_else(|| {
             anyhow!(
                 "file {} has no download_url (project disabled API distribution)",
                 version.id
@@ -222,9 +284,18 @@ mod tests {
             display_name: name.to_owned(),
             release_type: rtype,
             is_server_pack: server,
+            server_pack_file_id: None,
             download_url: Some(format!("https://example.com/{id}.zip")),
             file_date: date.to_owned(),
         }
+    }
+
+    /// Builds a CLIENT-style file (no `isServerPack`, but with a linked
+    /// server-pack id). This is the shape every modern modpack returns.
+    fn cf_client_with_link(id: u32, name: &str, rtype: u8, date: &str, linked: u32) -> CfFile {
+        let mut f = cf_file(id, name, false, rtype, date);
+        f.server_pack_file_id = Some(linked);
+        f
     }
 
     fn pack(channel: Channel, skip: Vec<String>) -> CurseForgeServerPack {
@@ -253,59 +324,116 @@ mod tests {
     }
 
     #[test]
-    fn pick_latest_skips_client_files() {
+    fn pick_latest_id_skips_client_files_in_direct_path() {
         let p = pack(Channel::Release, vec![]);
         let files = vec![
             cf_file(1, "client", false, 1, "2026-01-01T00:00:00Z"),
             cf_file(2, "server", true, 1, "2026-01-02T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, "2");
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(2));
     }
 
     #[test]
-    fn pick_latest_picks_newest_by_date() {
+    fn pick_latest_id_picks_newest_direct_pack_by_date() {
         let p = pack(Channel::Release, vec![]);
         let files = vec![
             cf_file(1, "old", true, 1, "2026-01-01T00:00:00Z"),
             cf_file(2, "new", true, 1, "2026-02-01T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, "2");
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(2));
     }
 
     #[test]
-    fn pick_latest_honours_skip_list_by_id() {
+    fn pick_latest_id_honours_skip_list_by_id_in_direct_path() {
         let p = pack(Channel::Release, vec!["2".to_owned()]);
         let files = vec![
             cf_file(1, "old", true, 1, "2026-01-01T00:00:00Z"),
             cf_file(2, "new", true, 1, "2026-02-01T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, "1");
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(1));
     }
 
     #[test]
-    fn pick_latest_honours_skip_list_by_name() {
+    fn pick_latest_id_honours_skip_list_by_name_in_direct_path() {
         let p = pack(Channel::Release, vec!["new".to_owned()]);
         let files = vec![
             cf_file(1, "old", true, 1, "2026-01-01T00:00:00Z"),
             cf_file(2, "new", true, 1, "2026-02-01T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, "1");
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(1));
     }
 
     #[test]
-    fn pick_latest_filters_by_channel() {
+    fn pick_latest_id_filters_direct_path_by_channel() {
         let p = pack(Channel::Release, vec![]);
         let files = vec![
             cf_file(1, "beta", true, 2, "2026-02-01T00:00:00Z"),
             cf_file(2, "release", true, 1, "2026-01-01T00:00:00Z"),
         ];
-        assert_eq!(p.pick_latest(&files).unwrap().id, "2");
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(2));
+    }
+
+    // Reproduces the ATM-11 (project 1148445) shape: every file in the
+    // listing is a client with a linked server-pack id; no `is_server_pack`
+    // file exists. The picker must follow the link of the newest matching
+    // client file.
+    #[test]
+    fn pick_latest_id_follows_linked_server_pack() {
+        let p = pack(Channel::Release, vec![]);
+        let files = vec![
+            cf_client_with_link(1, "ATM-0.0.12", 1, "2026-04-01T00:00:00Z", 100),
+            cf_client_with_link(2, "ATM-0.0.13", 1, "2026-05-01T00:00:00Z", 200),
+        ];
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(200));
     }
 
     #[test]
-    fn pick_latest_returns_none_when_no_candidates() {
+    fn pick_latest_id_falls_back_to_direct_listed_server_pack() {
+        let p = pack(Channel::Release, vec![]);
+        let files = vec![
+            cf_file(1, "client", false, 1, "2026-01-01T00:00:00Z"),
+            cf_file(7, "ServerFiles", true, 1, "2026-01-02T00:00:00Z"),
+        ];
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(7));
+    }
+
+    #[test]
+    fn pick_latest_id_returns_none_when_only_unlinked_clients() {
         let p = pack(Channel::Release, vec![]);
         let files = vec![cf_file(1, "client", false, 1, "2026-01-01T00:00:00Z")];
-        assert!(p.pick_latest(&files).is_none());
+        assert!(p.pick_latest_server_pack_id(&files).is_none());
+    }
+
+    #[test]
+    fn pick_latest_id_filters_linked_by_channel() {
+        let p = pack(Channel::Release, vec![]);
+        let files = vec![
+            cf_client_with_link(1, "release", 1, "2026-01-01T00:00:00Z", 100),
+            cf_client_with_link(2, "beta", 2, "2026-02-01T00:00:00Z", 200),
+        ];
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(100));
+    }
+
+    #[test]
+    fn pick_latest_id_skip_list_matches_linked_server_pack_id() {
+        let p = pack(Channel::Release, vec!["200".to_owned()]);
+        let files = vec![
+            cf_client_with_link(1, "old", 1, "2026-01-01T00:00:00Z", 100),
+            cf_client_with_link(2, "new", 1, "2026-02-01T00:00:00Z", 200),
+        ];
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(100));
+    }
+
+    // When a project ships both shapes, the linked path wins because it's
+    // the modern convention and the listing's direct server pack may be
+    // stale (or a draft test upload).
+    #[test]
+    fn pick_latest_id_prefers_linked_over_direct() {
+        let p = pack(Channel::Release, vec![]);
+        let files = vec![
+            cf_file(7, "OldServer", true, 1, "2026-01-01T00:00:00Z"),
+            cf_client_with_link(1, "client", 1, "2026-02-01T00:00:00Z", 200),
+        ];
+        assert_eq!(p.pick_latest_server_pack_id(&files), Some(200));
     }
 }

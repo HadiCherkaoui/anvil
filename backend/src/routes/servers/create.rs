@@ -120,8 +120,7 @@ pub struct ModdedCreateConfig {
 /// Sub-form fields for the `CurseForge` path.
 #[derive(Debug, Deserialize)]
 pub struct CurseForgeCreateConfig {
-    /// `CurseForge` project id (resolved via the `/modpack/curseforge/resolve`
-    /// endpoint when the user pasted a URL).
+    /// `CurseForge` project id (picked via the catalog browse sheet).
     pub project_id: u32,
     /// Release channel filter (`release` default | `beta` | `alpha`).
     pub channel: Channel,
@@ -341,16 +340,21 @@ async fn resolve_curseforge(
     state: &AppState,
     cfg: Option<CurseForgeCreateConfig>,
 ) -> Result<ResolvedSource, AppError> {
-    let cf_client = state.cf_client.as_ref().ok_or(AppError::BadRequest {
-        code: "cf_disabled",
-        message: "CurseForge support is not enabled on this panel (CF_API_KEY missing)".to_owned(),
-    })?;
+    if state.cf_client.is_none() {
+        return Err(AppError::BadRequest {
+            code: "cf_disabled",
+            message: "CurseForge support is not enabled on this panel (CF_API_KEY missing)"
+                .to_owned(),
+        });
+    }
     let cfg = cfg.ok_or(AppError::BadRequest {
         code: "cf_config_missing",
         message: "curseforge.{project_id, channel} required for server_type=curseforge".to_owned(),
     })?;
 
-    // Materialize a temporary provider to drive the picker.
+    // Materialize a temporary provider to drive the picker; `latest()`
+    // handles both legacy direct server packs and the modern linked-sibling
+    // shape (where the listing only carries client files with `serverPackFileId`).
     let provisional = CurseForgeServerPack::new(CfConfig {
         project_id: cfg.project_id,
         channel: cfg.channel,
@@ -361,15 +365,17 @@ async fn resolve_curseforge(
         auto_update_mode: AutoUpdateMode::Notify,
     });
 
-    let files = cf_client
-        .list_files(cfg.project_id)
+    let http = ModpackHttp {
+        cf: state.cf_client.as_deref(),
+        mr: state.mr_client.as_ref(),
+    };
+    let pick = provisional
+        .latest(&http)
         .await
         .map_err(|e| AppError::BadRequest {
             code: "cf_project_not_found",
             message: format!("CurseForge project {} unavailable: {e}", cfg.project_id),
-        })?;
-    let pick = provisional
-        .pick_latest(&files)
+        })?
         .ok_or(AppError::BadRequest {
             code: "no_server_pack_files",
             message: format!(

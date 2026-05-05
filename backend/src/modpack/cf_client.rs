@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, bail};
 use reqwest::header::{ACCEPT, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -43,6 +43,13 @@ pub struct CfFile {
     /// `true` for files marked as a server pack.
     #[serde(rename = "isServerPack", default)]
     pub is_server_pack: bool,
+    /// File id of the linked server-pack file, when the project uploads
+    /// the server pack as a sibling file rather than including it in the
+    /// regular listing. Most modern modpacks (ATM-11, FTB, etc.) take this
+    /// route: every "main" file has `is_server_pack: false` and points here.
+    /// Resolve via [`CurseForgeClient::file`].
+    #[serde(rename = "serverPackFileId", default)]
+    pub server_pack_file_id: Option<u32>,
     /// Direct download URL — may be null when the project disabled API distribution.
     #[serde(rename = "downloadUrl")]
     pub download_url: Option<String>,
@@ -189,6 +196,31 @@ impl CurseForgeClient {
         Ok(cloned)
     }
 
+    /// Fetches one file by id. Used to resolve linked server-pack files
+    /// that don't appear in the regular `/mods/{id}/files` listing.
+    ///
+    /// No caching — invoked at most once per server-create or update swap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file does not exist or the upstream call fails.
+    pub async fn file(&self, project_id: u32, file_id: u32) -> Result<CfFile> {
+        let url = format!("{CF_API}/mods/{project_id}/files/{file_id}");
+        let resp = self.inner.http.get(&url).send().await?;
+        let status = resp.status();
+        if status.as_u16() == 404 {
+            bail!("CurseForge file {file_id} not found in project {project_id}");
+        }
+        if !status.is_success() {
+            bail!("CurseForge GET {url} failed: HTTP {status}");
+        }
+        let wrap: Envelope<CfFile> = resp
+            .json()
+            .await
+            .context("decoding /mods/{id}/files/{id}")?;
+        Ok(wrap.data)
+    }
+
     /// Returns project metadata for `project_id`. No caching — the resolve
     /// endpoint is invoked once per server-create, not on a hot path.
     ///
@@ -207,34 +239,6 @@ impl CurseForgeClient {
         }
         let wrap: Envelope<CfProject> = resp.json().await.context("decoding /mods/{id}")?;
         Ok(wrap.data)
-    }
-
-    /// Resolves a project slug (e.g. `"all-the-mods-11"`) to a project id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no Minecraft project matches the slug or the upstream
-    /// call fails.
-    pub async fn resolve_slug(&self, slug: &str) -> Result<CfProject> {
-        let url = format!("{CF_API}/mods/search");
-        let resp = self
-            .inner
-            .http
-            .get(&url)
-            .query(&[
-                ("gameId", MINECRAFT_GAME_ID.to_string().as_str()),
-                ("slug", slug),
-            ])
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            bail!("CurseForge slug search failed: HTTP {}", resp.status());
-        }
-        let wrap: Envelope<Vec<CfProject>> = resp.json().await.context("decoding /mods/search")?;
-        wrap.data
-            .into_iter()
-            .find(|p| p.slug == slug)
-            .ok_or_else(|| anyhow!("no Minecraft project with slug {slug:?}"))
     }
 
     /// Searches `CurseForge` modpacks by free-text query. Returns up to
