@@ -1,16 +1,25 @@
-//! `CurseForge` `ServerFiles` provider.
+//! `CurseForge` modpack provider.
 //!
-//! Drives `itzg/minecraft-server:java21` with `TYPE=AUTO_CURSEFORGE`. The
-//! itzg launcher pulls `CF_FILE_ID` from the `CurseForge` API on first boot,
-//! installs the linked `NeoForge` / Forge runtime, then runs the bundled
-//! `startserver.sh`. On subsequent boots itzg compares `CF_FILE_ID` to the
-//! file id stamped under `/data/.cf-pre-install-id` and reinstalls when the
-//! caller has bumped the env var — that's how the orchestrator applies a
-//! version bump (env-var patch + restart, no manual unzip step).
+//! Drives `itzg/minecraft-server:java21` with `TYPE=AUTO_CURSEFORGE`. itzg
+//! shells out to its `mc-image-helper install-curseforge` tool, which
+//! requires `--slug` (the modpack URL slug, e.g. `all-the-mods-11`) and
+//! optionally `--file-id`. The file id MUST point at the modpack's CLIENT
+//! file — itzg refuses server-pack files because they ship without the
+//! `manifest.json` it needs to drive the install. mc-image-helper reads
+//! the client manifest, downloads the linked server pack itself, installs
+//! the mod loader, and writes `/data/.install-curseforge.env` (verified
+//! in mc-image-helper's `CurseForgeInstaller.matchesPreviousInstall`) so
+//! subsequent boots only reinstall when `CF_FILE_ID` differs.
 //!
-//! The provider's only runtime job is to pick the correct `ServerFiles`
-//! file from the `CurseForge` API at create / poll time and hand its
-//! numeric id to itzg via the env var.
+//! The provider's runtime job:
+//!   1. At create / poll time, pick the newest CLIENT file matching the
+//!      channel filter that links a server pack (via `serverPackFileId`).
+//!      Projects that only ship direct server-pack files have no client
+//!      manifest and are therefore unsupported on the `AUTO_CURSEFORGE`
+//!      path — the picker returns `None` for those.
+//!   2. Render the `CF_SLUG` + `CF_FILE_ID` env pair so itzg can resolve
+//!      and install the pack. The slug is captured once at create-time
+//!      from `CurseForgeApiClient::project` and never changes for a row.
 
 use std::time::Duration;
 
@@ -78,17 +87,30 @@ impl Channel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub project_id: u32,
+    /// Modpack URL slug (e.g. `"all-the-mods-11"`). Resolved once at
+    /// create-time via the project endpoint and shipped to itzg as
+    /// `CF_SLUG` — `mc-image-helper install-curseforge` rejects calls
+    /// without one (`requireNonNull(slug)` in `CurseForgeInstaller`).
+    /// `serde(default)` for forward compatibility with rows written
+    /// before this field existed; the create handler always sets it now.
+    #[serde(default)]
+    pub slug: String,
     pub channel: Channel,
-    /// Version names (or numeric ids as strings) the user has chosen to skip.
+    /// Version names (or numeric file ids as strings) the user has chosen
+    /// to skip. Compared against the CLIENT file id stored in
+    /// `current_version_id`, since that's what we surface in the UI.
     #[serde(default)]
     pub version_skip: Vec<String>,
-    /// When set, the orchestrator targets exactly this file id and bypasses
-    /// the latest-version logic.
+    /// When set, the orchestrator targets exactly this client file id and
+    /// bypasses the latest-version logic.
     #[serde(default)]
     pub force_version: Option<String>,
-    /// File id currently deployed.
+    /// CLIENT file id currently deployed (the one with `manifest.json`).
+    /// itzg unpacks the client zip, reads its manifest, and downloads the
+    /// linked server pack itself — passing the server-pack id here would
+    /// trip itzg's "do not select a server file" guard.
     pub current_version_id: u32,
-    /// Display name of the currently deployed file.
+    /// Display name of the currently deployed CLIENT file.
     pub current_version_name: String,
     /// Auto-update behaviour for this server.
     #[serde(default)]
@@ -127,50 +149,24 @@ impl CurseForgeServerPack {
         &self.config
     }
 
-    /// Picks the file id of the newest server pack matching this config.
+    /// Picks the CLIENT file id of the newest version matching this config.
     ///
-    /// Returns `None` if nothing qualifies. The returned id may be a linked
-    /// server-pack file (most modpacks) or a directly-listed `isServerPack`
-    /// file (legacy uploads); the caller resolves the metadata.
+    /// Returns `None` if nothing qualifies. itzg's `AUTO_CURSEFORGE` path
+    /// requires a client file (the one with `manifest.json`) — projects
+    /// that only ship direct `isServerPack: true` files have no manifest
+    /// and are unsupported here.
     ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let id = pack.pick_latest_server_pack_id(&files);
-    /// // For ATM-11 every file is a client with `serverPackFileId` set;
-    /// // the picker follows the link of the newest matching client.
-    /// ```
+    /// The candidates are non-server-pack files matching the channel
+    /// filter, with a linked `serverPackFileId` (proof the project ships
+    /// a server pack at all), and not in the skip list (matched against
+    /// the file id or display name).
     #[must_use]
-    pub fn pick_latest_server_pack_id(&self, files: &[CfFile]) -> Option<u32> {
-        // Linked path: every modern modpack uploads its server pack as a
-        // sibling file referenced by `serverPackFileId` on each client. The
-        // sibling file does not appear in `/mods/{id}/files`, so filtering
-        // for `is_server_pack` here would exclude every candidate.
-        let linked = files
+    pub fn pick_latest_client_file_id(&self, files: &[CfFile]) -> Option<u32> {
+        files
             .iter()
             .filter(|f| !f.is_server_pack)
             .filter(|f| self.config.channel.accepts(f.release_type))
-            .filter_map(|f| f.server_pack_file_id.map(|sp| (f, sp)))
-            // Skip-list values for linked packs are matched against the
-            // sibling id (what the user was notified about), not the client
-            // file id or name.
-            .filter(|(_, sp)| {
-                let id_str = sp.to_string();
-                !self.config.version_skip.iter().any(|s| s == &id_str)
-            })
-            .max_by(|(a, _), (b, _)| a.file_date.cmp(&b.file_date));
-
-        if let Some((_, sp_id)) = linked {
-            return Some(sp_id);
-        }
-
-        // Direct path (legacy): some projects upload the server pack into
-        // the main listing with `isServerPack: true`. Fall through to that.
-        files
-            .iter()
-            .filter(|f| f.is_server_pack)
-            .filter(|f| f.download_url.is_some())
-            .filter(|f| self.config.channel.accepts(f.release_type))
+            .filter(|f| f.server_pack_file_id.is_some())
             .filter(|f| {
                 let id_str = f.id.to_string();
                 !self
@@ -183,23 +179,23 @@ impl CurseForgeServerPack {
             .map(|f| f.id)
     }
 
-    /// Resolves a picked server-pack file id to a [`VersionInfo`]. If the id
-    /// matches a directly-listed server-pack file, returns its cached fields;
-    /// otherwise fetches the linked sibling via the supplied client.
-    async fn resolve_pick(
+    /// Looks up the [`VersionInfo`] for `client_file_id` in the cached
+    /// listing, falling back to a per-id GET if the user pinned a file
+    /// that isn't on the recent pages.
+    async fn resolve_client_file(
         &self,
         cf: &super::cf_client::CurseForgeClient,
         files: &[CfFile],
-        sp_id: u32,
+        client_file_id: u32,
     ) -> Result<VersionInfo> {
-        if let Some(direct) = files.iter().find(|f| f.id == sp_id && f.is_server_pack) {
+        if let Some(found) = files.iter().find(|f| f.id == client_file_id) {
             return Ok(VersionInfo {
-                id: direct.id.to_string(),
-                name: direct.display_name.clone(),
-                download_url: direct.download_url.clone().unwrap_or_default(),
+                id: found.id.to_string(),
+                name: found.display_name.clone(),
+                download_url: found.download_url.clone().unwrap_or_default(),
             });
         }
-        let f = cf.file(self.config.project_id, sp_id).await?;
+        let f = cf.file(self.config.project_id, client_file_id).await?;
         Ok(VersionInfo {
             id: f.id.to_string(),
             name: f.display_name,
@@ -227,16 +223,16 @@ impl ModpackProvider for CurseForgeServerPack {
     }
 
     fn extra_env(&self, ctx: &ProviderContext<'_>) -> Vec<EnvVar> {
-        // itzg's auto-curseforge mode: hands CF_FILE_ID + CF_API_KEY to the
-        // image, which downloads the server pack on first boot, runs the
-        // packed installer, and re-downloads when CF_FILE_ID changes (we
-        // patch this env var on update). Memory + RCON match the vanilla
-        // path so the orchestrator's Done-marker tail and RCON announce
-        // both work unchanged.
+        // itzg's `AUTO_CURSEFORGE`: CF_SLUG identifies the modpack, CF_FILE_ID
+        // pins the CLIENT file, and CF_API_KEY (mounted from the per-namespace
+        // Secret the chart provisions) authorises the API calls. itzg writes
+        // /data/.install-curseforge.env after install; on subsequent boots
+        // mc-image-helper compares the requested CF_FILE_ID to the persisted
+        // one and reinstalls when they differ — the orchestrator just patches
+        // this env var to apply an update.
         let mut env = vec![
             env_kv("EULA", "TRUE"),
             env_kv("TYPE", "AUTO_CURSEFORGE"),
-            env_kv("CF_FILE_ID", &self.config.current_version_id.to_string()),
             env_secret("CF_API_KEY", CF_API_KEY_SECRET, CF_API_KEY_SECRET_FIELD),
             env_kv("MEMORY", &format!("{}M", ctx.memory_mi)),
             env_kv("ENABLE_RCON", "true"),
@@ -246,10 +242,14 @@ impl ModpackProvider for CurseForgeServerPack {
                 "password",
             ),
         ];
-        // Skip the env when we don't yet have a picked file id (caller
-        // hasn't resolved one — defensive; create handler always sets it).
-        if self.config.current_version_id == 0 {
-            env.retain(|e| e.name != "CF_FILE_ID");
+        if !self.config.slug.is_empty() {
+            env.push(env_kv("CF_SLUG", &self.config.slug));
+        }
+        if self.config.current_version_id != 0 {
+            env.push(env_kv(
+                "CF_FILE_ID",
+                &self.config.current_version_id.to_string(),
+            ));
         }
         env
     }
@@ -263,10 +263,10 @@ impl ModpackProvider for CurseForgeServerPack {
             .cf
             .ok_or_else(|| anyhow!("CurseForge client unavailable"))?;
         let files = cf.list_files(self.config.project_id).await?;
-        let Some(sp_id) = self.pick_latest_server_pack_id(&files) else {
+        let Some(client_id) = self.pick_latest_client_file_id(&files) else {
             return Ok(None);
         };
-        Ok(Some(self.resolve_pick(cf, &files, sp_id).await?))
+        Ok(Some(self.resolve_client_file(cf, &files, client_id).await?))
     }
 
     async fn fetch_url(&self, http: &ModpackHttp<'_>, version: &VersionInfo) -> Result<String> {
@@ -326,6 +326,7 @@ mod tests {
     fn pack(channel: Channel, skip: Vec<String>) -> CurseForgeServerPack {
         CurseForgeServerPack::new(Config {
             project_id: 1_148_445,
+            slug: "atm-11".to_owned(),
             channel,
             version_skip: skip,
             force_version: None,
@@ -348,123 +349,89 @@ mod tests {
         assert!(!Channel::Beta.accepts(3));
     }
 
+    // Reproduces the ATM-11 shape: every file in the listing is a client
+    // with a linked server-pack id; the picker returns the CLIENT id (the
+    // one with manifest.json that itzg's mc-image-helper consumes).
     #[test]
-    fn pick_latest_id_skips_client_files_in_direct_path() {
-        let p = pack(Channel::Release, vec![]);
-        let files = vec![
-            cf_file(1, "client", false, 1, "2026-01-01T00:00:00Z"),
-            cf_file(2, "server", true, 1, "2026-01-02T00:00:00Z"),
-        ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(2));
-    }
-
-    #[test]
-    fn pick_latest_id_picks_newest_direct_pack_by_date() {
-        let p = pack(Channel::Release, vec![]);
-        let files = vec![
-            cf_file(1, "old", true, 1, "2026-01-01T00:00:00Z"),
-            cf_file(2, "new", true, 1, "2026-02-01T00:00:00Z"),
-        ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(2));
-    }
-
-    #[test]
-    fn pick_latest_id_honours_skip_list_by_id_in_direct_path() {
-        let p = pack(Channel::Release, vec!["2".to_owned()]);
-        let files = vec![
-            cf_file(1, "old", true, 1, "2026-01-01T00:00:00Z"),
-            cf_file(2, "new", true, 1, "2026-02-01T00:00:00Z"),
-        ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(1));
-    }
-
-    #[test]
-    fn pick_latest_id_honours_skip_list_by_name_in_direct_path() {
-        let p = pack(Channel::Release, vec!["new".to_owned()]);
-        let files = vec![
-            cf_file(1, "old", true, 1, "2026-01-01T00:00:00Z"),
-            cf_file(2, "new", true, 1, "2026-02-01T00:00:00Z"),
-        ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(1));
-    }
-
-    #[test]
-    fn pick_latest_id_filters_direct_path_by_channel() {
-        let p = pack(Channel::Release, vec![]);
-        let files = vec![
-            cf_file(1, "beta", true, 2, "2026-02-01T00:00:00Z"),
-            cf_file(2, "release", true, 1, "2026-01-01T00:00:00Z"),
-        ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(2));
-    }
-
-    // Reproduces the ATM-11 (project 1148445) shape: every file in the
-    // listing is a client with a linked server-pack id; no `is_server_pack`
-    // file exists. The picker must follow the link of the newest matching
-    // client file.
-    #[test]
-    fn pick_latest_id_follows_linked_server_pack() {
+    fn pick_latest_id_returns_client_id_with_linked_server_pack() {
         let p = pack(Channel::Release, vec![]);
         let files = vec![
             cf_client_with_link(1, "ATM-0.0.12", 1, "2026-04-01T00:00:00Z", 100),
             cf_client_with_link(2, "ATM-0.0.13", 1, "2026-05-01T00:00:00Z", 200),
         ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(200));
+        // Returns 2 (newest CLIENT), not 200 (its linked server pack).
+        assert_eq!(p.pick_latest_client_file_id(&files), Some(2));
     }
 
     #[test]
-    fn pick_latest_id_falls_back_to_direct_listed_server_pack() {
+    fn pick_latest_id_skips_clients_without_linked_server_pack() {
+        // A client file with no `serverPackFileId` proves the project
+        // doesn't ship a server pack at all — itzg can't install those.
         let p = pack(Channel::Release, vec![]);
-        let files = vec![
-            cf_file(1, "client", false, 1, "2026-01-01T00:00:00Z"),
-            cf_file(7, "ServerFiles", true, 1, "2026-01-02T00:00:00Z"),
-        ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(7));
+        let files = vec![cf_file(
+            1,
+            "client-without-server-pack",
+            false,
+            1,
+            "2026-01-01T00:00:00Z",
+        )];
+        assert!(p.pick_latest_client_file_id(&files).is_none());
     }
 
     #[test]
-    fn pick_latest_id_returns_none_when_only_unlinked_clients() {
+    fn pick_latest_id_skips_legacy_direct_server_pack_files() {
+        // Direct server-pack files (isServerPack=true) lack manifest.json,
+        // so itzg refuses them ("do not select a server file").
         let p = pack(Channel::Release, vec![]);
-        let files = vec![cf_file(1, "client", false, 1, "2026-01-01T00:00:00Z")];
-        assert!(p.pick_latest_server_pack_id(&files).is_none());
+        let files = vec![cf_file(7, "ServerFiles", true, 1, "2026-01-02T00:00:00Z")];
+        assert!(p.pick_latest_client_file_id(&files).is_none());
     }
 
     #[test]
-    fn pick_latest_id_filters_linked_by_channel() {
+    fn pick_latest_id_filters_clients_by_channel() {
         let p = pack(Channel::Release, vec![]);
         let files = vec![
             cf_client_with_link(1, "release", 1, "2026-01-01T00:00:00Z", 100),
             cf_client_with_link(2, "beta", 2, "2026-02-01T00:00:00Z", 200),
         ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(100));
+        assert_eq!(p.pick_latest_client_file_id(&files), Some(1));
     }
 
     #[test]
-    fn pick_latest_id_skip_list_matches_linked_server_pack_id() {
-        let p = pack(Channel::Release, vec!["200".to_owned()]);
+    fn pick_latest_id_skip_list_matches_client_id() {
+        let p = pack(Channel::Release, vec!["2".to_owned()]);
         let files = vec![
             cf_client_with_link(1, "old", 1, "2026-01-01T00:00:00Z", 100),
             cf_client_with_link(2, "new", 1, "2026-02-01T00:00:00Z", 200),
         ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(100));
+        assert_eq!(p.pick_latest_client_file_id(&files), Some(1));
     }
 
-    // When a project ships both shapes, the linked path wins because it's
-    // the modern convention and the listing's direct server pack may be
-    // stale (or a draft test upload).
     #[test]
-    fn pick_latest_id_prefers_linked_over_direct() {
+    fn pick_latest_id_skip_list_matches_client_display_name() {
+        let p = pack(Channel::Release, vec!["new".to_owned()]);
+        let files = vec![
+            cf_client_with_link(1, "old", 1, "2026-01-01T00:00:00Z", 100),
+            cf_client_with_link(2, "new", 1, "2026-02-01T00:00:00Z", 200),
+        ];
+        assert_eq!(p.pick_latest_client_file_id(&files), Some(1));
+    }
+
+    #[test]
+    fn pick_latest_id_picks_newest_by_date() {
         let p = pack(Channel::Release, vec![]);
         let files = vec![
-            cf_file(7, "OldServer", true, 1, "2026-01-01T00:00:00Z"),
-            cf_client_with_link(1, "client", 1, "2026-02-01T00:00:00Z", 200),
+            cf_client_with_link(1, "v1", 1, "2026-01-01T00:00:00Z", 100),
+            cf_client_with_link(2, "v2", 1, "2026-03-01T00:00:00Z", 200),
+            cf_client_with_link(3, "v1.5", 1, "2026-02-01T00:00:00Z", 150),
         ];
-        assert_eq!(p.pick_latest_server_pack_id(&files), Some(200));
+        assert_eq!(p.pick_latest_client_file_id(&files), Some(2));
     }
 
     fn pack_with_file(id: u32) -> CurseForgeServerPack {
         CurseForgeServerPack::new(Config {
             project_id: 1_148_445,
+            slug: "atm-11".to_owned(),
             channel: Channel::Release,
             version_skip: Vec::new(),
             force_version: None,
@@ -491,6 +458,7 @@ mod tests {
             by_name.get("TYPE").copied().flatten(),
             Some("AUTO_CURSEFORGE"),
         );
+        assert_eq!(by_name.get("CF_SLUG").copied().flatten(), Some("atm-11"));
         assert_eq!(by_name.get("CF_FILE_ID").copied().flatten(), Some("7777"));
         assert_eq!(by_name.get("MEMORY").copied().flatten(), Some("8192M"));
         assert_eq!(by_name.get("ENABLE_RCON").copied().flatten(), Some("true"));
@@ -551,6 +519,22 @@ mod tests {
         };
         let env = p.extra_env(&ctx);
         assert!(env.iter().all(|e| e.name != "CF_FILE_ID"));
+    }
+
+    #[test]
+    fn extra_env_omits_cf_slug_when_unresolved() {
+        // Belt-and-suspenders: legacy rows persisted before `slug` existed
+        // deserialize with an empty string. Better to omit the env var
+        // than send an empty CF_SLUG that mc-image-helper will reject.
+        let mut cfg = pack_with_file(7_777).config.clone();
+        cfg.slug = String::new();
+        let p = CurseForgeServerPack::new(cfg);
+        let ctx = ProviderContext {
+            server_id: "abcd",
+            memory_mi: 4096,
+        };
+        let env = p.extra_env(&ctx);
+        assert!(env.iter().all(|e| e.name != "CF_SLUG"));
     }
 
     #[test]

@@ -343,11 +343,27 @@ async fn resolve_curseforge(
         message: "curseforge.{project_id, channel} required for server_type=curseforge".to_owned(),
     })?;
 
+    // Resolve the project's slug now (itzg's mc-image-helper rejects calls
+    // without --slug; we ship it as CF_SLUG via extra_env). One round-trip
+    // is fine — create is rare.
+    let cf_client = state.cf_client.as_deref().ok_or(AppError::BadRequest {
+        code: "cf_disabled",
+        message: "CurseForge support is not enabled on this panel (CF_API_KEY missing)".to_owned(),
+    })?;
+    let project = cf_client
+        .project(cfg.project_id)
+        .await
+        .map_err(|e| AppError::BadRequest {
+            code: "cf_project_not_found",
+            message: format!("CurseForge project {} unavailable: {e}", cfg.project_id),
+        })?;
+
     // Materialize a temporary provider to drive the picker; `latest()`
-    // handles both legacy direct server packs and the modern linked-sibling
-    // shape (where the listing only carries client files with `serverPackFileId`).
+    // returns the newest CLIENT file id whose linked server pack lets
+    // itzg drive the install.
     let provisional = CurseForgeServerPack::new(CfConfig {
         project_id: cfg.project_id,
+        slug: project.slug.clone(),
         channel: cfg.channel,
         version_skip: Vec::new(),
         force_version: None,
@@ -370,8 +386,9 @@ async fn resolve_curseforge(
         .ok_or(AppError::BadRequest {
             code: "no_server_pack_files",
             message: format!(
-                "project {} has no server-pack files matching channel {:?}",
-                cfg.project_id, cfg.channel
+                "project {:?} has no client files with a linked server pack matching channel {:?} \
+                 — itzg's AUTO_CURSEFORGE path needs a manifest-bearing client file",
+                project.slug, cfg.channel
             ),
         })?;
 
@@ -383,6 +400,7 @@ async fn resolve_curseforge(
     })?;
     let stored_cfg = CfConfig {
         project_id: cfg.project_id,
+        slug: project.slug,
         channel: cfg.channel,
         version_skip: Vec::new(),
         force_version: None,

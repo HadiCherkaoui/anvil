@@ -234,7 +234,7 @@ async fn run_inner(
     // needed — itzg handles the download + install on the MC pod itself.
     guard.emit(UpdatePhase::Swapping);
     let memory_mi = fetch_memory_mi(&state.pool, server_id).await?;
-    let new_provider = build_provider_for_version(&*provider, &version)?;
+    let new_provider = build_provider_for_version(&source_kind, &source_config, &version)?;
     let new_env = new_provider.extra_env(&ProviderContext {
         server_id,
         memory_mi,
@@ -383,57 +383,39 @@ async fn fetch_memory_mi(pool: &sqlx::SqlitePool, server_id: &str) -> Result<i64
 }
 
 /// Builds a fresh provider snapshot whose `current_version_id` matches the
-/// orchestrator's target. The created provider is only used to render the
-/// new env block; its persisted form lands in the DB later via
-/// [`persist_new_version`].
+/// orchestrator's target while preserving every other field the user owns
+/// (slug, channel, skip list, `force_version`, `auto_update_mode`). The
+/// created provider is only used to render the new env block; its persisted
+/// form lands in the DB later via [`persist_new_version`].
+///
+/// We deserialize the existing `source_config` rather than reaching through
+/// the trait so the slug — needed for `CF_SLUG` and not exposed by the
+/// trait — survives a CF update.
 fn build_provider_for_version(
-    current: &dyn ModpackProvider,
+    source_kind: &str,
+    source_config: &str,
     version: &VersionInfo,
 ) -> Result<Box<dyn ModpackProvider>> {
     use crate::modpack::CurseForgeServerPack;
     use crate::modpack::curseforge::Config as CfCfg;
     use crate::modpack::modrinth::{Config as MrCfg, ModrinthServerPack};
 
-    match current.kind() {
+    match source_kind {
         "curseforge" => {
-            let project_id_str = current
-                .project_id()
-                .ok_or_else(|| anyhow!("CF provider missing project id"))?;
-            let project_id: u32 = project_id_str
-                .parse()
-                .with_context(|| format!("CF project_id {project_id_str:?} not numeric"))?;
-            let file_id: u32 = version
+            let mut cfg: CfCfg = serde_json::from_str(source_config)
+                .context("deserializing existing CurseForge source_config")?;
+            cfg.current_version_id = version
                 .id
                 .parse()
                 .with_context(|| format!("CF target id {:?} not numeric", version.id))?;
-            // Channel + auto-update mode don't matter for the env build —
-            // the provider only reads `current_version_id` in extra_env.
-            // Fill the rest with the orchestrator-safe defaults and let
-            // `persist_new_version` keep the user's actual values intact.
-            let cfg = CfCfg {
-                project_id,
-                channel: super::curseforge::Channel::Release,
-                version_skip: Vec::new(),
-                force_version: None,
-                current_version_id: file_id,
-                current_version_name: version.name.clone(),
-                auto_update_mode: super::curseforge::AutoUpdateMode::Notify,
-            };
+            version.name.clone_into(&mut cfg.current_version_name);
             Ok(Box::new(CurseForgeServerPack::new(cfg)))
         }
         "modrinth" => {
-            let project_id = current
-                .project_id()
-                .ok_or_else(|| anyhow!("Modrinth provider missing project id"))?;
-            let cfg = MrCfg {
-                project_id,
-                channel: super::curseforge::Channel::Release,
-                version_skip: Vec::new(),
-                force_version: None,
-                current_version_id: version.id.clone(),
-                current_version_name: version.name.clone(),
-                auto_update_mode: super::curseforge::AutoUpdateMode::Notify,
-            };
+            let mut cfg: MrCfg = serde_json::from_str(source_config)
+                .context("deserializing existing Modrinth source_config")?;
+            version.id.clone_into(&mut cfg.current_version_id);
+            version.name.clone_into(&mut cfg.current_version_name);
             Ok(Box::new(ModrinthServerPack::new(cfg)))
         }
         other => bail!("provider {other} cannot be swapped via env patch"),
@@ -443,9 +425,13 @@ fn build_provider_for_version(
 /// Patches the `StatefulSet`'s container env so the next pod start picks up
 /// the new `CF_FILE_ID` / `MODRINTH_VERSION` and itzg redownloads.
 ///
-/// Server-side strategic-merge-patches the single `mc` container's env to
-/// the supplied list. K8s replaces the env array wholesale on this path,
-/// so callers must pass the complete env they want, not a delta.
+/// Strategic merge patches the `mc` container's env array. K8s strategic-
+/// merge keys the env array by `name` (per the `OpenAPI` extensions on the
+/// `Container` schema), so the call updates / inserts the env vars we send
+/// without touching unrelated entries the `StatefulSet` might still hold.
+/// The full env block is sent because the typical case is "everything
+/// matches except `CF_FILE_ID`" — sending the full block also covers the
+/// initial-create boot where the SS may be missing `CF_SLUG` entirely.
 async fn patch_statefulset_env(
     client: &kube::Client,
     ns: &str,
