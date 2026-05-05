@@ -63,7 +63,7 @@ mcDefaults:
   # this Pod runs unprivileged but still shares the data PVC, so a
   # tag-mutation supply-chain attack must not be able to swap the image
   # out from under us. Default is alpine:3.20 from public.ecr.aws.
-  filesHelperImage: "alpine@3.20"
+  filesHelperImage: "alpine:3.20"
 
 # Persistence for the panel's own SQLite database. The PVC mounts at
 # /var/lib/anvil; ANVIL_DATABASE_URL points the backend at that path.
