@@ -21,23 +21,23 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use bytes::Bytes;
 use chrono::Utc;
-use futures_util::AsyncBufReadExt as _;
-use futures_util::TryStreamExt as _;
 use futures_util::sink::SinkExt as _;
 use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
+use futures_util::AsyncBufReadExt as _;
+use futures_util::TryStreamExt as _;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::Pod;
-use kube::Api;
 use kube::api::LogParams;
+use kube::Api;
 use tokio::sync::oneshot;
-use tokio::time::{Instant, MissedTickBehavior, interval};
+use tokio::time::{interval, Instant, MissedTickBehavior};
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::ServerStatus;
 use crate::k8s_status::derive_status;
 use crate::routes::servers::get::fetch_server_row;
 use crate::ws::{EndReason, Frame};
+use crate::AppState;
 
 /// WS Ping interval.
 const HEARTBEAT: Duration = Duration::from_secs(30);
@@ -45,6 +45,10 @@ const HEARTBEAT: Duration = Duration::from_secs(30);
 const POD_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
 /// Sleep between pod-status polls while waiting for Running.
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Number of trailing log lines kube sends as historical context
+/// before live-following. Sized to fill the frontend's bounded buffer
+/// so anything beyond would be trimmed in the UI anyway.
+const HISTORY_LINES: i64 = 2000;
 
 /// Handler for `GET /api/servers/{id}/logs/stream`.
 ///
@@ -143,12 +147,13 @@ async fn write_loop(
             return;
         }
 
-        // Open the kube log stream. `since_seconds: Some(1)` is the
-        // unambiguous "start from now" knob; `tail_lines: Some(0)` is
-        // interpreted inconsistently by older kubelets.
+        // Open the kube log stream. `tail_lines` makes kube replay
+        // the last N lines as history before following — so opening
+        // the console shows recent context, not just lines emitted
+        // after attach.
         let log_params = LogParams {
             follow: true,
-            since_seconds: Some(1),
+            tail_lines: Some(HISTORY_LINES),
             ..LogParams::default()
         };
         // Pod can die between the status check above and the log open;
