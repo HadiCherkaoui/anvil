@@ -34,9 +34,13 @@ rules:
     resources: ["pods"]
     verbs: ["get"]
   # File browser (sub-project D) — exec into pods for streamed file ops.
+  # WebSocket-based exec in kube-rs ≥ 3.0 issues a GET with Upgrade
+  # headers; the apiserver checks this against the `get` verb on
+  # `pods/exec`. `create` alone is sufficient only for SPDY/POST exec
+  # (kubectl). Both verbs are needed to cover both transports.
   - apiGroups: [""]
     resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["create", "get"]
   # RCON Secrets land in M5; surface RBAC now so the chart contract is stable.
   - apiGroups: [""]
     resources: ["secrets"]
