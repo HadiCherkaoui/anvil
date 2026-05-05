@@ -82,7 +82,24 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<ServersBody>, Ap
 
     let sts_by_id = index_by_server_label(sts_list.items.iter().map(|s| (&s.metadata, s)));
     let pod_by_id = index_by_server_label(pod_list.items.iter().map(|p| (&p.metadata, p)));
-    let svc_by_id = index_by_server_label(svc_list.items.iter().map(|s| (&s.metadata, s)));
+    // Each server has two Services with the same `server` label — the public
+    // one (`mc-{id}`) and the headless one (`mc-{id}-headless`, used for
+    // in-cluster RCON DNS). They both match the list selector; if the
+    // headless ends up in the index slot, derive_endpoint sees a Service
+    // with `clusterIP: None` and no LB ingress, so the address column is
+    // blank. Skip headless entries by filtering on `clusterIP == None`.
+    let svc_by_id = index_by_server_label(
+        svc_list
+            .items
+            .iter()
+            .filter(|s| {
+                s.spec
+                    .as_ref()
+                    .and_then(|sp| sp.cluster_ip.as_deref())
+                    != Some("None")
+            })
+            .map(|s| (&s.metadata, s)),
+    );
 
     let servers = rows
         .into_iter()

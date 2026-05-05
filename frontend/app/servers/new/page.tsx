@@ -62,7 +62,10 @@ const INITIAL: CreateDraft = {
 	memory_mi: 4096,
 	storage_size_gi: 20,
 	storage_class: null,
-	exposure_mode: "clusterip",
+	// loadbalancer is the right default when the cluster can give the
+	// server a real public IP. The capabilities-load effect downgrades
+	// this to `clusterip` if the cluster lacks an LB provider.
+	exposure_mode: "loadbalancer",
 	curseforge: null,
 	modrinth: null,
 	runtime: null,
@@ -95,7 +98,25 @@ export default function NewServerPage(): ReactElement {
 	useEffect(() => {
 		const ctrl = new AbortController();
 		fetchCapabilities(ctrl.signal)
-			.then(setCaps)
+			.then((c) => {
+				setCaps(c);
+				// Clamp the (loadbalancer-by-default) exposure_mode down to
+				// something the cluster actually supports. Only touches the
+				// field if the current selection is unavailable, so a user
+				// who already picked something keeps their choice.
+				setDraft((d) => {
+					if (d.exposure_mode === "loadbalancer" && !c.loadbalancer) {
+						return {
+							...d,
+							exposure_mode: c.nodeport ? "nodeport" : "clusterip",
+						};
+					}
+					if (d.exposure_mode === "nodeport" && !c.nodeport) {
+						return { ...d, exposure_mode: "clusterip" };
+					}
+					return d;
+				});
+			})
 			.catch(() => {
 				// best-effort — exposure dropdown falls back to clusterip-only
 			});
