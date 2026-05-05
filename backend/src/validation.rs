@@ -20,8 +20,9 @@ pub const KNOWN_EXPOSURE_MODES: &[&str] = &["loadbalancer", "nodeport", "cluster
 
 /// Minimum memory (MiB) the create handler accepts.
 const MEMORY_MI_MIN: i64 = 1024;
-/// Maximum memory (MiB) the create handler accepts.
-const MEMORY_MI_MAX: i64 = 16_384;
+/// Maximum memory (MiB) the create handler accepts. 64 GiB ceiling absorbs
+/// large modpacks (ATM, FTB Inferno, etc.) on the homelab box.
+const MEMORY_MI_MAX: i64 = 65_536;
 /// Required step (MiB). Memory selectors in the UI snap to this grid.
 const MEMORY_MI_STEP: i64 = 1024;
 
@@ -102,7 +103,7 @@ fn invalid_name(reason: &str) -> AppError {
 /// # Errors
 ///
 /// Returns [`AppError::BadRequest`] with `code = "memory_invalid"` when
-/// the value is out of `[1024, 16384]` or is not a multiple of 1024.
+/// the value is out of `[1024, 65536]` or is not a multiple of 1024.
 pub fn validate_memory_mi(mi: i64) -> Result<(), AppError> {
     if !(MEMORY_MI_MIN..=MEMORY_MI_MAX).contains(&mi) || mi % MEMORY_MI_STEP != 0 {
         return Err(AppError::BadRequest {
@@ -530,14 +531,14 @@ mod tests {
 
     #[test]
     fn valid_memory_passes() {
-        for mi in [1024_i64, 2048, 4096, 6144, 8192, 16384] {
+        for mi in [1024_i64, 2048, 4096, 6144, 8192, 16384, 32_768, 65_536] {
             assert!(validate_memory_mi(mi).is_ok());
         }
     }
 
     #[test]
     fn invalid_memory_fails() {
-        for mi in [0_i64, 512, 1023, 1025, 17_000, -1] {
+        for mi in [0_i64, 512, 1023, 1025, 65_537, 70_000, -1] {
             assert!(validate_memory_mi(mi).is_err());
         }
     }

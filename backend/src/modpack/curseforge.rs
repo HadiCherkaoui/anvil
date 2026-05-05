@@ -1,10 +1,16 @@
 //! `CurseForge` `ServerFiles` provider.
 //!
-//! Drives a generic `eclipse-temurin:21` pod whose entrypoint runs the
-//! pack's bundled `startserver.sh`; that script handles `NeoForge` install
-//! and version bumps on its own. The provider's job is to pick the
-//! correct `ServerFiles` file from the `CurseForge` API and hand a download
-//! URL to the swap Job.
+//! Drives `itzg/minecraft-server:java21` with `TYPE=AUTO_CURSEFORGE`. The
+//! itzg launcher pulls `CF_FILE_ID` from the `CurseForge` API on first boot,
+//! installs the linked `NeoForge` / Forge runtime, then runs the bundled
+//! `startserver.sh`. On subsequent boots itzg compares `CF_FILE_ID` to the
+//! file id stamped under `/data/.cf-pre-install-id` and reinstalls when the
+//! caller has bumped the env var — that's how the orchestrator applies a
+//! version bump (env-var patch + restart, no manual unzip step).
+//!
+//! The provider's only runtime job is to pick the correct `ServerFiles`
+//! file from the `CurseForge` API at create / poll time and hand its
+//! numeric id to itzg via the env var.
 
 use std::time::Duration;
 
@@ -13,16 +19,19 @@ use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 
 use super::cf_client::CfFile;
+use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
-/// Container image used for CurseForge-driven servers.
-///
-/// The pack's own `startserver.sh` handles `NeoForge` / Forge install and
-/// version transitions, so we just need a JRE 21 with `bash` available.
-const CF_IMAGE: &str = "eclipse-temurin:21-jdk";
+/// Container image used for CurseForge-driven servers — same image as
+/// vanilla / Modrinth so the cluster only ever pulls one upstream tag.
+const CF_IMAGE: &str = "itzg/minecraft-server:java21";
 
-/// Container command for `CurseForge` servers — the pack's bundled launcher.
-const CF_LAUNCH_CMD: &[&str] = &["bash", "startserver.sh"];
+/// Name of the shared `Secret` carrying `CF_API_KEY`. The chart provisions
+/// this in the managed-server namespace alongside the panel's own copy.
+const CF_API_KEY_SECRET: &str = "cf-api-key";
+
+/// Key inside [`CF_API_KEY_SECRET`] that holds the API key bytes.
+const CF_API_KEY_SECRET_FIELD: &str = "CF_API_KEY";
 
 /// How long the orchestrator waits for `Done (` after starting a CF server.
 ///
@@ -214,19 +223,35 @@ impl ModpackProvider for CurseForgeServerPack {
     }
 
     fn launch_command(&self) -> Option<Vec<String>> {
-        Some(CF_LAUNCH_CMD.iter().map(|s| (*s).to_owned()).collect())
+        None
     }
 
     fn extra_env(&self, ctx: &ProviderContext<'_>) -> Vec<EnvVar> {
-        // `JAVA_TOOL_OPTIONS` propagates to the JVM the pack's startserver.sh
-        // launches without us having to touch the script. ATM's user_jvm_args.txt
-        // is preserved on update, so per-server tuning persists; this just sets
-        // the panel's memory ceiling on top.
-        vec![EnvVar {
-            name: "JAVA_TOOL_OPTIONS".to_owned(),
-            value: Some(format!("-Xmx{}m -Xms{}m", ctx.memory_mi, ctx.memory_mi / 2)),
-            value_from: None,
-        }]
+        // itzg's auto-curseforge mode: hands CF_FILE_ID + CF_API_KEY to the
+        // image, which downloads the server pack on first boot, runs the
+        // packed installer, and re-downloads when CF_FILE_ID changes (we
+        // patch this env var on update). Memory + RCON match the vanilla
+        // path so the orchestrator's Done-marker tail and RCON announce
+        // both work unchanged.
+        let mut env = vec![
+            env_kv("EULA", "TRUE"),
+            env_kv("TYPE", "AUTO_CURSEFORGE"),
+            env_kv("CF_FILE_ID", &self.config.current_version_id.to_string()),
+            env_secret("CF_API_KEY", CF_API_KEY_SECRET, CF_API_KEY_SECRET_FIELD),
+            env_kv("MEMORY", &format!("{}M", ctx.memory_mi)),
+            env_kv("ENABLE_RCON", "true"),
+            env_secret(
+                "RCON_PASSWORD",
+                &format!("mc-{}-rcon", ctx.server_id),
+                "password",
+            ),
+        ];
+        // Skip the env when we don't yet have a picked file id (caller
+        // hasn't resolved one — defensive; create handler always sets it).
+        if self.config.current_version_id == 0 {
+            env.retain(|e| e.name != "CF_FILE_ID");
+        }
+        env
     }
 
     fn boot_timeout(&self) -> Duration {
@@ -435,5 +460,108 @@ mod tests {
             cf_client_with_link(1, "client", 1, "2026-02-01T00:00:00Z", 200),
         ];
         assert_eq!(p.pick_latest_server_pack_id(&files), Some(200));
+    }
+
+    fn pack_with_file(id: u32) -> CurseForgeServerPack {
+        CurseForgeServerPack::new(Config {
+            project_id: 1_148_445,
+            channel: Channel::Release,
+            version_skip: Vec::new(),
+            force_version: None,
+            current_version_id: id,
+            current_version_name: format!("file-{id}"),
+            auto_update_mode: AutoUpdateMode::Notify,
+        })
+    }
+
+    #[test]
+    fn extra_env_runs_itzg_auto_curseforge() {
+        let p = pack_with_file(7_777);
+        let ctx = ProviderContext {
+            server_id: "abcd",
+            memory_mi: 8192,
+        };
+        let env = p.extra_env(&ctx);
+        let by_name: std::collections::BTreeMap<&str, Option<&str>> = env
+            .iter()
+            .map(|e| (e.name.as_str(), e.value.as_deref()))
+            .collect();
+        assert_eq!(by_name.get("EULA").copied().flatten(), Some("TRUE"));
+        assert_eq!(
+            by_name.get("TYPE").copied().flatten(),
+            Some("AUTO_CURSEFORGE"),
+        );
+        assert_eq!(by_name.get("CF_FILE_ID").copied().flatten(), Some("7777"));
+        assert_eq!(by_name.get("MEMORY").copied().flatten(), Some("8192M"));
+        assert_eq!(by_name.get("ENABLE_RCON").copied().flatten(), Some("true"));
+    }
+
+    #[test]
+    fn extra_env_pulls_cf_api_key_from_shared_secret() {
+        let p = pack_with_file(7_777);
+        let ctx = ProviderContext {
+            server_id: "abcd",
+            memory_mi: 4096,
+        };
+        let env = p.extra_env(&ctx);
+        let cf = env
+            .iter()
+            .find(|e| e.name == "CF_API_KEY")
+            .expect("api key");
+        let sk = cf
+            .value_from
+            .as_ref()
+            .unwrap()
+            .secret_key_ref
+            .as_ref()
+            .unwrap();
+        assert_eq!(sk.name, "cf-api-key");
+        assert_eq!(sk.key, "CF_API_KEY");
+    }
+
+    #[test]
+    fn extra_env_pulls_rcon_password_from_per_server_secret() {
+        let p = pack_with_file(7_777);
+        let ctx = ProviderContext {
+            server_id: "abcd",
+            memory_mi: 4096,
+        };
+        let env = p.extra_env(&ctx);
+        let rcon = env
+            .iter()
+            .find(|e| e.name == "RCON_PASSWORD")
+            .expect("rcon");
+        let sk = rcon
+            .value_from
+            .as_ref()
+            .unwrap()
+            .secret_key_ref
+            .as_ref()
+            .unwrap();
+        assert_eq!(sk.name, "mc-abcd-rcon");
+        assert_eq!(sk.key, "password");
+    }
+
+    #[test]
+    fn extra_env_omits_cf_file_id_when_unresolved() {
+        let p = pack_with_file(0);
+        let ctx = ProviderContext {
+            server_id: "abcd",
+            memory_mi: 4096,
+        };
+        let env = p.extra_env(&ctx);
+        assert!(env.iter().all(|e| e.name != "CF_FILE_ID"));
+    }
+
+    #[test]
+    fn provider_pod_image_is_itzg_java21() {
+        let p = pack_with_file(7_777);
+        assert_eq!(p.pod_image(), CF_IMAGE);
+    }
+
+    #[test]
+    fn provider_launch_command_is_none() {
+        let p = pack_with_file(7_777);
+        assert!(p.launch_command().is_none());
     }
 }

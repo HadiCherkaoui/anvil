@@ -5,6 +5,12 @@
 //! restore Job (`RolledBack` / `Failed`). All phase transitions are emitted
 //! through the [`UpdateGuard`]'s watch sender so the WS at
 //! `/api/servers/:id/update/stream` can stream them to the frontend.
+//!
+//! M5 swap step: CF + Modrinth both run on `itzg/minecraft-server`, which
+//! redownloads its pack when `CF_FILE_ID` / `MODRINTH_VERSION` changes.
+//! The Swapping phase is therefore a `StatefulSet` env patch — no separate
+//! Job, no manual unzip, no `WIPE_LIST` / `PRESERVE_LIST` script. Backup
+//! still runs as a tar Job because rollback needs a snapshot.
 
 use std::time::Duration;
 
@@ -26,8 +32,8 @@ use tracing::{Level, event};
 use crate::AppState;
 use crate::k8s_status::RCON_PORT;
 use crate::modpack::guard::UpdateGuard;
-use crate::modpack::jobs::{build_backup_job, build_restore_job, build_swap_job};
-use crate::modpack::{ModpackHttp, ModpackProvider, VersionInfo, from_db};
+use crate::modpack::jobs::{build_backup_job, build_restore_job};
+use crate::modpack::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo, from_db};
 use crate::routes::servers::create::insert_audit;
 
 /// Phase of the running update.
@@ -47,28 +53,11 @@ pub enum UpdatePhase {
     Failed,
 }
 
-/// Files preserved across a swap (per-server data the user owns).
-const PRESERVE_LIST: &[&str] = &[
-    "world*",
-    "serverconfig",
-    "server.properties",
-    "ops.json",
-    "whitelist*.json",
-    "banned-*.json",
-    "user_jvm_args.txt",
-    "eula.txt",
-];
-
-/// Directories wiped before unpacking the new `ServerFiles` zip.
-const WIPE_LIST: &[&str] = &["mods", "config", "defaultconfigs", "kubejs", "libraries"];
-
 /// Pod terminate timeout (M2 uses 90 s for the same wait).
 const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Backup Job ceiling — ATM-11 ~5–10 GB on ZFS finishes in well under a
 /// minute; 10 absorbs the cold-pod / pull-image cases.
 const BACKUP_JOB_TIMEOUT: Duration = Duration::from_mins(10);
-/// Swap Job ceiling — alpine apk add + curl + unzip; 10 covers a slow CDN.
-const SWAP_JOB_TIMEOUT: Duration = Duration::from_mins(10);
 /// Restore Job ceiling — symmetric with backup.
 const RESTORE_JOB_TIMEOUT: Duration = Duration::from_mins(10);
 /// Pod-status poll interval, mirrors restart.rs / delete.rs.
@@ -240,31 +229,17 @@ async fn run_inner(
     .await?;
 
     // ─── Phase 4: swap ───────────────────────────────────────────────────
+    // Patch the StatefulSet's container env so itzg picks up the new
+    // CF_FILE_ID / MODRINTH_VERSION on next boot and reinstalls. No Job
+    // needed — itzg handles the download + install on the MC pod itself.
     guard.emit(UpdatePhase::Swapping);
-    let download_url = provider.fetch_url(&http, &version).await?;
-    let rcon_secret_name = format!("mc-{server_id}-rcon");
-    let swap_job = build_swap_job(
+    let memory_mi = fetch_memory_mi(&state.pool, server_id).await?;
+    let new_provider = build_provider_for_version(&*provider, &version)?;
+    let new_env = new_provider.extra_env(&ProviderContext {
         server_id,
-        backup_ts,
-        &state.mc_namespace,
-        &download_url,
-        PRESERVE_LIST,
-        WIPE_LIST,
-        &rcon_secret_name,
-    );
-    let swap_name = swap_job
-        .metadata
-        .name
-        .clone()
-        .ok_or_else(|| anyhow!("swap Job missing name"))?;
-    spawn_job(&state.kube, &state.mc_namespace, &swap_job).await?;
-    wait_job(
-        &state.kube,
-        &state.mc_namespace,
-        &swap_name,
-        SWAP_JOB_TIMEOUT,
-    )
-    .await?;
+        memory_mi,
+    });
+    patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &new_env).await?;
     insert_audit(
         &state.pool,
         server_id,
@@ -362,15 +337,24 @@ async fn pick_target_version(
             let target_id_u32: u32 = target_version_id.parse().with_context(|| {
                 format!("CF target version id {target_version_id:?} not numeric")
             })?;
+            // First try the project's regular file listing (legacy direct
+            // server packs land here). When the pack uses the modern linked
+            // shape — every "main" file is a client with `serverPackFileId`
+            // pointing at a sibling — the sibling won't appear in the
+            // listing, so fall back to a per-id GET.
             let files = cf.list_files(project_id_u32).await?;
-            let f = files
-                .iter()
-                .find(|f| f.id == target_id_u32)
-                .ok_or_else(|| anyhow!("file id {target_version_id} not in project files"))?;
+            if let Some(f) = files.iter().find(|f| f.id == target_id_u32) {
+                return Ok(VersionInfo {
+                    id: f.id.to_string(),
+                    name: f.display_name.clone(),
+                    download_url: f.download_url.clone().unwrap_or_default(),
+                });
+            }
+            let f = cf.file(project_id_u32, target_id_u32).await?;
             Ok(VersionInfo {
                 id: f.id.to_string(),
-                name: f.display_name.clone(),
-                download_url: f.download_url.clone().unwrap_or_default(),
+                name: f.display_name,
+                download_url: f.download_url.unwrap_or_default(),
             })
         }
         "modrinth" => {
@@ -386,6 +370,113 @@ async fn pick_target_version(
         }
         other => bail!("unsupported provider for target lookup: {other}"),
     }
+}
+
+/// Reads `memory_mi` from the `servers` row — needed to rebuild the
+/// provider's env block at swap time.
+async fn fetch_memory_mi(pool: &sqlx::SqlitePool, server_id: &str) -> Result<i64> {
+    sqlx::query_scalar("SELECT memory_mi FROM servers WHERE id = ?")
+        .bind(server_id)
+        .fetch_one(pool)
+        .await
+        .with_context(|| format!("loading memory_mi for {server_id}"))
+}
+
+/// Builds a fresh provider snapshot whose `current_version_id` matches the
+/// orchestrator's target. The created provider is only used to render the
+/// new env block; its persisted form lands in the DB later via
+/// [`persist_new_version`].
+fn build_provider_for_version(
+    current: &dyn ModpackProvider,
+    version: &VersionInfo,
+) -> Result<Box<dyn ModpackProvider>> {
+    use crate::modpack::CurseForgeServerPack;
+    use crate::modpack::curseforge::Config as CfCfg;
+    use crate::modpack::modrinth::{Config as MrCfg, ModrinthServerPack};
+
+    match current.kind() {
+        "curseforge" => {
+            let project_id_str = current
+                .project_id()
+                .ok_or_else(|| anyhow!("CF provider missing project id"))?;
+            let project_id: u32 = project_id_str
+                .parse()
+                .with_context(|| format!("CF project_id {project_id_str:?} not numeric"))?;
+            let file_id: u32 = version
+                .id
+                .parse()
+                .with_context(|| format!("CF target id {:?} not numeric", version.id))?;
+            // Channel + auto-update mode don't matter for the env build —
+            // the provider only reads `current_version_id` in extra_env.
+            // Fill the rest with the orchestrator-safe defaults and let
+            // `persist_new_version` keep the user's actual values intact.
+            let cfg = CfCfg {
+                project_id,
+                channel: super::curseforge::Channel::Release,
+                version_skip: Vec::new(),
+                force_version: None,
+                current_version_id: file_id,
+                current_version_name: version.name.clone(),
+                auto_update_mode: super::curseforge::AutoUpdateMode::Notify,
+            };
+            Ok(Box::new(CurseForgeServerPack::new(cfg)))
+        }
+        "modrinth" => {
+            let project_id = current
+                .project_id()
+                .ok_or_else(|| anyhow!("Modrinth provider missing project id"))?;
+            let cfg = MrCfg {
+                project_id,
+                channel: super::curseforge::Channel::Release,
+                version_skip: Vec::new(),
+                force_version: None,
+                current_version_id: version.id.clone(),
+                current_version_name: version.name.clone(),
+                auto_update_mode: super::curseforge::AutoUpdateMode::Notify,
+            };
+            Ok(Box::new(ModrinthServerPack::new(cfg)))
+        }
+        other => bail!("provider {other} cannot be swapped via env patch"),
+    }
+}
+
+/// Patches the `StatefulSet`'s container env so the next pod start picks up
+/// the new `CF_FILE_ID` / `MODRINTH_VERSION` and itzg redownloads.
+///
+/// Server-side strategic-merge-patches the single `mc` container's env to
+/// the supplied list. K8s replaces the env array wholesale on this path,
+/// so callers must pass the complete env they want, not a delta.
+async fn patch_statefulset_env(
+    client: &kube::Client,
+    ns: &str,
+    server_id: &str,
+    env: &[k8s_openapi::api::core::v1::EnvVar],
+) -> Result<()> {
+    let stsets: Api<StatefulSet> = Api::namespaced(client.clone(), ns);
+    let resource_name = format!("mc-{server_id}");
+    let patch = json!({
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "mc",
+                            "env": env,
+                        }
+                    ]
+                }
+            }
+        }
+    });
+    stsets
+        .patch(
+            &resource_name,
+            &PatchParams::default(),
+            &Patch::Strategic(&patch),
+        )
+        .await
+        .with_context(|| format!("patching env on StatefulSet {resource_name}"))?;
+    Ok(())
 }
 
 /// Best-effort RCON announce + save-all so the world flushes before stop.
@@ -628,6 +719,20 @@ async fn rollback(state: &AppState, server_id: &str, _guard: &UpdateGuard) -> Re
         POD_TERMINATE_TIMEOUT,
     )
     .await?;
+
+    // Revert the env patch applied during Swapping. `persist_new_version`
+    // only runs on the success path, so the DB still describes the pre-
+    // update version — rebuilding the env from the persisted source_config
+    // gives us the right "old" state to push back into the StatefulSet.
+    let (source_kind, source_config) = fetch_source(&state.pool, server_id).await?;
+    let old_provider = from_db(&source_kind, &source_config)
+        .with_context(|| format!("rebuilding pre-update provider for {server_id}"))?;
+    let memory_mi = fetch_memory_mi(&state.pool, server_id).await?;
+    let old_env = old_provider.extra_env(&ProviderContext {
+        server_id,
+        memory_mi,
+    });
+    patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &old_env).await?;
 
     // Find the newest archive on disk via a tiny ls Job. Avoid spawning a
     // separate ls Job: the restore Job's container script picks the newest

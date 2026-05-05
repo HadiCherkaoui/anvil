@@ -155,7 +155,7 @@ export const createServerRequestSchema = z.object({
 		.string()
 		.regex(NAME_REGEX, "lowercase letters, digits, '-' (1-63 chars)"),
 	mc_version: z.string().optional(),
-	memory_mi: z.number().int().min(1024).max(16_384),
+	memory_mi: z.number().int().min(1024).max(65_536),
 	exposure_mode: exposureModeSchema.optional(),
 	storage_class: z.string().optional(),
 	storage_size_gi: z.number().int().min(10).max(500).optional(),
@@ -189,7 +189,7 @@ export const updateStartResponseSchema = z.object({
 export const autoUpdateModeSchema = z.enum(["never", "notify", "apply"]);
 
 export const settingsRequestSchema = z.object({
-	memory_mi: z.number().int().min(1024).max(16_384).optional(),
+	memory_mi: z.number().int().min(1024).max(65_536).optional(),
 	auto_update_mode: autoUpdateModeSchema.optional(),
 	version_skip: z.array(z.string()).optional(),
 	force_version: z.string().nullable().optional(),

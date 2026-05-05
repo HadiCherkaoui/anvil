@@ -110,7 +110,7 @@ impl ModpackProvider for ModrinthServerPack {
     }
 
     fn extra_env(&self, ctx: &ProviderContext<'_>) -> Vec<EnvVar> {
-        vec![
+        let mut env = vec![
             env_kv("EULA", "TRUE"),
             env_kv("TYPE", "AUTO_MODRINTH"),
             env_kv("MODRINTH_PROJECT", &self.config.project_id),
@@ -122,7 +122,17 @@ impl ModpackProvider for ModrinthServerPack {
                 &format!("mc-{}-rcon", ctx.server_id),
                 "password",
             ),
-        ]
+        ];
+        // Pinning a specific version is what lets the update orchestrator
+        // bump the deployed pack — itzg compares MODRINTH_VERSION to its
+        // stored install marker and reinstalls when the env var changes.
+        // First-create rows have an empty current_version_id (the create
+        // handler resolves it before the StatefulSet build), so guard the
+        // empty case to keep the env minimal in that path.
+        if !self.config.current_version_id.is_empty() {
+            env.push(env_kv("MODRINTH_VERSION", &self.config.current_version_id));
+        }
+        env
     }
 
     fn boot_timeout(&self) -> Duration {

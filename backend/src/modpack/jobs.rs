@@ -1,16 +1,21 @@
-//! Backup, swap, and restore Job builders.
+//! Backup, restore, and mod-sync Job builders.
 //!
-//! All three Jobs mount the per-server data PVC (`data-mc-{id}-0`); backup
-//! and restore additionally mount the shared `mc-snapshots` PVC. Each Job
-//! has `backoffLimit: 0` so failures surface immediately to the orchestrator
+//! Each Job mounts the per-server data PVC (`data-mc-{id}-0`); backup and
+//! restore additionally mount the shared `mc-snapshots` PVC. Each Job has
+//! `backoffLimit: 0` so failures surface immediately to the orchestrator
 //! (we own retry semantics — the Job's job is to run once and report).
+//!
+//! M5: the modpack swap step migrated from a Job here to an in-orchestrator
+//! `StatefulSet` env patch (CF and Modrinth both run on `itzg/minecraft-server`
+//! which redownloads when `CF_FILE_ID` / `MODRINTH_VERSION` changes). The
+//! restore + backup Jobs remain — rollback still needs a snapshot.
 
 use std::collections::BTreeMap;
 
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    Container, EnvVar, EnvVarSource, PersistentVolumeClaimVolumeSource, PodSpec, PodTemplateSpec,
-    SecretKeySelector, Volume, VolumeMount,
+    Container, EnvVar, PersistentVolumeClaimVolumeSource, PodSpec, PodTemplateSpec, Volume,
+    VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
@@ -129,58 +134,6 @@ pub fn build_restore_job(server_id: &str, ts: i64, namespace: &str, snapshots_pv
     )
 }
 
-/// Builds the swap Job.
-///
-/// Preserves user-owned files, wipes pack-owned dirs, downloads the new
-/// `ServerFiles` zip, unpacks, restores preserved files, then re-merges the
-/// panel-managed `server.properties` keys (RCON enable + port + password).
-#[must_use]
-pub fn build_swap_job(
-    server_id: &str,
-    ts: i64,
-    namespace: &str,
-    download_url: &str,
-    preserve_list: &[&str],
-    wipe_list: &[&str],
-    rcon_secret_name: &str,
-) -> Job {
-    let resource_name = format!("mc-{server_id}");
-    let pvc_name = format!("data-{resource_name}-0");
-    let job_name = format!("swap-{resource_name}-{ts}");
-
-    let env = vec![
-        env_kv("CF_DOWNLOAD_URL", download_url),
-        env_kv("PRESERVE_LIST", &preserve_list.join("\n")),
-        env_kv("WIPE_LIST", &wipe_list.join("\n")),
-        env_secret("RCON_PASSWORD", rcon_secret_name, "password"),
-    ];
-
-    let container = Container {
-        name: "swap".to_owned(),
-        image: Some(ALPINE_IMAGE.to_owned()),
-        command: Some(vec![
-            "sh".to_owned(),
-            "-c".to_owned(),
-            SWAP_SCRIPT.to_owned(),
-        ]),
-        env: Some(env),
-        volume_mounts: Some(vec![VolumeMount {
-            name: "data".to_owned(),
-            mount_path: "/data".to_owned(),
-            ..VolumeMount::default()
-        }]),
-        ..Container::default()
-    };
-
-    job(
-        &job_name,
-        namespace,
-        labels(server_id, "swap"),
-        container,
-        vec![data_volume(&pvc_name)],
-    )
-}
-
 /// Builds the mod-sync Job.
 ///
 /// Wipes any `/data/{target_dir}/*.jar` not in `keep_filenames`, then
@@ -282,76 +235,6 @@ done
 echo "mod-sync complete ($TARGET_DIR)"
 "#;
 
-/// Inline shell script the swap container runs.
-///
-/// Exit-on-error (`set -eu`); preserve / wipe / download / unpack / restore /
-/// remerge. The two design-review fixes are baked in:
-///
-///   1. `cp -a /tmp/preserved/. /data/` (dot, not glob) so an empty
-///      preserved dir does not break the cp.
-///   2. `ensure_kv` writes server.properties whether the file already exists
-///      or not — the modpack's `startserver.sh` may not have created it yet
-///      on first install.
-const SWAP_SCRIPT: &str = r#"
-set -eu
-apk add --no-cache curl unzip findutils >/dev/null
-
-cd /data
-mkdir -p /tmp/preserved
-
-# 1. Preserve user data (handle missing gracefully).
-echo "$PRESERVE_LIST" | while IFS= read -r pat; do
-  [ -z "$pat" ] && continue
-  for src in /data/$pat; do
-    [ -e "$src" ] || continue
-    cp -a "$src" /tmp/preserved/
-  done
-done
-
-# 2. Wipe pack-owned dirs and stale shell scripts / installer jars.
-echo "$WIPE_LIST" | while IFS= read -r pat; do
-  [ -z "$pat" ] && continue
-  rm -rf /data/$pat
-done
-find /data -maxdepth 1 -name "*.sh" -delete
-find /data -maxdepth 1 -name "neoforge-*-installer.jar" -delete
-find /data -maxdepth 1 -name "forge-*-installer.jar" -delete
-
-# 3. Download + unpack the new ServerFiles zip.
-curl -fL "$CF_DOWNLOAD_URL" -o /tmp/pack.zip
-unzip -o /tmp/pack.zip -d /data
-
-# 4. Restore preserved (preserved values WIN on collision).
-if [ -d /tmp/preserved ] && [ "$(ls -A /tmp/preserved)" ]; then
-  cp -a /tmp/preserved/. /data/
-fi
-
-# 5. Re-merge our managed server.properties keys (handle file-absent case).
-SP=/data/server.properties
-touch "$SP"
-ensure_kv () {
-  KEY="$1"; VAL="$2"
-  if grep -q "^${KEY}=" "$SP"; then
-    sed -i "s|^${KEY}=.*|${KEY}=${VAL}|" "$SP"
-  else
-    echo "${KEY}=${VAL}" >> "$SP"
-  fi
-}
-ensure_kv enable-rcon true
-ensure_kv "rcon.port" 25575
-ensure_kv "rcon.password" "$RCON_PASSWORD"
-ensure_kv "query.port" 25565
-ensure_kv "server-port" 25565
-
-# 6. eula.txt always true (we accepted at server-create time).
-echo "eula=true" > /data/eula.txt
-
-# 7. Make the pack's launcher executable; some packs ship without +x.
-find /data -maxdepth 1 -name "*.sh" -exec chmod +x {} +
-
-echo "swap complete"
-"#;
-
 /// Common Job constructor.
 fn job(
     name: &str,
@@ -426,21 +309,6 @@ fn env_kv(name: &str, value: &str) -> EnvVar {
     }
 }
 
-fn env_secret(name: &str, secret_name: &str, key: &str) -> EnvVar {
-    EnvVar {
-        name: name.to_owned(),
-        value: None,
-        value_from: Some(EnvVarSource {
-            secret_key_ref: Some(SecretKeySelector {
-                name: secret_name.to_owned(),
-                key: key.to_owned(),
-                optional: Some(false),
-            }),
-            ..EnvVarSource::default()
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,61 +338,6 @@ mod tests {
     fn backup_job_no_retries() {
         let j = build_backup_job("abc", 1, "mc", "mc-snapshots");
         assert_eq!(j.spec.unwrap().backoff_limit, Some(0));
-    }
-
-    #[test]
-    fn swap_job_carries_preserve_and_wipe_lists_in_env() {
-        let j = build_swap_job(
-            "abc",
-            1,
-            "mc",
-            "https://example.com/p.zip",
-            &["world*", "ops.json"],
-            &["mods", "config"],
-            "mc-abc-rcon",
-        );
-        let env = j.spec.unwrap().template.spec.unwrap().containers[0]
-            .env
-            .clone()
-            .unwrap();
-        let preserve = env.iter().find(|e| e.name == "PRESERVE_LIST").unwrap();
-        let wipe = env.iter().find(|e| e.name == "WIPE_LIST").unwrap();
-        assert!(preserve.value.as_deref().unwrap().contains("world*"));
-        assert!(wipe.value.as_deref().unwrap().contains("mods"));
-    }
-
-    #[test]
-    fn swap_job_pulls_rcon_password_from_secret() {
-        let j = build_swap_job("abc", 1, "mc", "url", &[], &[], "mc-abc-rcon");
-        let env = j.spec.unwrap().template.spec.unwrap().containers[0]
-            .env
-            .clone()
-            .unwrap();
-        let rcon = env.iter().find(|e| e.name == "RCON_PASSWORD").unwrap();
-        let sk = rcon
-            .value_from
-            .as_ref()
-            .unwrap()
-            .secret_key_ref
-            .as_ref()
-            .unwrap();
-        assert_eq!(sk.name, "mc-abc-rcon");
-    }
-
-    #[test]
-    fn swap_script_uses_dot_notation_for_cp() {
-        // Guard against the "cp -a /tmp/preserved/* /data/" regression that
-        // breaks when /tmp/preserved is empty.
-        assert!(SWAP_SCRIPT.contains("cp -a /tmp/preserved/. /data/"));
-        assert!(!SWAP_SCRIPT.contains("cp -a /tmp/preserved/* /data/"));
-    }
-
-    #[test]
-    fn swap_script_writes_server_properties_unconditionally() {
-        // ensure_kv must touch the file first so the rewrite works on first boot.
-        assert!(SWAP_SCRIPT.contains("touch \"$SP\""));
-        assert!(SWAP_SCRIPT.contains("ensure_kv enable-rcon true"));
-        assert!(SWAP_SCRIPT.contains("ensure_kv \"rcon.password\""));
     }
 
     #[test]

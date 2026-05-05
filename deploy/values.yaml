@@ -133,9 +133,17 @@ secrets:
   # CurseForge API key. Get one at https://console.curseforge.com/. Inline
   # set is fine for `helm install --set`; for sealed-secret deployments,
   # use `cfApiKeyExistingSecret` instead.
+  #
+  # The chart provisions the same key as a Secret named `cf-api-key` in
+  # `mcNamespace` so per-server itzg pods can read it via secretKeyRef
+  # (TYPE=AUTO_CURSEFORGE needs the API key to download server packs).
   cfApiKey: ""
   # Name of an out-of-band Secret carrying CF_API_KEY. Recommended for
   # production / sealed-secrets workflows.
+  #
+  # When this is set you must ALSO create a Secret named `cf-api-key` in
+  # `mcNamespace` with the same `CF_API_KEY` field — the chart can't
+  # cross-namespace an existing Secret on its own.
   cfApiKeyExistingSecret: ""
 
 modpack:

@@ -458,7 +458,7 @@ export default function NewServerPage(): ReactElement {
 										set("memory_mi", v);
 									}}
 									min={1024}
-									max={16384}
+									max={65536}
 									step={1024}
 									unit="MiB"
 								/>

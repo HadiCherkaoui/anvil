@@ -92,7 +92,7 @@ export function SettingsBody(): ReactElement {
 						value={memory}
 						onChange={setMemory}
 						min={1024}
-						max={16384}
+						max={65536}
 						step={1024}
 						unit="MiB"
 					/>
