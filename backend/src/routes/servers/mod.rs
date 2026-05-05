@@ -92,12 +92,7 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<ServersBody>, Ap
         svc_list
             .items
             .iter()
-            .filter(|s| {
-                s.spec
-                    .as_ref()
-                    .and_then(|sp| sp.cluster_ip.as_deref())
-                    != Some("None")
-            })
+            .filter(|s| s.spec.as_ref().and_then(|sp| sp.cluster_ip.as_deref()) != Some("None"))
             .map(|s| (&s.metadata, s)),
     );
 
