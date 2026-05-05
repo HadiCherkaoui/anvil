@@ -134,16 +134,21 @@ secrets:
   # set is fine for `helm install --set`; for sealed-secret deployments,
   # use `cfApiKeyExistingSecret` instead.
   #
-  # The chart provisions the same key as a Secret named `cf-api-key` in
-  # `mcNamespace` so per-server itzg pods can read it via secretKeyRef
-  # (TYPE=AUTO_CURSEFORGE needs the API key to download server packs).
+  # When set inline, the chart provisions the same key as TWO Secrets:
+  #   1. `<release>-cf` in the release namespace (panel reads it via envFrom)
+  #   2. `cf-api-key` in `mcNamespace` (per-server itzg pods reference it
+  #      via `secretKeyRef` so TYPE=AUTO_CURSEFORGE can download server packs)
   cfApiKey: ""
-  # Name of an out-of-band Secret carrying CF_API_KEY. Recommended for
-  # production / sealed-secrets workflows.
+  # Name of an out-of-band Secret in the release namespace carrying
+  # CF_API_KEY. Use this for SOPS / sealed-secrets workflows so Helm
+  # rollbacks don't reset the key.
   #
-  # When this is set you must ALSO create a Secret named `cf-api-key` in
-  # `mcNamespace` with the same `CF_API_KEY` field — the chart can't
-  # cross-namespace an existing Secret on its own.
+  # IMPORTANT: when this is set, the chart does NOT manage the `cf-api-key`
+  # Secret in `mcNamespace` — you must provide it yourself, e.g. as a
+  # second SOPS-encrypted Secret with `metadata.name: cf-api-key`,
+  # `metadata.namespace: <mcNamespace>`, and `stringData.CF_API_KEY: <key>`.
+  # Without it, MC StatefulSet pods will fail with `CreateContainerConfigError:
+  # secret "cf-api-key" not found`.
   cfApiKeyExistingSecret: ""
 
 modpack:
