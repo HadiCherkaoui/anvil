@@ -28,13 +28,13 @@ function formatMemory(memoryMi: number): string {
 	return `${memoryMi.toString()} MiB`;
 }
 
-function formatCpu(millicores: number): string {
-	return `${(millicores / 1000).toFixed(2)} cores`;
-}
-
-function formatEndpoint(endpoint: ServerSummary["endpoint"]): string {
-	if (endpoint === null) return "—";
-	return `${endpoint.host}:${endpoint.port.toString()}`;
+function formatEndpoint(
+	endpoint: ServerSummary["endpoint"],
+	status: ServerSummary["status"],
+): string {
+	if (endpoint !== null) return `${endpoint.host}:${endpoint.port.toString()}`;
+	if (status === "starting" || status === "stopping") return "pending…";
+	return "—";
 }
 
 const SOURCE_BAR: Record<SourceKind, string | null> = {
@@ -68,7 +68,6 @@ export function ServerList({
 						<th className="py-3 pl-5 pr-4 font-medium">name</th>
 						<th className="px-4 py-3 font-medium">status</th>
 						<th className="px-4 py-3 font-medium">version</th>
-						<th className="px-4 py-3 font-medium">cpu</th>
 						<th className="px-4 py-3 font-medium">memory</th>
 						<th className="px-4 py-3 font-medium">address</th>
 						<th className="py-3 pl-4 pr-5" />
@@ -166,13 +165,10 @@ function ServerRow({ server, onActionDone }: ServerRowProps): ReactElement {
 			</td>
 			<td className="px-4 py-3 text-text-body">{server.mc_version}</td>
 			<td className="px-4 py-3 text-text-body">
-				{formatCpu(server.cpu_millicores)}
-			</td>
-			<td className="px-4 py-3 text-text-body">
 				{formatMemory(server.memory_mi)}
 			</td>
 			<td className="px-4 py-3 text-text-muted">
-				{formatEndpoint(server.endpoint)}
+				{formatEndpoint(server.endpoint, server.status)}
 			</td>
 			<td
 				className="py-3 pl-4 pr-5"

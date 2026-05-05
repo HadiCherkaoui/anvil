@@ -59,12 +59,10 @@ const INITIAL: CreateDraft = {
 	name: "",
 	type: "vanilla",
 	mc_version: null,
-	cpu_millicores: 2000,
 	memory_mi: 4096,
 	storage_size_gi: 20,
 	storage_class: null,
 	exposure_mode: "clusterip",
-	server_type: "vanilla",
 	curseforge: null,
 	modrinth: null,
 	runtime: null,
@@ -210,7 +208,6 @@ export default function NewServerPage(): ReactElement {
 		const request: CreateServerRequest = {
 			name: draft.name,
 			memory_mi: draft.memory_mi,
-			cpu_millicores: draft.cpu_millicores,
 			exposure_mode: draft.exposure_mode,
 			storage_size_gi: draft.storage_size_gi,
 			...(draft.storage_class !== null && draft.storage_class !== ""
@@ -465,23 +462,6 @@ export default function NewServerPage(): ReactElement {
 									step={1024}
 									unit="MiB"
 								/>
-								<RangeSlider
-									label="cpu"
-									value={draft.cpu_millicores}
-									onChange={(v) => {
-										set("cpu_millicores", v);
-									}}
-									min={250}
-									max={16000}
-									step={250}
-									unit="m"
-								/>
-								{caps !== null && (
-									<p className="font-mono text-[11px] text-text-faint">
-										cluster headroom · {caps.available_cpu_cores.toFixed(1)}{" "}
-										cores allocatable
-									</p>
-								)}
 							</div>
 						</Card>
 					</Section>

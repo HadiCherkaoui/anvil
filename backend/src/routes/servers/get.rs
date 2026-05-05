@@ -26,7 +26,6 @@ pub struct ServerDetail {
     pub status: ServerStatus,
     pub mc_version: String,
     pub memory_mi: i64,
-    pub cpu_millicores: i64,
     pub server_type: String,
     pub exposure_mode: String,
     pub storage_class: Option<String>,
@@ -161,7 +160,6 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         status,
         mc_version: row.mc_version,
         memory_mi: row.memory_mi,
-        cpu_millicores: row.cpu_millicores,
         server_type: row.server_type,
         exposure_mode: row.exposure_mode,
         storage_class: row.storage_class,
@@ -185,7 +183,6 @@ pub(crate) struct ServerRow {
     pub name: String,
     pub mc_version: String,
     pub memory_mi: i64,
-    pub cpu_millicores: i64,
     pub server_type: String,
     pub exposure_mode: String,
     pub storage_class: Option<String>,
@@ -202,7 +199,6 @@ type ServerRowTuple = (
     String,
     String,
     i64,
-    i64,
     String,
     String,
     Option<String>,
@@ -216,7 +212,7 @@ type ServerRowTuple = (
 /// when no row exists.
 pub(crate) async fn fetch_server_row(pool: &SqlitePool, id: &str) -> Result<ServerRow, AppError> {
     let opt: Option<ServerRowTuple> = sqlx::query_as(
-        "SELECT id, name, mc_version, memory_mi, cpu_millicores, server_type, exposure_mode,
+        "SELECT id, name, mc_version, memory_mi, server_type, exposure_mode,
                 storage_class, storage_size_gi, nodeport, created_at, last_started_at
          FROM servers WHERE id = ?",
     )
@@ -231,7 +227,6 @@ pub(crate) async fn fetch_server_row(pool: &SqlitePool, id: &str) -> Result<Serv
             name,
             mc_version,
             memory_mi,
-            cpu_millicores,
             server_type,
             exposure_mode,
             storage_class,
@@ -244,7 +239,6 @@ pub(crate) async fn fetch_server_row(pool: &SqlitePool, id: &str) -> Result<Serv
             name,
             mc_version,
             memory_mi,
-            cpu_millicores,
             server_type,
             exposure_mode,
             storage_class,

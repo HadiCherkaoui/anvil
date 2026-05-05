@@ -46,7 +46,6 @@ export const serverSummarySchema = z.object({
 	status: serverStatusSchema,
 	mc_version: z.string(),
 	memory_mi: z.number().int().nonnegative(),
-	cpu_millicores: z.number().int().nonnegative(),
 	exposure_mode: exposureModeSchema,
 	endpoint: endpointSchema.nullable(),
 	created_at: z.number().int(),
@@ -86,10 +85,6 @@ export const clusterCapabilitiesSchema = z.object({
 	default_storage_class: z.string().nullable(),
 	// M5: gates the CurseForge option in the New Server modal.
 	cf_api_key_present: z.boolean().default(false),
-	// B: Modrinth is API-key-free; flag exists for symmetry / future failure surfaces.
-	modrinth_enabled: z.boolean().default(true),
-	// M6: sum of allocatable CPU across schedulable nodes (cores).
-	available_cpu_cores: z.number().nonnegative().default(0),
 });
 
 export const mcVersionsResponseSchema = z.object({
@@ -161,7 +156,6 @@ export const createServerRequestSchema = z.object({
 		.regex(NAME_REGEX, "lowercase letters, digits, '-' (1-63 chars)"),
 	mc_version: z.string().optional(),
 	memory_mi: z.number().int().min(1024).max(16_384),
-	cpu_millicores: z.number().int().min(250).max(16_000),
 	exposure_mode: exposureModeSchema.optional(),
 	storage_class: z.string().optional(),
 	storage_size_gi: z.number().int().min(10).max(500).optional(),
@@ -196,7 +190,6 @@ export const autoUpdateModeSchema = z.enum(["never", "notify", "apply"]);
 
 export const settingsRequestSchema = z.object({
 	memory_mi: z.number().int().min(1024).max(16_384).optional(),
-	cpu_millicores: z.number().int().min(250).max(16_000).optional(),
 	auto_update_mode: autoUpdateModeSchema.optional(),
 	version_skip: z.array(z.string()).optional(),
 	force_version: z.string().nullable().optional(),
@@ -401,6 +394,29 @@ export async function logout(): Promise<string> {
 	const res = await fetch("/api/auth/logout", { method: "POST" });
 	const body = await jsonOrThrow(res, logoutResponseSchema);
 	return body.logoutUrl;
+}
+
+// --- metrics --------------------------------------------------------------
+
+export const serverMetricsSchema = z.object({
+	cpu_millicores: z.number().int().nonnegative().nullable(),
+	memory_mi: z.number().int().nonnegative().nullable(),
+});
+
+export type ServerMetrics = z.infer<typeof serverMetricsSchema>;
+
+/// Fetches live CPU/memory from metrics-server. Both fields can be null when
+/// the metrics API isn't installed or hasn't scraped this pod yet.
+export async function fetchServerMetrics(
+	id: string,
+	signal?: AbortSignal,
+): Promise<ServerMetrics> {
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(id)}/metrics`,
+		init,
+	);
+	return jsonOrThrow(res, serverMetricsSchema);
 }
 
 // --- modpack endpoints ----------------------------------------------------

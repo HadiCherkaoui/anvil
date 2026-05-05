@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::extract::State;
-use k8s_openapi::api::core::v1::Node;
 use k8s_openapi::api::storage::v1::StorageClass;
 use kube::Api;
 use kube::api::ListParams;
@@ -43,13 +42,6 @@ pub struct ClusterCapabilities {
     /// Whether the backend has a `CurseForge` API key configured. The frontend
     /// hides the `CurseForge` option in the New Server modal when this is false.
     pub cf_api_key_present: bool,
-    /// Whether Modrinth is reachable. Always `true` in B — Modrinth needs no
-    /// API key, the field exists for symmetry with `cf_api_key_present` and
-    /// future failure surfaces.
-    pub modrinth_enabled: bool,
-    /// Sum of allocatable CPU across schedulable nodes, in fractional cores.
-    /// Surfaces as a hint in the create-page Resources section.
-    pub available_cpu_cores: f64,
 }
 
 /// In-memory cache slot held in `AppState`.
@@ -73,10 +65,8 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabil
     }
 
     let storage_classes: Api<StorageClass> = Api::all(state.kube.clone());
-    let nodes: Api<Node> = Api::all(state.kube.clone());
     let lp = ListParams::default();
-    let (sc_res, node_res) = tokio::join!(storage_classes.list(&lp), nodes.list(&lp));
-    let list = sc_res?;
+    let list = storage_classes.list(&lp).await?;
     let mut classes: Vec<String> = Vec::new();
     let mut default: Option<String> = None;
     for sc in list.items {
@@ -97,16 +87,6 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabil
     }
     classes.sort();
 
-    // Node listing is best-effort: surfacing 0.0 cores is better than a 500
-    // on the capabilities endpoint, which the create page polls.
-    let available_cpu_cores = match node_res {
-        Ok(node_list) => sum_allocatable_cpu_cores(&node_list.items),
-        Err(e) => {
-            tracing::warn!(error = %e, "capabilities: node list failed; cpu_cores=0.0");
-            0.0
-        }
-    };
-
     let caps = ClusterCapabilities {
         loadbalancer: state.loadbalancer_supported,
         // The cluster always has NodePort and ClusterIP available — these
@@ -116,51 +96,9 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabil
         available_storage_classes: classes,
         default_storage_class: default,
         cf_api_key_present: state.cf_client.is_some(),
-        modrinth_enabled: true,
-        available_cpu_cores,
     };
     write_cache(&state.capabilities_cache, &caps);
     Ok(Json(caps))
-}
-
-/// Parses a Kubernetes CPU `Quantity` string into millicores.
-///
-/// Accepts the two forms k8s emits: `"500m"` (already millicores) and
-/// `"4"` / `"3.5"` (whole cores). Returns `None` for anything else.
-fn parse_cpu_quantity(q: &str) -> Option<i64> {
-    if let Some(n) = q.strip_suffix('m') {
-        n.parse::<i64>().ok()
-    } else {
-        let f = q.parse::<f64>().ok()?;
-        if !f.is_finite() {
-            return None;
-        }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        Some((f * 1000.0) as i64)
-    }
-}
-
-/// Sums allocatable CPU (cores) across schedulable nodes.
-fn sum_allocatable_cpu_cores(nodes: &[Node]) -> f64 {
-    let total_millicores: i64 = nodes
-        .iter()
-        .filter(|n| {
-            n.spec
-                .as_ref()
-                .is_none_or(|s| s.unschedulable != Some(true))
-        })
-        .filter_map(|n| {
-            n.status
-                .as_ref()?
-                .allocatable
-                .as_ref()?
-                .get("cpu")
-                .and_then(|q| parse_cpu_quantity(&q.0))
-        })
-        .sum();
-    #[allow(clippy::cast_precision_loss)]
-    let cores = (total_millicores as f64) / 1000.0;
-    cores
 }
 
 fn read_cache(cache: &CapabilitiesCache) -> Option<ClusterCapabilities> {
@@ -177,30 +115,4 @@ fn read_cache(cache: &CapabilitiesCache) -> Option<ClusterCapabilities> {
 fn write_cache(cache: &CapabilitiesCache, caps: &ClusterCapabilities) {
     let mut guard = cache.lock().expect("capabilities cache poisoned");
     *guard = Some((caps.clone(), Instant::now()));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_millicore_form() {
-        assert_eq!(parse_cpu_quantity("500m"), Some(500));
-        assert_eq!(parse_cpu_quantity("4000m"), Some(4000));
-        assert_eq!(parse_cpu_quantity("16000m"), Some(16_000));
-    }
-
-    #[test]
-    fn parses_core_form() {
-        assert_eq!(parse_cpu_quantity("4"), Some(4000));
-        assert_eq!(parse_cpu_quantity("3.5"), Some(3500));
-        assert_eq!(parse_cpu_quantity("0.25"), Some(250));
-    }
-
-    #[test]
-    fn rejects_garbage() {
-        assert_eq!(parse_cpu_quantity(""), None);
-        assert_eq!(parse_cpu_quantity("nan"), None);
-        assert_eq!(parse_cpu_quantity("xm"), None);
-    }
 }

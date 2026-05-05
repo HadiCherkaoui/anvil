@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 
 import {
 	type ConnectionStatus,
-	type EndReason,
 	type LogLevel,
 	useLogsStream,
 } from "../lib/logs-stream";
@@ -104,6 +103,3 @@ export function LiveLogPanel({ serverId }: LiveLogPanelProps): ReactElement {
 		</section>
 	);
 }
-
-// kept for legacy import compatibility but no longer rendered
-export type { EndReason };

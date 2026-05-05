@@ -44,14 +44,12 @@ pub struct BuildParams<'a> {
     pub namespace: &'a str,
     /// Minecraft version snapshotted at create time. Stored as an annotation.
     pub mc_version: &'a str,
-    /// Memory budget in MiB. Becomes the k8s resource limit; provider env
-    /// (`MEMORY=…M` for vanilla, `JAVA_TOOL_OPTIONS=-Xmx…m` for CF) lives
-    /// in `extra_env`.
+    /// Memory budget in MiB. Panel-tracked metadata only — surfaces as the
+    /// `app.anvil.io/memory-mi` annotation and feeds provider env
+    /// (`MEMORY=…M` for vanilla, `JAVA_TOOL_OPTIONS=-Xmx…m` for CF) via
+    /// `extra_env`. Not enforced as a k8s resource constraint; see the
+    /// container builder for why.
     pub memory_mi: i64,
-    /// CPU budget in millicores. Becomes the k8s `resources.limits.cpu`.
-    pub cpu_millicores: i64,
-    /// Server type — `vanilla` | `curseforge` (`servers.source_kind`).
-    pub server_type: &'a str,
     /// Container image (e.g. `itzg/minecraft-server:java21`,
     /// `eclipse-temurin:21-jdk`). Comes from `ModpackProvider::pod_image`.
     pub image: &'a str,
@@ -97,8 +95,13 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
     let labels = server_labels(p.id);
     let annotations = server_annotations(p);
 
-    let resources = pod_resources(p.memory_mi, p.cpu_millicores);
-
+    // No `resources` block: the homelab cluster is intentionally
+    // overprovisioned. Setting `limits` causes the k8s API server to
+    // mirror them into `requests` (per the kubernetes API reference),
+    // which then prevents scheduling on a node whose summed pod
+    // requests would exceed allocatable capacity. Dropping resources
+    // entirely puts the pod in BestEffort QoS — fine for a single-user
+    // homelab where the operator picks the per-server JVM heap.
     let container = Container {
         name: "mc".to_owned(),
         image: Some(p.image.to_owned()),
@@ -121,7 +124,6 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
                 ..ContainerPort::default()
             },
         ]),
-        resources: Some(resources),
         volume_mounts: Some(vec![VolumeMount {
             name: "data".to_owned(),
             mount_path: "/data".to_owned(),
@@ -371,23 +373,6 @@ pub fn build_files_helper_pod(id: &str, namespace: &str, image: &str) -> Pod {
     }
 }
 
-/// Returns CPU and memory limits for the Minecraft container.
-///
-/// Limits only — no requests. The homelab cluster is intentionally
-/// overprovisioned, so binding scheduler-visible requests to the
-/// per-server budget would force the operator to right-size every
-/// server before deploying. Limits still cap runaway containers.
-fn pod_resources(memory_mi: i64, cpu_millicores: i64) -> ResourceRequirements {
-    let mut limits: BTreeMap<String, Quantity> = BTreeMap::new();
-    limits.insert("memory".to_owned(), Quantity(format!("{memory_mi}Mi")));
-    limits.insert("cpu".to_owned(), Quantity(format!("{cpu_millicores}m")));
-    ResourceRequirements {
-        requests: None,
-        limits: Some(limits),
-        claims: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,8 +392,6 @@ mod tests {
             namespace: "mc",
             mc_version: "1.21.4",
             memory_mi: 4096,
-            cpu_millicores: 2000,
-            server_type: "vanilla",
             image: "itzg/minecraft-server:java21",
             command: None,
             extra_env: vanilla_env_for_test(),

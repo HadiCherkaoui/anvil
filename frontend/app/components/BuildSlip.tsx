@@ -7,13 +7,7 @@ import {
 	type ReactNode,
 } from "react";
 
-import type {
-	CfChannel,
-	ExposureMode,
-	ModEntry,
-	Runtime,
-	SourceKind,
-} from "../lib/api";
+import type { CfChannel, ExposureMode, ModEntry, Runtime } from "../lib/api";
 
 export type CreateType = "vanilla" | "paper" | "modpack" | "modded";
 
@@ -21,12 +15,10 @@ export interface CreateDraft {
 	name: string;
 	type: CreateType;
 	mc_version: string | null;
-	cpu_millicores: number;
 	memory_mi: number;
 	storage_size_gi: number;
 	storage_class: string | null;
 	exposure_mode: ExposureMode;
-	server_type: SourceKind;
 	curseforge: { project_id: number; channel: CfChannel } | null;
 	modrinth: { project_id: string; channel: CfChannel } | null;
 	runtime: Runtime | null;
@@ -103,10 +95,6 @@ export function BuildSlip({ status }: { status: Status }): ReactElement {
 					)}
 				</Section>
 				<Section label="03 resources">
-					<Field
-						label="cpu"
-						value={`${(d.cpu_millicores / 1000).toFixed(2)} cores`}
-					/>
 					<Field label="memory" value={`${d.memory_mi.toString()} MiB`} />
 				</Section>
 				<Section label="04 storage">

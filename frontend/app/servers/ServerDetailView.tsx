@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState, type ReactElement } from "react";
 import {
 	ApiError,
 	applyUpdate,
+	deleteServer,
 	fetchServerByName,
 	restartServer,
 	startServer,
@@ -17,6 +18,7 @@ import { ServerDetailContext } from "../lib/server-detail-context";
 import { Badge, type BadgeVariant } from "../components/Badge";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
+import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
 import { Dropdown } from "../components/Dropdown";
 import { Skeleton } from "../components/Skeleton";
 import { Tabs, type Tab } from "../components/Tabs";
@@ -74,6 +76,7 @@ export function ServerDetailView(): ReactElement {
 		name === null ? { kind: "missing-name" } : { kind: "loading" },
 	);
 	const [sheetOpen, setSheetOpen] = useState(false);
+	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	const reload = useCallback(
 		async (n: string, signal: AbortSignal): Promise<void> => {
@@ -225,9 +228,6 @@ export function ServerDetailView(): ReactElement {
 							<Badge variant={STATUS_VARIANT[detail.status]} />
 							<span>runtime · {detail.server_type}</span>
 							<span>version · {detail.mc_version}</span>
-							<span>
-								cpu · {(detail.cpu_millicores / 1000).toFixed(2)} cores
-							</span>
 							<span>memory · {detail.memory_mi} MiB</span>
 							<span>storage · {detail.storage_size_gi} GiB</span>
 						</div>
@@ -241,19 +241,19 @@ export function ServerDetailView(): ReactElement {
 								start
 							</Button>
 						)}
+						{(detail.status === "running" ||
+							detail.status === "starting" ||
+							detail.status === "error") && (
+							<Button onClick={lifecycle("stop", () => stopServer(detail.id))}>
+								stop
+							</Button>
+						)}
 						{detail.status === "running" && (
-							<>
-								<Button
-									onClick={lifecycle("stop", () => stopServer(detail.id))}
-								>
-									stop
-								</Button>
-								<Button
-									onClick={lifecycle("restart", () => restartServer(detail.id))}
-								>
-									restart
-								</Button>
-							</>
+							<Button
+								onClick={lifecycle("restart", () => restartServer(detail.id))}
+							>
+								restart
+							</Button>
 						)}
 						<Dropdown
 							ariaLabel="more actions"
@@ -271,6 +271,14 @@ export function ServerDetailView(): ReactElement {
 									label: "open settings",
 									onSelect: () => {
 										router.push(tabHref("settings"));
+									},
+								},
+								{
+									id: "delete",
+									label: "delete server",
+									danger: true,
+									onSelect: () => {
+										setDeleteOpen(true);
 									},
 								},
 							]}
@@ -308,6 +316,23 @@ export function ServerDetailView(): ReactElement {
 					isOpen={sheetOpen}
 					onClose={() => {
 						setSheetOpen(false);
+					}}
+				/>
+				<ConfirmDeleteDialog
+					open={deleteOpen}
+					onClose={() => {
+						setDeleteOpen(false);
+					}}
+					targetName={detail.name}
+					description={
+						detail.status === "stopped"
+							? "this permanently removes the StatefulSet, PVC, Service, and RCON Secret. the server's world data is lost."
+							: "stop the server first — running servers can't be deleted. this dialog will report a 409 if you try."
+					}
+					onConfirm={async () => {
+						await deleteServer(detail.id);
+						toast.push(`${detail.name} deleted`, "success");
+						router.push("/");
 					}}
 				/>
 			</main>

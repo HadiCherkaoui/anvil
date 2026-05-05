@@ -25,11 +25,6 @@ const MEMORY_MI_MAX: i64 = 16_384;
 /// Required step (MiB). Memory selectors in the UI snap to this grid.
 const MEMORY_MI_STEP: i64 = 1024;
 
-/// Minimum CPU (millicores). 250m starves the JVM; below this is a misconfiguration.
-const CPU_MILLICORES_MIN: i64 = 250;
-/// Maximum CPU (millicores). 16000m matches the cluster-profile ceiling.
-const CPU_MILLICORES_MAX: i64 = 16_000;
-
 /// Minimum PVC size (GiB).
 const STORAGE_SIZE_GI_MIN: i64 = 10;
 /// Maximum PVC size (GiB). Generous ceiling; anything more is a misconfig.
@@ -114,24 +109,6 @@ pub fn validate_memory_mi(mi: i64) -> Result<(), AppError> {
             code: "memory_invalid",
             message: format!(
                 "memory_mi must be in [{MEMORY_MI_MIN}..={MEMORY_MI_MAX}] in {MEMORY_MI_STEP}-Mi steps"
-            ),
-        });
-    }
-    Ok(())
-}
-
-/// Validates the `cpu_millicores` field against the supported range.
-///
-/// # Errors
-///
-/// Returns [`AppError::BadRequest`] with `code = "cpu_millicores_invalid"` when
-/// the value is out of `[250, 16000]`.
-pub fn validate_cpu_millicores(m: i64) -> Result<(), AppError> {
-    if !(CPU_MILLICORES_MIN..=CPU_MILLICORES_MAX).contains(&m) {
-        return Err(AppError::BadRequest {
-            code: "cpu_millicores_invalid",
-            message: format!(
-                "cpu_millicores must be in [{CPU_MILLICORES_MIN}..={CPU_MILLICORES_MAX}]"
             ),
         });
     }
@@ -562,20 +539,6 @@ mod tests {
     fn invalid_memory_fails() {
         for mi in [0_i64, 512, 1023, 1025, 17_000, -1] {
             assert!(validate_memory_mi(mi).is_err());
-        }
-    }
-
-    #[test]
-    fn valid_cpu_passes() {
-        for m in [250_i64, 500, 1000, 2000, 4000, 8000, 16_000] {
-            assert!(validate_cpu_millicores(m).is_ok());
-        }
-    }
-
-    #[test]
-    fn invalid_cpu_fails() {
-        for m in [0_i64, 100, 249, 16_001, -250, 32_000] {
-            assert!(validate_cpu_millicores(m).is_err());
         }
     }
 

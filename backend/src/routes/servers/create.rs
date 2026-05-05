@@ -38,9 +38,8 @@ use crate::modpack::{
     CurseForgeServerPack, ModpackHttp, ModpackProvider, ProviderContext, VanillaProvider,
 };
 use crate::validation::{
-    validate_cpu_millicores, validate_exposure_mode, validate_mc_version, validate_memory_mi,
-    validate_mod_filename, validate_modrinth_id_or_slug, validate_name, validate_runtime,
-    validate_storage_size_gi,
+    validate_exposure_mode, validate_mc_version, validate_memory_mi, validate_mod_filename,
+    validate_modrinth_id_or_slug, validate_name, validate_runtime, validate_storage_size_gi,
 };
 
 /// Lowest `NodePort` allocated by the panel.
@@ -71,8 +70,6 @@ pub struct CreateRequest {
     pub mc_version: Option<String>,
     /// Memory budget in MiB. Must be 1024–16384 in 1024-step.
     pub memory_mi: i64,
-    /// CPU budget in millicores. Must be 250–16000.
-    pub cpu_millicores: i64,
     /// `loadbalancer` | `nodeport` | `clusterip`. Defaults to the cluster
     /// configuration in `state.mc_svc_type`.
     #[serde(default)]
@@ -157,7 +154,6 @@ pub async fn handle(
         name,
         mc_version,
         memory_mi,
-        cpu_millicores,
         exposure_mode,
         storage_class,
         storage_size_gi,
@@ -168,7 +164,6 @@ pub async fn handle(
     } = request;
     validate_name(&name)?;
     validate_memory_mi(memory_mi)?;
-    validate_cpu_millicores(cpu_millicores)?;
 
     let server_type = server_type.unwrap_or_else(|| SERVER_TYPE_VANILLA.to_owned());
     if !matches!(
@@ -253,7 +248,6 @@ pub async fn handle(
         &name,
         &resolved.mc_version,
         memory_mi,
-        cpu_millicores,
         resolved.source_kind,
         &exposure_mode,
         storage_class.as_deref(),
@@ -271,7 +265,6 @@ pub async fn handle(
             "name": name,
             "mc_version": resolved.mc_version,
             "memory_mi": memory_mi,
-            "cpu_millicores": cpu_millicores,
             "exposure_mode": exposure_mode,
             "storage_class": storage_class,
             "storage_size_gi": storage_size_gi,
@@ -295,8 +288,6 @@ pub async fn handle(
         namespace: &state.mc_namespace,
         mc_version: &resolved.mc_version,
         memory_mi,
-        cpu_millicores,
-        server_type: resolved.source_kind,
         image: resolved.provider.pod_image(),
         command: command_owned.as_deref(),
         extra_env: &extra_env,
@@ -588,7 +579,6 @@ async fn insert_server(
     name: &str,
     mc_version: &str,
     memory_mi: i64,
-    cpu_millicores: i64,
     source_kind: &str,
     exposure_mode: &str,
     storage_class: Option<&str>,
@@ -599,16 +589,15 @@ async fn insert_server(
 ) -> Result<(), AppError> {
     let result = sqlx::query(
         "INSERT INTO servers (
-            id, name, mc_version, memory_mi, cpu_millicores, server_type,
+            id, name, mc_version, memory_mi, server_type,
             exposure_mode, storage_class, storage_size_gi, source_config,
             source_kind, nodeport, created_at, last_started_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
     )
     .bind(id)
     .bind(name)
     .bind(mc_version)
     .bind(memory_mi)
-    .bind(cpu_millicores)
     // Legacy `server_type` column kept in lockstep with `source_kind` so
     // callers reading the M2 schema continue to see the same value.
     .bind(source_kind)
@@ -666,7 +655,6 @@ mod tests {
             name,
             "1.21.4",
             4096,
-            2000,
             SERVER_TYPE_VANILLA,
             "nodeport",
             None,
@@ -758,7 +746,6 @@ mod tests {
             "atm11",
             "ATM-11 4.4 Server",
             8192,
-            4000,
             SERVER_TYPE_CURSEFORGE,
             "loadbalancer",
             Some("tank"),

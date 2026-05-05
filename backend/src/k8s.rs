@@ -73,8 +73,6 @@ pub struct ServerSummary {
     pub mc_version: String,
     /// Configured memory budget (MiB).
     pub memory_mi: i64,
-    /// Configured CPU budget (millicores).
-    pub cpu_millicores: i64,
     /// Service exposure mode (`loadbalancer` | `nodeport` | `clusterip`).
     pub exposure_mode: String,
     /// Resolved connection endpoint, or `None` if the address has not been

@@ -8,14 +8,17 @@ import {
 	addServerPlugin,
 	applyMods,
 	applyServerPlugins,
+	fetchFileList,
 	listServerPlugins,
 	moddedConfigSchema,
 	paperConfigSchema,
 	removePendingMod,
 	removeServerPlugin,
+	type FileEntry,
 	type ModEntry,
 	type ModPendingOp,
 	type ModdedConfig,
+	type ServerDetail,
 } from "../../lib/api";
 import { useServerDetailCtx } from "../../lib/server-detail-context";
 
@@ -61,14 +64,7 @@ export function ModsBody(): ReactElement {
 		detail.source_kind === "curseforge" ||
 		detail.source_kind === "modrinth"
 	) {
-		return (
-			<Card header={`bundled in ${detail.mc_version}`}>
-				<p className="font-mono text-[12px] text-text-muted">
-					pack-driven · changes get wiped at next pack update. view mods/ via
-					FileBrowser at files.cherkaoui.ch for now.
-				</p>
-			</Card>
-		);
+		return <PackModsBody serverId={detail.id} status={detail.status} />;
 	}
 
 	// modded
@@ -597,5 +593,151 @@ function PaperPluginsBody({
 				target="plugins"
 			/>
 		</>
+	);
+}
+
+interface PackModsBodyProps {
+	serverId: string;
+	status: ServerDetail["status"];
+}
+
+type PackModsState =
+	| { kind: "loading" }
+	| { kind: "ready"; entries: readonly FileEntry[] }
+	| { kind: "pvc-uninit" }
+	| { kind: "error"; message: string };
+
+function transientReasonForStatus(
+	status: ServerDetail["status"],
+): string | null {
+	if (status === "starting" || status === "stopping") {
+		return `server is ${status} — try again once it settles.`;
+	}
+	if (status === "error") {
+		return "server is in error state — start it or fix the failure first.";
+	}
+	return null;
+}
+
+function formatJarSize(bytes: number): string {
+	if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+	if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KiB`;
+	return `${bytes.toString()} B`;
+}
+
+// Strips `.jar` and tries to peel off a trailing version suffix so the
+// list reads like "JEI 15.3.0.4" instead of "jei-1.20.1-15.3.0.4.jar".
+function prettifyJarName(filename: string): { name: string; version: string } {
+	const stem = filename.replace(/\.jar$/i, "");
+	const versionMatch = /^(.*?)[-_]([0-9].*)$/.exec(stem);
+	if (versionMatch && versionMatch[1] && versionMatch[2]) {
+		return { name: versionMatch[1], version: versionMatch[2] };
+	}
+	return { name: stem, version: "" };
+}
+
+function PackModsBody({ serverId, status }: PackModsBodyProps): ReactElement {
+	const transientReason = transientReasonForStatus(status);
+	const [state, setState] = useState<PackModsState>({ kind: "loading" });
+
+	useEffect(() => {
+		// Render-time gate: while the server is in a transient/error state, the
+		// effect bails and the card shows the reason directly.
+		if (transientReason !== null) return undefined;
+		const ctrl = new AbortController();
+		fetchFileList(serverId, "/mods", ctrl.signal)
+			.then((res) => {
+				const jars = res.entries
+					.filter((e) => e.type === "f" && /\.jar$/i.test(e.name))
+					.toSorted((a, b) => a.name.localeCompare(b.name));
+				setState({ kind: "ready", entries: jars });
+			})
+			.catch((err: unknown) => {
+				if (err instanceof DOMException && err.name === "AbortError") return;
+				if (err instanceof ApiError && err.status === 404) {
+					setState({ kind: "ready", entries: [] });
+					return;
+				}
+				if (err instanceof ApiError && err.code === "pvc_not_initialized") {
+					setState({ kind: "pvc-uninit" });
+					return;
+				}
+				const message =
+					err instanceof ApiError
+						? `${err.code}: ${err.message}`
+						: err instanceof Error
+							? err.message
+							: "unknown error";
+				setState({ kind: "error", message });
+			});
+		return () => {
+			ctrl.abort();
+		};
+	}, [serverId, transientReason]);
+
+	if (transientReason !== null) {
+		return (
+			<Card header="installed mods · pack-driven">
+				<p className="font-mono text-[12px] text-text-muted">
+					{transientReason}
+				</p>
+			</Card>
+		);
+	}
+
+	return (
+		<Card header="installed mods · pack-driven">
+			{state.kind === "loading" && (
+				<p className="font-mono text-[12px] text-text-faint">
+					loading mod list…
+				</p>
+			)}
+			{state.kind === "pvc-uninit" && (
+				<p className="font-mono text-[12px] text-text-muted">
+					start the server once to initialise storage, then come back.
+				</p>
+			)}
+			{state.kind === "error" && (
+				<p className="font-mono text-[12px] text-state-error">
+					failed · {state.message}
+				</p>
+			)}
+			{state.kind === "ready" && state.entries.length === 0 && (
+				<p className="font-mono text-[12px] text-text-faint">
+					no jars in /mods.
+				</p>
+			)}
+			{state.kind === "ready" && state.entries.length > 0 && (
+				<>
+					<p className="mb-3 font-mono text-[11px] text-text-faint">
+						{state.entries.length.toString()} jars · pack-driven · changes get
+						wiped on the next pack update.
+					</p>
+					<ul className="flex flex-col">
+						{state.entries.map((m) => {
+							const { name, version } = prettifyJarName(m.name);
+							return (
+								<li
+									key={m.name}
+									className="flex items-center justify-between border-b border-border-soft py-1.5 font-mono text-[12px]"
+								>
+									<div className="flex min-w-0 items-center gap-3">
+										<span className="truncate text-text-body">{name}</span>
+										{version !== "" && (
+											<span className="shrink-0 text-text-faint">
+												{version}
+											</span>
+										)}
+									</div>
+									<span className="shrink-0 text-text-faint">
+										{formatJarSize(m.size)}
+									</span>
+								</li>
+							);
+						})}
+					</ul>
+				</>
+			)}
+		</Card>
 	);
 }

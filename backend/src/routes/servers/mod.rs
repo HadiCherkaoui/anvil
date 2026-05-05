@@ -11,6 +11,7 @@ pub mod files;
 pub mod get;
 pub mod logs;
 pub mod logs_stream;
+pub mod metrics;
 pub mod mods;
 pub mod players;
 pub mod plugins;
@@ -132,7 +133,6 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<ServersBody>, Ap
                 status,
                 mc_version: row.mc_version,
                 memory_mi: row.memory_mi,
-                cpu_millicores: row.cpu_millicores,
                 exposure_mode: row.exposure_mode,
                 endpoint,
                 created_at: row.created_at,
@@ -153,7 +153,6 @@ struct SummaryRow {
     name: String,
     mc_version: String,
     memory_mi: i64,
-    cpu_millicores: i64,
     exposure_mode: String,
     created_at: i64,
     source_kind: String,
@@ -174,7 +173,6 @@ type SummaryTuple = (
     String,
     String,
     i64,
-    i64,
     String,
     i64,
     String,
@@ -185,7 +183,7 @@ type SummaryTuple = (
 
 async fn fetch_summary_rows(pool: &SqlitePool) -> Result<Vec<SummaryRow>, AppError> {
     let rows: Vec<SummaryTuple> = sqlx::query_as(
-        "SELECT s.id, s.name, s.mc_version, s.memory_mi, s.cpu_millicores,
+        "SELECT s.id, s.name, s.mc_version, s.memory_mi,
                 s.exposure_mode, s.created_at, s.source_kind, s.source_config,
                 mv.latest_name, mv.latest_id
          FROM servers s
@@ -202,7 +200,6 @@ async fn fetch_summary_rows(pool: &SqlitePool) -> Result<Vec<SummaryRow>, AppErr
                 name,
                 mc_version,
                 memory_mi,
-                cpu_millicores,
                 exposure_mode,
                 created_at,
                 source_kind,
@@ -221,7 +218,6 @@ async fn fetch_summary_rows(pool: &SqlitePool) -> Result<Vec<SummaryRow>, AppErr
                     name,
                     mc_version,
                     memory_mi,
-                    cpu_millicores,
                     exposure_mode,
                     created_at,
                     source_kind,

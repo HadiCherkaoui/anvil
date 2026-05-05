@@ -1,8 +1,8 @@
 //! `PATCH /api/servers/:id/settings` — update server settings.
 //!
-//! Resource fields (`memory_mi`, `cpu_millicores`) apply on next start to
-//! every server type. Modpack-specific fields (`auto_update_mode`,
-//! `version_skip`, `force_version`) are rejected on vanilla rows.
+//! `memory_mi` applies on next start to every server type. Modpack-specific
+//! fields (`auto_update_mode`, `version_skip`, `force_version`) are rejected
+//! on vanilla rows.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -14,17 +14,13 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::modpack::curseforge::AutoUpdateMode;
 use crate::routes::servers::create::insert_audit;
-use crate::validation::{
-    validate_cpu_millicores, validate_force_version, validate_memory_mi, validate_version_skip,
-};
+use crate::validation::{validate_force_version, validate_memory_mi, validate_version_skip};
 
 /// Request body — every field optional, only present fields update.
 #[derive(Debug, Default, Deserialize)]
 pub struct SettingsRequest {
     /// Memory budget (MiB). Applies on next start.
     pub memory_mi: Option<i64>,
-    /// CPU budget (millicores). Applies on next start.
-    pub cpu_millicores: Option<i64>,
     pub auto_update_mode: Option<AutoUpdateMode>,
     pub version_skip: Option<Vec<String>>,
     pub force_version: Option<Option<String>>,
@@ -36,7 +32,7 @@ pub struct SettingsRequest {
 ///
 /// - 404 if the server doesn't exist.
 /// - 400 `not_modded` if a modpack-specific field is set on a vanilla server.
-/// - 400 `memory_invalid` / `cpu_millicores_invalid` on out-of-range resources.
+/// - 400 `memory_invalid` on out-of-range memory.
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -61,9 +57,6 @@ pub async fn handle(
     if let Some(m) = req.memory_mi {
         validate_memory_mi(m)?;
     }
-    if let Some(c) = req.cpu_millicores {
-        validate_cpu_millicores(c)?;
-    }
     if let Some(skips) = req.version_skip.as_ref() {
         validate_version_skip(skips)?;
     }
@@ -71,20 +64,12 @@ pub async fn handle(
         validate_force_version(v)?;
     }
 
-    // Resource fields land independently of source_config. COALESCE preserves
-    // any column the request did not touch.
-    if req.memory_mi.is_some() || req.cpu_millicores.is_some() {
-        sqlx::query(
-            "UPDATE servers SET
-                memory_mi      = COALESCE(?, memory_mi),
-                cpu_millicores = COALESCE(?, cpu_millicores)
-             WHERE id = ?",
-        )
-        .bind(req.memory_mi)
-        .bind(req.cpu_millicores)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+    if let Some(m) = req.memory_mi {
+        sqlx::query("UPDATE servers SET memory_mi = ? WHERE id = ?")
+            .bind(m)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
     }
 
     let mut audit = if touches_modpack {
@@ -124,11 +109,6 @@ pub async fn handle(
         && let Some(obj) = audit.as_object_mut()
     {
         obj.insert("memory_mi".into(), serde_json::json!(m));
-    }
-    if let Some(c) = req.cpu_millicores
-        && let Some(obj) = audit.as_object_mut()
-    {
-        obj.insert("cpu_millicores".into(), serde_json::json!(c));
     }
 
     let now = chrono::Utc::now().timestamp();

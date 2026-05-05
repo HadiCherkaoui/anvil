@@ -47,7 +47,6 @@ export function SettingsBody(): ReactElement {
 	const versions = useMcVersions();
 
 	const [memory, setMemory] = useState(detail.memory_mi);
-	const [cpu, setCpu] = useState(detail.cpu_millicores);
 	const [autoUpdate, setAutoUpdate] = useState<AutoUpdateMode>(
 		readAutoUpdate(detail),
 	);
@@ -57,15 +56,13 @@ export function SettingsBody(): ReactElement {
 	const isModpack = detail.source_kind !== "vanilla";
 
 	const memoryDirty = memory !== detail.memory_mi;
-	const cpuDirty = cpu !== detail.cpu_millicores;
 	const autoUpdateDirty = isModpack && autoUpdate !== readAutoUpdate(detail);
-	const dirty = memoryDirty || cpuDirty || autoUpdateDirty;
+	const dirty = memoryDirty || autoUpdateDirty;
 
 	const save = (): void => {
 		setBusy(true);
 		const patch = {
 			...(memoryDirty ? { memory_mi: memory } : {}),
-			...(cpuDirty ? { cpu_millicores: cpu } : {}),
 			...(autoUpdateDirty ? { auto_update_mode: autoUpdate } : {}),
 		};
 		updateServerSettings(detail.id, patch)
@@ -98,15 +95,6 @@ export function SettingsBody(): ReactElement {
 						max={16384}
 						step={1024}
 						unit="MiB"
-					/>
-					<RangeSlider
-						label="cpu"
-						value={cpu}
-						onChange={setCpu}
-						min={250}
-						max={16000}
-						step={250}
-						unit="m"
 					/>
 				</div>
 			</Card>
