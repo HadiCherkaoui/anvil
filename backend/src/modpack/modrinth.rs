@@ -1,6 +1,6 @@
 //! Modrinth `.mrpack` provider.
 //!
-//! Reuses `itzg/minecraft-server:java21` with `TYPE=AUTO_MODRINTH` —
+//! Reuses `itzg/minecraft-server:java25` with `TYPE=AUTO_MODRINTH` —
 //! itzg's launcher handles `.mrpack` unzip + loader install. The provider
 //! picks the newest version matching the channel filter and skip list.
 
@@ -15,7 +15,7 @@ use super::mr_client::MrVersion;
 use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
-const MR_IMAGE: &str = "itzg/minecraft-server:java21";
+const MR_IMAGE: &str = "itzg/minecraft-server:java25";
 const MR_BOOT_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Persisted Modrinth modpack config (lives in `servers.source_config`).

@@ -15,7 +15,7 @@ use super::modded::ModEntry;
 use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
-const PAPER_IMAGE: &str = "itzg/minecraft-server:java21";
+const PAPER_IMAGE: &str = "itzg/minecraft-server:java25";
 const PAPER_BOOT_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Persisted Paper config (lives in `servers.source_config`).

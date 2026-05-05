@@ -50,8 +50,8 @@ pub struct BuildParams<'a> {
     /// `extra_env`. Not enforced as a k8s resource constraint; see the
     /// container builder for why.
     pub memory_mi: i64,
-    /// Container image (e.g. `itzg/minecraft-server:java21`,
-    /// `eclipse-temurin:21-jdk`). Comes from `ModpackProvider::pod_image`.
+    /// Container image (e.g. `itzg/minecraft-server:java25`). Comes from
+    /// `ModpackProvider::pod_image`.
     pub image: &'a str,
     /// Container command override; `None` lets the image entrypoint run.
     pub command: Option<&'a [String]>,
@@ -392,7 +392,7 @@ mod tests {
             namespace: "mc",
             mc_version: "1.21.4",
             memory_mi: 4096,
-            image: "itzg/minecraft-server:java21",
+            image: "itzg/minecraft-server:java25",
             command: None,
             extra_env: vanilla_env_for_test(),
             exposure_mode: "loadbalancer",

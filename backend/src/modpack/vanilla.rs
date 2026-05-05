@@ -13,9 +13,11 @@ use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
 /// Container image used for managed vanilla Minecraft servers.
 ///
-/// Pinned to the Java 21 tag because the M2 server pack has been validated
-/// against it; bump deliberately when raising the supported MC versions.
-const VANILLA_IMAGE: &str = "itzg/minecraft-server:java21";
+/// Pinned to the Java 25 tag — the JRE is forward-compatible with vanilla
+/// jars compiled against earlier Javas, and modern modpacks (ATM-11 +
+/// `NeoForge` 26.x) ship class files with version 69 (Java 25). Same image
+/// across all providers means the cluster pulls one upstream tag.
+const VANILLA_IMAGE: &str = "itzg/minecraft-server:java25";
 
 /// How long we wait for the vanilla server to print `Done (` after boot.
 ///
@@ -173,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_pod_image_is_itzg_java21() {
+    fn provider_pod_image_is_itzg_java25() {
         let p = VanillaProvider::new();
         assert_eq!(p.pod_image(), VANILLA_IMAGE);
     }

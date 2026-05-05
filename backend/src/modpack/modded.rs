@@ -1,6 +1,6 @@
 //! Modded runtime provider — Fabric / Forge / `NeoForge` with explicit modlist.
 //!
-//! Reuses `itzg/minecraft-server:java21` with `TYPE` switching. Mod jars are
+//! Reuses `itzg/minecraft-server:java25` with `TYPE` switching. Mod jars are
 //! NOT delivered via itzg's `MODS=` env — anvil's `mod-sync` Job is the sole
 //! writer to `/data/mods`. This keeps anvil's modlist the unambiguous source
 //! of truth.
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
-const MODDED_IMAGE: &str = "itzg/minecraft-server:java21";
+const MODDED_IMAGE: &str = "itzg/minecraft-server:java25";
 const MODDED_BOOT_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// One installed mod (persisted in `source_config.mods`).
