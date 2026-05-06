@@ -21,23 +21,23 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use bytes::Bytes;
 use chrono::Utc;
-use futures_util::AsyncBufReadExt as _;
-use futures_util::TryStreamExt as _;
 use futures_util::sink::SinkExt as _;
 use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
+use futures_util::AsyncBufReadExt as _;
+use futures_util::TryStreamExt as _;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::Pod;
-use kube::Api;
 use kube::api::LogParams;
+use kube::Api;
 use tokio::sync::oneshot;
-use tokio::time::{Instant, MissedTickBehavior, interval};
+use tokio::time::{interval, Instant, MissedTickBehavior};
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::ServerStatus;
 use crate::k8s_status::derive_status;
 use crate::routes::servers::get::fetch_server_row;
 use crate::ws::{EndReason, Frame};
+use crate::AppState;
 
 /// WS Ping interval.
 const HEARTBEAT: Duration = Duration::from_secs(30);
@@ -236,14 +236,20 @@ async fn wait_for_running(
 
 /// Reads the `StatefulSet` + Pod and returns whether the pod is Running.
 /// Errors are treated as "not running yet, keep polling."
+///
+/// Both reads are issued concurrently — on a busy kube API the
+/// difference between sequential and parallel is the time of one extra
+/// round-trip per poll, which directly bounds how long the WS sits in
+/// "connecting" before sending Hello.
 async fn check_running(
     pods: &Api<Pod>,
     stsets: &Api<StatefulSet>,
     resource_name: &str,
     pod_name: &str,
 ) -> Result<bool, kube::Error> {
-    let sts = stsets.get_opt(resource_name).await?;
-    let pod = pods.get_opt(pod_name).await?;
+    let (sts_res, pod_res) = tokio::join!(stsets.get_opt(resource_name), pods.get_opt(pod_name),);
+    let sts = sts_res?;
+    let pod = pod_res?;
     let (replicas, ready) = sts.as_ref().map_or((0, 0), |s| {
         let r = s.spec.as_ref().and_then(|sp| sp.replicas).unwrap_or(0);
         let ready = s
