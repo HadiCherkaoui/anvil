@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <groupId>net.minecraftforge</groupId>
+  <artifactId>forge</artifactId>
+  <versioning>
+    <versions>
+      <version>1.21.4-54.1.0</version>
+      <version>1.21.4-54.0.50</version>
+      <version>1.21.1-52.0.20</version>
+      <version>1.20.1-47.3.0</version>
+    </versions>
+  </versioning>
+</metadata>
