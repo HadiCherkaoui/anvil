@@ -20,7 +20,7 @@ import {
 	type ModdedConfig,
 	type ServerDetail,
 } from "../../lib/api";
-import { useServerDetailCtx } from "../../lib/server-detail-context";
+import { useServerDetail } from "../../lib/server-detail-context";
 
 import { ApplySheet } from "../../components/ApplySheet";
 import { Button } from "../../components/Button";
@@ -29,7 +29,7 @@ import { CatalogSheet, type CatalogPick } from "../../components/CatalogSheet";
 import { useToast } from "../../components/Toast";
 
 export function ModsBody(): ReactElement {
-	const detail = useServerDetailCtx();
+	const { detail, refresh } = useServerDetail();
 	const toast = useToast();
 	const [browseOpen, setBrowseOpen] = useState(false);
 	const [applyOpen, setApplyOpen] = useState(false);
@@ -53,6 +53,7 @@ export function ModsBody(): ReactElement {
 				setBrowseOpen={setBrowseOpen}
 				applyOpen={applyOpen}
 				setApplyOpen={setApplyOpen}
+				onMutated={refresh}
 				onToast={(msg, kind) => {
 					toast.push(msg, kind);
 				}}
@@ -95,6 +96,7 @@ export function ModsBody(): ReactElement {
 		const op: ModPendingOp = { op: "add", mod_entry: entry };
 		addPendingMod(detail.id, op)
 			.then(() => {
+				refresh();
 				toast.push(`queued · ${entry.project_name}`, "success");
 			})
 			.catch((err: unknown) => {
@@ -109,6 +111,7 @@ export function ModsBody(): ReactElement {
 		const op: ModPendingOp = { op: "remove", filename };
 		addPendingMod(detail.id, op)
 			.then(() => {
+				refresh();
 				toast.push(`queued removal · ${filename}`, "success");
 			})
 			.catch((err: unknown) => {
@@ -122,6 +125,7 @@ export function ModsBody(): ReactElement {
 	const discardPending = (idx: number): void => {
 		removePendingMod(detail.id, idx)
 			.then(() => {
+				refresh();
 				toast.push("discarded", "success");
 			})
 			.catch((err: unknown) => {
@@ -290,6 +294,7 @@ interface PaperPluginsProps {
 	applyOpen: boolean;
 	setApplyOpen: (v: boolean) => void;
 	onToast: (msg: string, kind: "success" | "error") => void;
+	onMutated: () => void;
 }
 
 interface PendingPluginChange {
@@ -335,6 +340,7 @@ function PaperPluginsBody({
 	applyOpen,
 	setApplyOpen,
 	onToast,
+	onMutated,
 }: PaperPluginsProps): ReactElement {
 	const cfgParse = paperConfigSchema.safeParse(sourceConfig);
 	const initialPlugins = cfgParse.success ? cfgParse.data.plugins : [];
@@ -409,6 +415,7 @@ function PaperPluginsBody({
 			.then(() => {
 				onToast(`queued · ${entry.project_name}`, "success");
 				refresh();
+				onMutated();
 			})
 			.catch((err: unknown) => {
 				onToast(
@@ -423,6 +430,7 @@ function PaperPluginsBody({
 			.then(() => {
 				onToast(`queued removal · ${filename}`, "success");
 				refresh();
+				onMutated();
 			})
 			.catch((err: unknown) => {
 				onToast(
@@ -438,6 +446,7 @@ function PaperPluginsBody({
 				.then(() => {
 					onToast("discarded", "success");
 					refresh();
+					onMutated();
 				})
 				.catch((err: unknown) => {
 					onToast(
@@ -455,6 +464,7 @@ function PaperPluginsBody({
 			.then(() => {
 				onToast("discarded", "success");
 				refresh();
+				onMutated();
 			})
 			.catch((err: unknown) => {
 				onToast(
