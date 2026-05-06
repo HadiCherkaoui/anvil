@@ -10,18 +10,45 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use chrono::Utc;
+use k8s_openapi::api::apps::v1::StatefulSet;
+use k8s_openapi::api::core::v1::EnvVar;
+use kube::Api;
 use serde_json::json;
 use tracing::{event, Level};
 
 use crate::k8s_patches::patch_statefulset_env;
 use crate::modpack::guard::UpdateGuard;
-use crate::modpack::jobs::build_backup_job;
+use crate::modpack::jobs::{build_backup_job, build_restore_job};
 use crate::modpack::orchestrator::{
     announce_and_save, scale_to, spawn_job, wait_for_done_marker, wait_job, wait_pod_gone,
     wait_pod_running, UpdatePhase, BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT,
+    RESTORE_JOB_TIMEOUT,
 };
 use crate::routes::servers::create::insert_audit;
 use crate::AppState;
+
+/// Pre-swap state captured by [`run_inner`] so [`rollback`] can revert the
+/// `StatefulSet` env, the `SQLite` row, and the data PVC if a phase 4–6
+/// failure occurs.
+#[derive(Debug)]
+struct RollbackContext {
+    old_env: Vec<EnvVar>,
+    old_mc: String,
+    old_source_config: String,
+    backup_ts: i64,
+}
+
+/// Differentiates failure modes so [`run`] knows whether a rollback is
+/// warranted. `Pre` failures happen before the swap step ran; the `SQLite`
+/// row and `StatefulSet` env are still pristine, so no rollback is needed
+/// (the server is just stopped, the user can re-start manually). `Post`
+/// failures happen after the swap step started; the rollback Job + env
+/// revert + DB revert restore the prior state.
+#[derive(Debug)]
+enum FsmError {
+    Pre(anyhow::Error),
+    Post(RollbackContext, anyhow::Error),
+}
 
 /// Kicks off the version-change FSM for `server_id`.
 ///
@@ -45,21 +72,73 @@ pub async fn run(
                 "version change succeeded",
             );
         }
-        Err(err) => {
+        Err(FsmError::Pre(err)) => {
             event!(
                 name: "anvil.version_change.failed",
                 Level::ERROR,
                 server.id = %server_id,
                 err = %err,
-                "version change failed",
+                "version change failed before swap; no rollback required",
             );
             guard.emit(UpdatePhase::Failed);
-            // Rollback path lands in Task 3.
+            let now = Utc::now().timestamp();
+            let _ = insert_audit(
+                &state.pool,
+                &server_id,
+                "version_change_failed",
+                Some(json!({"err": err.to_string()})),
+                now,
+            )
+            .await;
+        }
+        Err(FsmError::Post(ctx, err)) => {
+            event!(
+                name: "anvil.version_change.failed",
+                Level::ERROR,
+                server.id = %server_id,
+                err = %err,
+                "version change failed after swap; attempting rollback",
+            );
+            guard.emit(UpdatePhase::RollingBack);
+            match rollback(&state, &server_id, &ctx).await {
+                Ok(()) => {
+                    guard.emit(UpdatePhase::RolledBack);
+                    let now = Utc::now().timestamp();
+                    let _ = insert_audit(
+                        &state.pool,
+                        &server_id,
+                        "version_change_failed_rolled_back",
+                        Some(json!({"err": err.to_string()})),
+                        now,
+                    )
+                    .await;
+                }
+                Err(rb) => {
+                    guard.emit(UpdatePhase::Failed);
+                    let now = Utc::now().timestamp();
+                    let _ = insert_audit(
+                        &state.pool,
+                        &server_id,
+                        "version_change_failed",
+                        Some(json!({"err": err.to_string(), "rollback_err": rb.to_string()})),
+                        now,
+                    )
+                    .await;
+                    event!(
+                        name: "anvil.version_change.rollback_failed",
+                        Level::ERROR,
+                        server.id = %server_id,
+                        err = %rb,
+                        "rollback failed; manual intervention required",
+                    );
+                }
+            }
         }
     }
 }
 
-/// Happy-path orchestration; rollback handled by the caller in Task 3.
+/// Drives every phase. Phase 1–3 failures wrap in [`FsmError::Pre`]; phase 4
+/// onward wraps in [`FsmError::Post`] with the captured rollback context.
 #[expect(
     clippy::too_many_lines,
     reason = "FSM reads top-to-bottom; splitting it up loses sequence context"
@@ -70,7 +149,7 @@ async fn run_inner(
     new_mc: &str,
     new_loader: Option<&str>,
     guard: &UpdateGuard,
-) -> Result<()> {
+) -> Result<(), FsmError> {
     let now_start = Utc::now().timestamp();
     insert_audit(
         &state.pool,
@@ -79,7 +158,8 @@ async fn run_inner(
         Some(json!({"new_mc": new_mc, "new_loader": new_loader})),
         now_start,
     )
-    .await?;
+    .await
+    .map_err(|e| FsmError::Pre(e.into()))?;
 
     let snapshots_pvc = state.snapshots_pvc.as_ref();
 
@@ -87,11 +167,15 @@ async fn run_inner(
         source_kind,
         source_config,
         memory_mi,
-        ..
-    } = fetch_source(&state.pool, server_id).await?;
+        old_mc,
+    } = fetch_source(&state.pool, server_id)
+        .await
+        .map_err(FsmError::Pre)?;
 
     if matches!(source_kind.as_str(), "curseforge" | "modrinth") {
-        bail!("source_kind {source_kind} cannot use version_change orchestrator");
+        return Err(FsmError::Pre(anyhow!(
+            "source_kind {source_kind} cannot use version_change orchestrator",
+        )));
     }
 
     // ─── Phase 1: announce ───────────────────────────────────────────────
@@ -102,7 +186,9 @@ async fn run_inner(
 
     // ─── Phase 2: stop ───────────────────────────────────────────────────
     guard.emit(UpdatePhase::Stopping);
-    scale_to(&state.kube, &state.mc_namespace, server_id, 0).await?;
+    scale_to(&state.kube, &state.mc_namespace, server_id, 0)
+        .await
+        .map_err(FsmError::Pre)?;
     let mc_pod = format!("mc-{server_id}-0");
     wait_pod_gone(
         &state.kube,
@@ -110,7 +196,8 @@ async fn run_inner(
         &mc_pod,
         POD_TERMINATE_TIMEOUT,
     )
-    .await?;
+    .await
+    .map_err(FsmError::Pre)?;
 
     // ─── Phase 3: backup ─────────────────────────────────────────────────
     guard.emit(UpdatePhase::BackingUp);
@@ -125,15 +212,18 @@ async fn run_inner(
         .metadata
         .name
         .clone()
-        .ok_or_else(|| anyhow!("backup Job missing name"))?;
-    spawn_job(&state.kube, &state.mc_namespace, &backup_job).await?;
+        .ok_or_else(|| FsmError::Pre(anyhow!("backup Job missing name")))?;
+    spawn_job(&state.kube, &state.mc_namespace, &backup_job)
+        .await
+        .map_err(FsmError::Pre)?;
     wait_job(
         &state.kube,
         &state.mc_namespace,
         &backup_name,
         BACKUP_JOB_TIMEOUT,
     )
-    .await?;
+    .await
+    .map_err(FsmError::Pre)?;
     insert_audit(
         &state.pool,
         server_id,
@@ -141,11 +231,24 @@ async fn run_inner(
         Some(json!({"ts": backup_ts})),
         Utc::now().timestamp(),
     )
-    .await?;
+    .await
+    .map_err(|e| FsmError::Pre(e.into()))?;
+
+    // Snapshot the live `mc` container env BEFORE swap so rollback has a
+    // deterministic target to revert to.
+    let old_env = fetch_current_env(state, server_id)
+        .await
+        .map_err(FsmError::Pre)?;
+    let ctx = RollbackContext {
+        old_env,
+        old_mc,
+        old_source_config: source_config.clone(),
+        backup_ts,
+    };
 
     // ─── Phase 4: swap ───────────────────────────────────────────────────
     guard.emit(UpdatePhase::Swapping);
-    let boot_timeout = apply_swap(
+    let boot_timeout = match apply_swap(
         state,
         server_id,
         &source_kind,
@@ -154,23 +257,35 @@ async fn run_inner(
         new_loader,
         memory_mi,
     )
-    .await?;
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return Err(FsmError::Post(ctx, e)),
+    };
     drop(job_permit);
 
     // ─── Phase 5: start ──────────────────────────────────────────────────
     guard.emit(UpdatePhase::Starting);
-    scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
+    if let Err(e) = scale_to(&state.kube, &state.mc_namespace, server_id, 1).await {
+        return Err(FsmError::Post(ctx, e));
+    }
 
     // ─── Phase 6: verify boot ────────────────────────────────────────────
     guard.emit(UpdatePhase::Verifying);
-    wait_pod_running(
-        &state.kube,
-        &state.mc_namespace,
-        &mc_pod,
-        POD_RUNNING_TIMEOUT,
-    )
-    .await?;
-    wait_for_done_marker(&state.kube, &state.mc_namespace, server_id, boot_timeout).await?;
+    let verify = async {
+        wait_pod_running(
+            &state.kube,
+            &state.mc_namespace,
+            &mc_pod,
+            POD_RUNNING_TIMEOUT,
+        )
+        .await?;
+        wait_for_done_marker(&state.kube, &state.mc_namespace, server_id, boot_timeout).await
+    }
+    .await;
+    if let Err(e) = verify {
+        return Err(FsmError::Post(ctx, e));
+    }
 
     // ─── Phase 7: persist + audit ────────────────────────────────────────
     let now_end = Utc::now().timestamp();
@@ -178,7 +293,8 @@ async fn run_inner(
         .bind(now_end)
         .bind(server_id)
         .execute(&state.pool)
-        .await?;
+        .await
+        .map_err(|e| FsmError::Pre(e.into()))?;
     insert_audit(
         &state.pool,
         server_id,
@@ -186,7 +302,8 @@ async fn run_inner(
         Some(json!({"new_mc": new_mc, "new_loader": new_loader})),
         now_end,
     )
-    .await?;
+    .await
+    .map_err(|e| FsmError::Pre(e.into()))?;
     Ok(())
 }
 
@@ -196,8 +313,6 @@ struct SourceRow {
     source_kind: String,
     source_config: String,
     memory_mi: i64,
-    /// Pre-change `mc_version` — used by the rollback path in Task 3.
-    #[expect(dead_code, reason = "consumed by rollback in Task 3")]
     old_mc: String,
 }
 
@@ -215,6 +330,27 @@ async fn fetch_source(pool: &sqlx::SqlitePool, server_id: &str) -> Result<Source
         memory_mi: row.2,
         old_mc: row.3,
     })
+}
+
+/// Reads the live `mc` container env from the per-server `StatefulSet`.
+async fn fetch_current_env(state: &AppState, server_id: &str) -> Result<Vec<EnvVar>> {
+    let api: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
+    let resource_name = format!("mc-{server_id}");
+    let ss = api
+        .get(&resource_name)
+        .await
+        .with_context(|| format!("fetching StatefulSet {resource_name}"))?;
+    let containers = ss
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .map(|s| s.containers.as_slice())
+        .unwrap_or_default();
+    let mc = containers
+        .iter()
+        .find(|c| c.name == "mc")
+        .ok_or_else(|| anyhow!("mc container not found in {resource_name}"))?;
+    Ok(mc.env.clone().unwrap_or_default())
 }
 
 /// Updates the persisted `source_config` (and `mc_version` column) for the
@@ -284,4 +420,68 @@ async fn apply_swap(
 
     patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &new_env).await?;
     Ok(boot_timeout)
+}
+
+/// Reverts the `StatefulSet` env, `SQLite` row, and data PVC to the pre-swap
+/// state captured in `ctx`.
+async fn rollback(state: &AppState, server_id: &str, ctx: &RollbackContext) -> Result<()> {
+    let snapshots_pvc = state.snapshots_pvc.as_ref();
+    let _permit = state.snapshot_pvc_lock.lock().await;
+
+    // Phase 5/6 failures may leave the pod up; phase 4 leaves it down.
+    // Either way force replicas=0 so the restore Job can mount the data PVC.
+    scale_to(&state.kube, &state.mc_namespace, server_id, 0).await?;
+    let mc_pod = format!("mc-{server_id}-0");
+    wait_pod_gone(
+        &state.kube,
+        &state.mc_namespace,
+        &mc_pod,
+        POD_TERMINATE_TIMEOUT,
+    )
+    .await?;
+
+    // Restore the data PVC from the just-taken snapshot.
+    let restore = build_restore_job(
+        server_id,
+        ctx.backup_ts,
+        &state.mc_namespace,
+        snapshots_pvc.as_str(),
+    );
+    let restore_name = restore
+        .metadata
+        .name
+        .clone()
+        .ok_or_else(|| anyhow!("restore Job missing name"))?;
+    spawn_job(&state.kube, &state.mc_namespace, &restore).await?;
+    wait_job(
+        &state.kube,
+        &state.mc_namespace,
+        &restore_name,
+        RESTORE_JOB_TIMEOUT,
+    )
+    .await?;
+
+    // Revert env on the StatefulSet to the snapshot we took before swap.
+    patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &ctx.old_env).await?;
+
+    // Revert SQLite row.
+    sqlx::query("UPDATE servers SET mc_version = ?, source_config = ? WHERE id = ?")
+        .bind(&ctx.old_mc)
+        .bind(&ctx.old_source_config)
+        .bind(server_id)
+        .execute(&state.pool)
+        .await?;
+
+    // Boot back on the prior version. Verify is best-effort — the rollback
+    // succeeds even if the boot marker takes too long, since the data is
+    // already restored and the user can intervene from the panel.
+    scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
+    let _ = wait_pod_running(
+        &state.kube,
+        &state.mc_namespace,
+        &mc_pod,
+        POD_RUNNING_TIMEOUT,
+    )
+    .await;
+    Ok(())
 }
