@@ -5,18 +5,18 @@
 //! absent (returns `Ok(None)` to the join). Status and endpoint are
 //! derived in [`crate::k8s_status`].
 
-use axum::Json;
 use axum::extract::{Path, State};
+use axum::Json;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::Api;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::{Endpoint, ServerStatus};
 use crate::k8s_status::{derive_endpoint, derive_status};
+use crate::AppState;
 
 /// Detail body for `GET /api/servers/:id`.
 #[derive(Debug, Serialize)]
@@ -49,6 +49,19 @@ pub struct ServerDetail {
     /// mid-deletion. The frontend uses this to surface a manual "stop file
     /// viewer" control on stopped servers.
     pub files_helper_running: bool,
+    /// Per-mod / per-plugin updates the poller has detected. Empty for
+    /// vanilla and modpack-driven servers.
+    pub mod_updates: Vec<ModUpdateInfo>,
+}
+
+/// One row of `mod_updates` surfaced on the server detail.
+#[derive(Debug, Serialize)]
+pub struct ModUpdateInfo {
+    pub provider: String,
+    pub project_id: String,
+    pub current_version_id: String,
+    pub latest_version_id: String,
+    pub latest_version_name: String,
 }
 
 /// Handler for `GET /api/servers/:id`.
@@ -163,6 +176,8 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         .expect("update_locks poisoned")
         .contains(id);
 
+    let mod_updates = fetch_mod_updates(&state.pool, id).await;
+
     Ok(ServerDetail {
         id: row.id,
         name: row.name,
@@ -183,7 +198,45 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         latest_version_name,
         update_in_progress,
         files_helper_running,
+        mod_updates,
     })
+}
+
+/// Per-mod update rows; on DB failure we log and return empty rather
+/// than fail the whole detail fetch (the panel still renders fine).
+async fn fetch_mod_updates(pool: &SqlitePool, server_id: &str) -> Vec<ModUpdateInfo> {
+    type Row = (String, String, String, String, String);
+    let rows: Result<Vec<Row>, _> = sqlx::query_as(
+        "SELECT provider, project_id, current_version_id, latest_version_id, latest_version_name
+         FROM mod_updates WHERE server_id = ?",
+    )
+    .bind(server_id)
+    .fetch_all(pool)
+    .await;
+    match rows {
+        Ok(rows) => rows
+            .into_iter()
+            .map(
+                |(
+                    provider,
+                    project_id,
+                    current_version_id,
+                    latest_version_id,
+                    latest_version_name,
+                )| ModUpdateInfo {
+                    provider,
+                    project_id,
+                    current_version_id,
+                    latest_version_id,
+                    latest_version_name,
+                },
+            )
+            .collect(),
+        Err(err) => {
+            tracing::warn!(server.id = %server_id, error = %err, "mod_updates query failed");
+            Vec::new()
+        }
+    }
 }
 
 /// In-memory shape mirroring the `servers` table.

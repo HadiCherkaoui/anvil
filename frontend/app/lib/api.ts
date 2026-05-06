@@ -63,6 +63,16 @@ export const serversResponseSchema = z.object({
 
 // --- detail ---------------------------------------------------------------
 
+export const modUpdateInfoSchema = z.object({
+	provider: z.string(),
+	project_id: z.string(),
+	current_version_id: z.string(),
+	latest_version_id: z.string(),
+	latest_version_name: z.string(),
+});
+
+export type ModUpdateInfo = z.infer<typeof modUpdateInfoSchema>;
+
 export const serverDetailSchema = serverSummarySchema.extend({
 	storage_class: z.string().nullable(),
 	storage_size_gi: z.number().int().nonnegative(),
@@ -76,6 +86,8 @@ export const serverDetailSchema = serverSummarySchema.extend({
 	// not mid-deletion. The Files tab uses this to show a manual kill bar
 	// when the server is stopped but the helper is still running.
 	files_helper_running: z.boolean().default(false),
+	// Per-mod / per-plugin updates the poller has detected.
+	mod_updates: z.array(modUpdateInfoSchema).default([]),
 });
 
 // --- capabilities ---------------------------------------------------------
