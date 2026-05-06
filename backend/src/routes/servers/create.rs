@@ -98,6 +98,20 @@ pub struct CreateRequest {
     /// Required when `source_kind == "modded"`.
     #[serde(default)]
     pub modded: Option<ModdedCreateConfig>,
+    /// Optional sub-form for the `paper` source kind. When present and
+    /// `initial_plugins` is non-empty, the create handler folds them into
+    /// `pending_plugins` and spawns the apply Job post-create.
+    #[serde(default)]
+    pub paper: Option<PaperCreateConfig>,
+}
+
+/// Sub-form fields for the Paper plugin pre-pick path.
+#[derive(Debug, Deserialize)]
+pub struct PaperCreateConfig {
+    /// Initial plugin selection picked at create-time. Required deps are
+    /// resolved upstream and appended to `pending_plugins`.
+    #[serde(default)]
+    pub initial_plugins: Vec<ModEntry>,
 }
 
 /// Sub-form fields for the Modrinth modpack path.
@@ -170,6 +184,7 @@ pub async fn handle(
         curseforge,
         modrinth,
         modded,
+        paper,
     } = request;
     validate_name(&name)?;
     validate_memory_mi(memory_mi)?;
@@ -246,7 +261,7 @@ pub async fn handle(
         SOURCE_KIND_CURSEFORGE => resolve_curseforge(&state, curseforge).await?,
         SOURCE_KIND_MODRINTH => resolve_modrinth(&state, modrinth).await?,
         SOURCE_KIND_MODDED => resolve_modded(&state, mc_version, modded).await?,
-        SOURCE_KIND_PAPER => resolve_paper(&state, mc_version).await?,
+        SOURCE_KIND_PAPER => resolve_paper(&state, mc_version, paper).await?,
         _ => unreachable!("validated above"),
     };
 
@@ -328,8 +343,16 @@ pub async fn handle(
     // apply task the manual `POST /:id/mods/apply` endpoint spawns. This
     // mirrors the manual flow without going through the HTTP handler.
     // Failure to acquire the lock is logged + dropped; the pending ops
-    // remain in source_config and the user can apply manually.
-    if resolved.source_kind == SOURCE_KIND_MODDED && resolved.initial_pending_mods > 0 {
+    // remain in source_config and the user can apply manually. Paper
+    // plugins follow the same pattern with `SyncTarget::Plugins`.
+    if resolved.initial_pending_mods > 0
+        && (resolved.source_kind == SOURCE_KIND_MODDED || resolved.source_kind == SOURCE_KIND_PAPER)
+    {
+        let target = if resolved.source_kind == SOURCE_KIND_PAPER {
+            SyncTarget::Plugins
+        } else {
+            SyncTarget::Mods
+        };
         if let Some(guard) = UpdateGuard::try_acquire(
             &id,
             state.update_locks.clone(),
@@ -338,7 +361,7 @@ pub async fn handle(
             let task_state = state.clone();
             let task_id = id.clone();
             tokio::spawn(async move {
-                mods_apply::run(task_state, task_id, guard, SyncTarget::Mods).await;
+                mods_apply::run(task_state, task_id, guard, target).await;
             });
         } else {
             tracing::warn!(
@@ -639,17 +662,39 @@ async fn resolve_initial_extras(
 async fn resolve_paper(
     state: &AppState,
     mc_version: Option<String>,
+    paper_cfg: Option<PaperCreateConfig>,
 ) -> Result<ResolvedSource, AppError> {
     let mc_v = mc_version.ok_or(AppError::BadRequest {
         code: "mc_version_required",
         message: "mc_version is required for paper servers".to_owned(),
     })?;
     validate_mc_version(state, &mc_v).await?;
+
+    let initial_plugins = paper_cfg.map(|p| p.initial_plugins).unwrap_or_default();
+    for p in &initial_plugins {
+        validate_mod_filename(&p.filename)?;
+    }
+    let resolved_extras = resolve_initial_extras(state, &initial_plugins, &mc_v, "paper").await;
+
+    let mut pending_plugins: Vec<ModEntry> =
+        Vec::with_capacity(initial_plugins.len() + resolved_extras.len());
+    for p in &initial_plugins {
+        if !pending_plugins.iter().any(|x| x.filename == p.filename) {
+            pending_plugins.push(p.clone());
+        }
+    }
+    for dep in resolved_extras {
+        if !pending_plugins.iter().any(|x| x.filename == dep.filename) {
+            pending_plugins.push(dep);
+        }
+    }
+    let pending_count = pending_plugins.len();
+
     let stored = PaperConfig {
         mc_version: mc_v.clone(),
         paper_build: None,
         plugins: Vec::new(),
-        pending_plugins: Vec::new(),
+        pending_plugins,
     };
     let source_config = serde_json::to_string(&stored).map_err(|e| AppError::Internal(e.into()))?;
     Ok(ResolvedSource {
@@ -657,7 +702,7 @@ async fn resolve_paper(
         mc_version: mc_v,
         source_kind: SOURCE_KIND_PAPER,
         source_config,
-        initial_pending_mods: 0,
+        initial_pending_mods: pending_count,
     })
 }
 
