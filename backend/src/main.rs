@@ -70,6 +70,7 @@ async fn main() -> Result<()> {
         loadbalancer_supported: config.loadbalancer_supported,
         capabilities_cache: anvil::routes::cluster::new_cache(),
         mc_versions_cache: anvil::routes::mc_versions::new_cache(),
+        loader_version_cache: anvil::routes::runtimes::new_cache(),
         session_key: config.session_key.clone(),
         cookie_key,
         allowed_subs: config.allowed_subs.clone(),

@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod cluster;
 pub mod health;
 pub mod mc_versions;
+pub mod runtimes;
 pub mod servers;
 
 /// Builds the stateful application router (production path).
