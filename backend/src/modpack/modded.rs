@@ -80,6 +80,13 @@ impl Runtime {
 pub struct Config {
     pub runtime: Runtime,
     pub mc_version: String,
+    /// Forge / `NeoForge` loader version (e.g. `"1.21.4-54.1.0"` for Forge,
+    /// `"21.4.81"` for `NeoForge`). `None` keeps itzg's default behaviour
+    /// (`*_VERSION=LATEST`); existing rows decode with `None` via
+    /// `#[serde(default)]`. Fabric ignores this field — itzg does not
+    /// surface a version env there.
+    #[serde(default)]
+    pub loader_version: Option<String>,
     #[serde(default)]
     pub mods: Vec<ModEntry>,
     #[serde(default)]
@@ -160,6 +167,17 @@ impl ModpackProvider for ModdedRuntime {
             env_kv("VERSION", &self.config.mc_version),
         ];
         env.extend(build_memory_env(ctx.memory_mi));
+        match self.config.runtime {
+            Runtime::Fabric => {}
+            Runtime::Forge => env.push(env_kv(
+                "FORGE_VERSION",
+                self.config.loader_version.as_deref().unwrap_or("LATEST"),
+            )),
+            Runtime::NeoForge => env.push(env_kv(
+                "NEOFORGE_VERSION",
+                self.config.loader_version.as_deref().unwrap_or("LATEST"),
+            )),
+        }
         env.extend([
             env_kv("ENABLE_RCON", "true"),
             env_secret(
@@ -207,8 +225,26 @@ mod tests {
         Config {
             runtime: Runtime::Fabric,
             mc_version: "1.21.1".to_owned(),
+            loader_version: None,
             mods,
             pending,
+        }
+    }
+
+    fn cfg_with(runtime: Runtime, loader: Option<&str>) -> Config {
+        Config {
+            runtime,
+            mc_version: "1.21.4".to_owned(),
+            loader_version: loader.map(String::from),
+            mods: vec![],
+            pending: vec![],
+        }
+    }
+
+    fn ctx() -> ProviderContext<'static> {
+        ProviderContext {
+            server_id: "id",
+            memory_mi: 4096,
         }
     }
 
@@ -280,5 +316,48 @@ mod tests {
     #[test]
     fn provider_kind_is_modded() {
         assert_eq!(ModdedRuntime::new(cfg(vec![], vec![])).kind(), "modded");
+    }
+
+    #[test]
+    fn fabric_no_loader_env() {
+        let r = ModdedRuntime::new(cfg_with(Runtime::Fabric, None));
+        let env = r.extra_env(&ctx());
+        assert!(
+            env.iter()
+                .all(|e| e.name != "FORGE_VERSION" && e.name != "NEOFORGE_VERSION")
+        );
+    }
+
+    #[test]
+    fn forge_emits_forge_version() {
+        let r = ModdedRuntime::new(cfg_with(Runtime::Forge, Some("1.21.4-54.1.0")));
+        let env = r.extra_env(&ctx());
+        let v = env.iter().find(|e| e.name == "FORGE_VERSION").unwrap();
+        assert_eq!(v.value.as_deref(), Some("1.21.4-54.1.0"));
+    }
+
+    #[test]
+    fn neoforge_with_no_loader_falls_back_to_latest() {
+        let r = ModdedRuntime::new(cfg_with(Runtime::NeoForge, None));
+        let env = r.extra_env(&ctx());
+        let v = env.iter().find(|e| e.name == "NEOFORGE_VERSION").unwrap();
+        assert_eq!(v.value.as_deref(), Some("LATEST"));
+    }
+
+    #[test]
+    fn neoforge_with_loader_uses_provided() {
+        let r = ModdedRuntime::new(cfg_with(Runtime::NeoForge, Some("21.4.81")));
+        let env = r.extra_env(&ctx());
+        let v = env.iter().find(|e| e.name == "NEOFORGE_VERSION").unwrap();
+        assert_eq!(v.value.as_deref(), Some("21.4.81"));
+    }
+
+    #[test]
+    fn config_decodes_legacy_rows_without_loader_version() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"runtime":"fabric","mc_version":"1.21.1","mods":[],"pending":[]}"#,
+        )
+        .expect("decode legacy");
+        assert!(cfg.loader_version.is_none());
     }
 }

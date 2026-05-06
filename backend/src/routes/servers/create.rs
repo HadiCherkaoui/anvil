@@ -514,6 +514,7 @@ fn resolve_modded(
     let stored = ModdedConfig {
         runtime,
         mc_version: mc_v.clone(),
+        loader_version: None,
         mods: Vec::new(),
         pending,
     };
