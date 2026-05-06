@@ -1,0 +1,230 @@
+//! User-facing manual backup + restore tasks (Spec 5).
+//!
+//! Mirrors the orchestrator's phasing — announce → stop → backup/restore →
+//! [swap] → start → verify — but writes archives under the `manual/` subdir
+//! of the snapshots PVC, opts out of GC, and snapshots the server's full
+//! restore-time config in `SQLite` so a restore can revert `mc_version`,
+//! memory, source kind/config, and `StatefulSet` env in one shot.
+
+use std::time::Duration;
+
+use anyhow::{anyhow, Context as _, Result};
+use chrono::Utc;
+use serde_json::json;
+use uuid::Uuid;
+
+use crate::modpack::guard::UpdateGuard;
+use crate::modpack::jobs::build_backup_job;
+use crate::modpack::orchestrator::{
+    announce_and_save, scale_to, spawn_job, wait_for_done_marker, wait_job, wait_pod_gone,
+    wait_pod_running, UpdatePhase, BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT,
+};
+use crate::routes::servers::create::insert_audit;
+use crate::AppState;
+
+/// Snapshot of the live `servers` row taken at backup time and re-applied
+/// on restore.
+#[derive(Debug, Clone)]
+pub struct BackupSnapshot {
+    pub mc_version: String,
+    pub memory_mi: i64,
+    pub storage_size_gi: i64,
+    pub storage_class: Option<String>,
+    pub exposure_mode: String,
+    pub source_kind: String,
+    pub source_config: String,
+}
+
+/// Generates a fresh backup id (`bk-<uuid-v4>`).
+#[must_use]
+pub fn new_backup_id() -> String {
+    format!("bk-{}", Uuid::new_v4().simple())
+}
+
+/// Persists the pre-Job `backups` row. Written before spawning the Job so
+/// a partial failure leaves a clear record we can clean up on the failure
+/// path.
+async fn insert_backup_row(
+    state: &AppState,
+    backup_id: &str,
+    server_id: &str,
+    name: Option<&str>,
+    snap: &BackupSnapshot,
+) -> Result<()> {
+    let now = Utc::now().timestamp();
+    let snapshot_path = format!("manual/{backup_id}.tgz");
+    sqlx::query(
+        "INSERT INTO backups
+            (id, server_id, name, created_at, snapshot_path, mc_version, memory_mi,
+             storage_size_gi, storage_class, exposure_mode, source_kind, source_config)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(backup_id)
+    .bind(server_id)
+    .bind(name)
+    .bind(now)
+    .bind(&snapshot_path)
+    .bind(&snap.mc_version)
+    .bind(snap.memory_mi)
+    .bind(snap.storage_size_gi)
+    .bind(snap.storage_class.as_deref())
+    .bind(&snap.exposure_mode)
+    .bind(&snap.source_kind)
+    .bind(&snap.source_config)
+    .execute(&state.pool)
+    .await
+    .context("inserting backup row")?;
+    Ok(())
+}
+
+async fn delete_backup_row(state: &AppState, backup_id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM backups WHERE id = ?")
+        .bind(backup_id)
+        .execute(&state.pool)
+        .await
+        .context("deleting backup row")?;
+    Ok(())
+}
+
+async fn snapshot_current(state: &AppState, server_id: &str) -> Result<BackupSnapshot> {
+    let row: (String, i64, i64, Option<String>, String, String, String) = sqlx::query_as(
+        "SELECT mc_version, memory_mi, storage_size_gi, storage_class,
+                exposure_mode, source_kind, source_config
+         FROM servers WHERE id = ?",
+    )
+    .bind(server_id)
+    .fetch_one(&state.pool)
+    .await
+    .with_context(|| format!("loading server row for {server_id}"))?;
+    Ok(BackupSnapshot {
+        mc_version: row.0,
+        memory_mi: row.1,
+        storage_size_gi: row.2,
+        storage_class: row.3,
+        exposure_mode: row.4,
+        source_kind: row.5,
+        source_config: row.6,
+    })
+}
+
+/// Picks a boot timeout based on `source_kind` so manual backup verify
+/// waits the same amount as the per-runtime provider would.
+fn boot_timeout_for_kind(source_kind: &str) -> Duration {
+    match source_kind {
+        // Modded boots include forge/fabric setup + mod loading; matches
+        // ModdedRuntime::boot_timeout() in modded.rs.
+        "modded" | "curseforge" | "modrinth" => Duration::from_secs(15 * 60),
+        // Vanilla / paper / unknown — Done marker comes within ~minute.
+        _ => Duration::from_secs(5 * 60),
+    }
+}
+
+/// Drives a single manual backup. Owns the [`UpdateGuard`] for its lifetime
+/// and emits phase transitions through it for the WS at
+/// `/api/servers/:id/update/stream`.
+pub async fn run_backup(
+    state: AppState,
+    server_id: String,
+    backup_id: String,
+    name: Option<String>,
+    guard: UpdateGuard,
+) {
+    let outcome = run_backup_inner(&state, &server_id, &backup_id, name.as_deref(), &guard).await;
+    let now = Utc::now().timestamp();
+    match outcome {
+        Ok(()) => {
+            guard.emit(UpdatePhase::Succeeded);
+            let _ = insert_audit(
+                &state.pool,
+                &server_id,
+                "backup_succeeded",
+                Some(json!({"backup_id": backup_id})),
+                now,
+            )
+            .await;
+        }
+        Err(err) => {
+            guard.emit(UpdatePhase::Failed);
+            let _ = delete_backup_row(&state, &backup_id).await;
+            let _ = insert_audit(
+                &state.pool,
+                &server_id,
+                "backup_failed",
+                Some(json!({"backup_id": backup_id, "err": err.to_string()})),
+                now,
+            )
+            .await;
+            // Best-effort scale to 1 so the server isn't left stopped.
+            let _ = scale_to(&state.kube, &state.mc_namespace, &server_id, 1).await;
+        }
+    }
+}
+
+async fn run_backup_inner(
+    state: &AppState,
+    server_id: &str,
+    backup_id: &str,
+    name: Option<&str>,
+    guard: &UpdateGuard,
+) -> Result<()> {
+    let snapshots_pvc = state.snapshots_pvc.as_ref();
+    let snap = snapshot_current(state, server_id).await?;
+    insert_backup_row(state, backup_id, server_id, name, &snap).await?;
+
+    insert_audit(
+        &state.pool,
+        server_id,
+        "backup_started",
+        Some(json!({"backup_id": backup_id})),
+        Utc::now().timestamp(),
+    )
+    .await?;
+
+    let _permit = state.snapshot_pvc_lock.lock().await;
+
+    guard.emit(UpdatePhase::Announcing);
+    let _ = announce_and_save(state, server_id).await;
+
+    guard.emit(UpdatePhase::Stopping);
+    scale_to(&state.kube, &state.mc_namespace, server_id, 0).await?;
+    let pod = format!("mc-{server_id}-0");
+    wait_pod_gone(
+        &state.kube,
+        &state.mc_namespace,
+        &pod,
+        POD_TERMINATE_TIMEOUT,
+    )
+    .await?;
+
+    guard.emit(UpdatePhase::BackingUp);
+    let job = build_backup_job(
+        server_id,
+        backup_id,
+        &state.mc_namespace,
+        snapshots_pvc.as_str(),
+        "manual",
+        None,
+    );
+    let job_name = job
+        .metadata
+        .name
+        .clone()
+        .ok_or_else(|| anyhow!("backup Job missing name"))?;
+    spawn_job(&state.kube, &state.mc_namespace, &job).await?;
+    wait_job(
+        &state.kube,
+        &state.mc_namespace,
+        &job_name,
+        BACKUP_JOB_TIMEOUT,
+    )
+    .await?;
+
+    guard.emit(UpdatePhase::Starting);
+    scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
+
+    guard.emit(UpdatePhase::Verifying);
+    wait_pod_running(&state.kube, &state.mc_namespace, &pod, POD_RUNNING_TIMEOUT).await?;
+    let timeout = boot_timeout_for_kind(&snap.source_kind);
+    wait_for_done_marker(&state.kube, &state.mc_namespace, server_id, timeout).await?;
+    Ok(())
+}

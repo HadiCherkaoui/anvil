@@ -16,6 +16,7 @@ use anyhow::Result;
 use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 
+pub mod backups;
 pub mod cf_client;
 pub mod curseforge;
 pub mod dep_resolver;
