@@ -11,14 +11,14 @@
 //! latest `ServerFiles` file from the `CurseForge` API and persists the
 //! provider config so the update orchestrator can re-instantiate it later.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Secret, Service};
-use kube::api::PostParams;
 use kube::Api;
+use kube::api::PostParams;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -26,13 +26,14 @@ use uuid::Uuid;
 
 use std::collections::HashSet;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::k8s_builders::{
-    build_headless_service, build_rcon_secret, build_service, build_statefulset, rcon_password,
-    BuildParams,
+    BuildParams, build_headless_service, build_rcon_secret, build_service, build_statefulset,
+    rcon_password,
 };
 use crate::modpack::curseforge::{AutoUpdateMode, Channel, Config as CfConfig};
-use crate::modpack::dep_resolver::{resolve_required, ResolveContext};
+use crate::modpack::dep_resolver::{ResolveContext, resolve_required};
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::modded::{Config as ModdedConfig, ModEntry, ModdedRuntime, PendingOp, Runtime};
 use crate::modpack::modrinth::{Config as MrPackConfig, ModrinthServerPack};
@@ -46,7 +47,6 @@ use crate::validation::{
     validate_exposure_mode, validate_mc_version, validate_memory_mi, validate_mod_filename,
     validate_modrinth_id_or_slug, validate_name, validate_runtime, validate_storage_size_gi,
 };
-use crate::AppState;
 
 /// Lowest `NodePort` allocated by the panel.
 const NODEPORT_MIN: i32 = 30_000;

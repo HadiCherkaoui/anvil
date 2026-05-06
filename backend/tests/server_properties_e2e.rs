@@ -1,6 +1,6 @@
 //! E2E sanity for the new properties column: round-trips through the DB
 //! and the public env-emission helper. No k8s API in scope — these are
-//! pool-only tests using the same in-memory SQLite the other test files
+//! pool-only tests using the same in-memory `SQLite` the other test files
 //! use.
 
 use anvil::server_properties::{Difficulty, Gamemode, ServerProperties};
