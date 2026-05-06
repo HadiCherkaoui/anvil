@@ -5,18 +5,18 @@
 //! frontend sees the new size on the next detail fetch (PVC patches are
 //! applied asynchronously by the CSI driver).
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use k8s_openapi::api::core::v1::PersistentVolumeClaim;
-use kube::api::{Patch, PatchParams};
 use kube::Api;
+use kube::api::{Patch, PatchParams};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::routes::cluster::current_caps;
-use crate::AppState;
 
 /// Request body for `PATCH /api/servers/:id/storage`.
 #[derive(Debug, Deserialize)]

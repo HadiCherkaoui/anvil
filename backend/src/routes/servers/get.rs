@@ -5,18 +5,18 @@
 //! absent (returns `Ok(None)` to the join). Status and endpoint are
 //! derived in [`crate::k8s_status`].
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::Api;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::{Endpoint, ServerStatus};
 use crate::k8s_status::{derive_endpoint, derive_status};
-use crate::AppState;
 
 /// Detail body for `GET /api/servers/:id`.
 #[derive(Debug, Serialize)]
