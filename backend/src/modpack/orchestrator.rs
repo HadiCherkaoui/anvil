@@ -55,18 +55,18 @@ pub enum UpdatePhase {
 }
 
 /// Pod terminate timeout (M2 uses 90 s for the same wait).
-const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);
+pub(crate) const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Backup Job ceiling — ATM-11 ~5–10 GB on ZFS finishes in well under a
 /// minute; 10 absorbs the cold-pod / pull-image cases.
-const BACKUP_JOB_TIMEOUT: Duration = Duration::from_mins(10);
+pub(crate) const BACKUP_JOB_TIMEOUT: Duration = Duration::from_mins(10);
 /// Restore Job ceiling — symmetric with backup.
-const RESTORE_JOB_TIMEOUT: Duration = Duration::from_mins(10);
+pub(crate) const RESTORE_JOB_TIMEOUT: Duration = Duration::from_mins(10);
 /// Pod-status poll interval, mirrors restart.rs / delete.rs.
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Job-status poll interval — Job objects update infrequently.
 const JOB_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// Pod-Running wait used before tailing logs for boot verification.
-const POD_RUNNING_TIMEOUT: Duration = Duration::from_mins(2);
+pub(crate) const POD_RUNNING_TIMEOUT: Duration = Duration::from_mins(2);
 /// RCON announce + save-all timeout. Best-effort; orchestrator carries on
 /// if RCON is unavailable.
 const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -375,7 +375,7 @@ async fn pick_target_version(
 
 /// Reads `memory_mi` from the `servers` row — needed to rebuild the
 /// provider's env block at swap time.
-async fn fetch_memory_mi(pool: &sqlx::SqlitePool, server_id: &str) -> Result<i64> {
+pub(crate) async fn fetch_memory_mi(pool: &sqlx::SqlitePool, server_id: &str) -> Result<i64> {
     sqlx::query_scalar("SELECT memory_mi FROM servers WHERE id = ?")
         .bind(server_id)
         .fetch_one(pool)
