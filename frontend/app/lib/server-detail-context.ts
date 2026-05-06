@@ -4,14 +4,25 @@ import { createContext, useContext } from "react";
 
 import type { ServerDetail } from "./api";
 
-export const ServerDetailContext = createContext<ServerDetail | null>(null);
+export interface ServerDetailValue {
+	detail: ServerDetail;
+	refresh: () => void;
+}
 
-export function useServerDetailCtx(): ServerDetail {
+export const ServerDetailContext = createContext<ServerDetailValue | null>(
+	null,
+);
+
+export function useServerDetail(): ServerDetailValue {
 	const v = useContext(ServerDetailContext);
 	if (!v) {
 		throw new Error(
-			"useServerDetailCtx must be used inside the layout provider",
+			"useServerDetail must be used inside the layout provider",
 		);
 	}
 	return v;
+}
+
+export function useServerDetailCtx(): ServerDetail {
+	return useServerDetail().detail;
 }

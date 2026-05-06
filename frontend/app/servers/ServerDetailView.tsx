@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 
 import {
 	ApiError,
@@ -13,7 +13,7 @@ import {
 	stopServer,
 	type ServerDetail,
 } from "../lib/api";
-import { ServerDetailContext } from "../lib/server-detail-context";
+import { ServerDetailContext, type ServerDetailValue } from "../lib/server-detail-context";
 
 import { Badge, type BadgeVariant } from "../components/Badge";
 import { Button } from "../components/Button";
@@ -77,6 +77,7 @@ export function ServerDetailView(): ReactElement {
 	);
 	const [sheetOpen, setSheetOpen] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
+	const ctrlRef = useRef<AbortController | null>(null);
 
 	const reload = useCallback(
 		async (n: string, signal: AbortSignal): Promise<void> => {
@@ -101,9 +102,17 @@ export function ServerDetailView(): ReactElement {
 		[],
 	);
 
+	const refresh = useCallback((): void => {
+		if (name === null) return;
+		const ctrl = ctrlRef.current;
+		if (ctrl === null) return;
+		void reload(name, ctrl.signal);
+	}, [name, reload]);
+
 	useEffect(() => {
 		if (name === null) return undefined;
 		const ctrl = new AbortController();
+		ctrlRef.current = ctrl;
 		let timer: number | undefined;
 		const tick = (): void => {
 			if (document.visibilityState === "visible") {
@@ -121,6 +130,7 @@ export function ServerDetailView(): ReactElement {
 			if (timer !== undefined) window.clearTimeout(timer);
 			document.removeEventListener("visibilitychange", onVis);
 			ctrl.abort();
+			if (ctrlRef.current === ctrl) ctrlRef.current = null;
 		};
 	}, [name, reload]);
 
@@ -216,8 +226,10 @@ export function ServerDetailView(): ReactElement {
 		}
 	};
 
+	const ctxValue: ServerDetailValue = { detail, refresh };
+
 	return (
-		<ServerDetailContext.Provider value={detail}>
+		<ServerDetailContext.Provider value={ctxValue}>
 			<main className="px-5 py-6">
 				<header className="mb-4 flex items-start justify-between gap-4">
 					<div>
