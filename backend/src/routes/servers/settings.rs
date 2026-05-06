@@ -17,6 +17,7 @@ use crate::k8s_patches::patch_statefulset_env;
 use crate::modpack::curseforge::AutoUpdateMode;
 use crate::modpack::{ProviderContext, VanillaProvider, from_db};
 use crate::routes::servers::create::insert_audit;
+use crate::server_properties::ServerProperties;
 use crate::validation::{validate_force_version, validate_memory_mi, validate_version_skip};
 
 /// Request body — every field optional, only present fields update.
@@ -27,6 +28,10 @@ pub struct SettingsRequest {
     pub auto_update_mode: Option<AutoUpdateMode>,
     pub version_skip: Option<Vec<String>>,
     pub force_version: Option<Option<String>>,
+    /// Full-replacement when present. Validated and written verbatim to
+    /// `servers.properties`; the `StatefulSet` env is rebuilt and patched
+    /// in the same path as `memory_mi`.
+    pub properties: Option<ServerProperties>,
 }
 
 /// Handler for `PATCH /api/servers/:id/settings`.
@@ -66,6 +71,9 @@ pub async fn handle(
     if let Some(Some(v)) = req.force_version.as_ref() {
         validate_force_version(v)?;
     }
+    if let Some(p) = req.properties.as_ref() {
+        p.validate()?;
+    }
 
     if let Some(m) = req.memory_mi {
         sqlx::query("UPDATE servers SET memory_mi = ? WHERE id = ?")
@@ -73,19 +81,31 @@ pub async fn handle(
             .bind(&id)
             .execute(&state.pool)
             .await?;
+    }
 
+    if let Some(p) = req.properties.as_ref() {
+        let raw = serde_json::to_string(p).map_err(|e| AppError::Internal(e.into()))?;
+        sqlx::query("UPDATE servers SET properties = ? WHERE id = ?")
+            .bind(&raw)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
+
+    if req.memory_mi.is_some() || req.properties.is_some() {
         // Strategic-merge the StatefulSet env so the next pod start picks
-        // up the new INIT/MAX_MEMORY without recreating the resource. The
-        // running pod keeps the old budget; toast wording stays "applies on
-        // next start". Missing StatefulSet (404) is logged + ignored — the
-        // SQLite update already persisted, next start picks up the value.
-        let new_env = build_full_env_for_running_runtime(&state.pool, &id, m).await?;
+        // up the new memory budget and/or server.properties without
+        // recreating the resource. The running pod keeps the old values;
+        // toast wording stays "applies on next start". Missing StatefulSet
+        // (404) is logged + ignored — the SQLite update already persisted,
+        // next start picks up the value.
+        let new_env = build_full_env_for_running_runtime(&state.pool, &id).await?;
         if let Err(e) = patch_statefulset_env(&state.kube, &state.mc_namespace, &id, &new_env).await
         {
             tracing::warn!(
                 server.id = %id,
                 error = %e,
-                "memory PATCH wrote SQLite but failed to patch StatefulSet env",
+                "settings PATCH wrote SQLite but failed to patch StatefulSet env",
             );
         }
     }
@@ -128,6 +148,11 @@ pub async fn handle(
     {
         obj.insert("memory_mi".into(), serde_json::json!(m));
     }
+    if let Some(p) = req.properties.as_ref()
+        && let Some(obj) = audit.as_object_mut()
+    {
+        obj.insert("properties".into(), serde_json::json!(p));
+    }
 
     let now = chrono::Utc::now().timestamp();
     insert_audit(&state.pool, &id, "settings_updated", Some(audit), now).await?;
@@ -135,11 +160,14 @@ pub async fn handle(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Rebuilds the full container env for a server's persisted runtime with a
-/// new memory budget. The result is the *complete* env block to strategic-
-/// merge onto the `StatefulSet` — strategic-merge keys env entries by `name`,
-/// so partial blocks would only mutate the listed names; sending the full
-/// block keeps the resource deterministic.
+/// Rebuilds the full container env for a server's persisted runtime.
+///
+/// Reads memory and the properties JSON from the row alongside the provider
+/// config so the rebuilt env block reflects the post-PATCH canonical state.
+/// The result is the *complete* env block to strategic-merge onto the
+/// `StatefulSet` — strategic-merge keys env entries by `name`, so partial
+/// blocks would only mutate the listed names; sending the full block keeps
+/// the resource deterministic.
 ///
 /// Vanilla rows store `mc_version` outside `source_config`, so this function
 /// reads it from the row and routes through `VanillaProvider::build_env`
@@ -148,27 +176,28 @@ pub async fn handle(
 async fn build_full_env_for_running_runtime(
     pool: &sqlx::SqlitePool,
     server_id: &str,
-    memory_mi: i64,
 ) -> Result<Vec<EnvVar>, AppError> {
-    let row: (String, String, String) =
-        sqlx::query_as("SELECT source_kind, source_config, mc_version FROM servers WHERE id = ?")
-            .bind(server_id)
-            .fetch_one(pool)
-            .await?;
-    let (source_kind, source_config, mc_version) = row;
-    if source_kind == "vanilla" {
-        return Ok(VanillaProvider::build_env(
+    let row: (String, String, String, i64, String) = sqlx::query_as(
+        "SELECT source_kind, source_config, mc_version, memory_mi, properties
+         FROM servers WHERE id = ?",
+    )
+    .bind(server_id)
+    .fetch_one(pool)
+    .await?;
+    let (source_kind, source_config, mc_version, memory_mi, properties_json) = row;
+    let properties: ServerProperties = serde_json::from_str(&properties_json).unwrap_or_default();
+    let mut env = if source_kind == "vanilla" {
+        VanillaProvider::build_env(server_id, &mc_version, memory_mi)
+    } else {
+        let provider = from_db(&source_kind, &source_config)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("rebuild provider: {e}")))?;
+        provider.extra_env(&ProviderContext {
             server_id,
-            &mc_version,
             memory_mi,
-        ));
-    }
-    let provider = from_db(&source_kind, &source_config)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("rebuild provider: {e}")))?;
-    Ok(provider.extra_env(&ProviderContext {
-        server_id,
-        memory_mi,
-    }))
+        })
+    };
+    env.extend(properties.to_env());
+    Ok(env)
 }
 
 #[cfg(test)]
@@ -218,11 +247,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rebuild_env_for_vanilla_uses_row_mc_version_and_new_memory() {
+    async fn rebuild_env_for_vanilla_uses_row_mc_version_and_memory() {
         let pool = seed_pool().await;
-        insert_server(&pool, "v1", "vanilla", "{}", "1.21.4", 4096).await;
+        insert_server(&pool, "v1", "vanilla", "{}", "1.21.4", 8192).await;
 
-        let env = build_full_env_for_running_runtime(&pool, "v1", 8192)
+        let env = build_full_env_for_running_runtime(&pool, "v1")
             .await
             .expect("rebuild");
 
@@ -235,9 +264,9 @@ mod tests {
     async fn rebuild_env_for_modded_carries_runtime_version() {
         let pool = seed_pool().await;
         let cfg = r#"{"runtime":"fabric","mc_version":"1.21.1","mods":[],"pending":[]}"#;
-        insert_server(&pool, "m1", "modded", cfg, "1.21.1", 4096).await;
+        insert_server(&pool, "m1", "modded", cfg, "1.21.1", 6144).await;
 
-        let env = build_full_env_for_running_runtime(&pool, "m1", 6144)
+        let env = build_full_env_for_running_runtime(&pool, "m1")
             .await
             .expect("rebuild");
 
@@ -253,12 +282,36 @@ mod tests {
         let cfg = r#"{"mc_version":"1.21.4"}"#;
         insert_server(&pool, "p1", "paper", cfg, "1.21.4", 4096).await;
 
-        let env = build_full_env_for_running_runtime(&pool, "p1", 4096)
+        let env = build_full_env_for_running_runtime(&pool, "p1")
             .await
             .expect("rebuild");
 
         assert_eq!(env_value(&env, "TYPE"), Some("PAPER"));
         assert_eq!(env_value(&env, "VERSION"), Some("1.21.4"));
         assert_eq!(env_value(&env, "MAX_MEMORY"), Some("4096M"));
+    }
+
+    #[tokio::test]
+    async fn rebuild_env_includes_properties_overrides() {
+        let pool = seed_pool().await;
+        insert_server(&pool, "v1", "vanilla", "{}", "1.21.4", 4096).await;
+        // Poke the properties column directly to simulate a prior PATCH.
+        sqlx::query("UPDATE servers SET properties = ? WHERE id = ?")
+            .bind(r#"{"difficulty":"hard","max_players":50}"#)
+            .bind("v1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let env = build_full_env_for_running_runtime(&pool, "v1")
+            .await
+            .expect("rebuild");
+
+        assert_eq!(env_value(&env, "DIFFICULTY"), Some("hard"));
+        assert_eq!(env_value(&env, "MAX_PLAYERS"), Some("50"));
+        // Provider env still present.
+        assert_eq!(env_value(&env, "MAX_MEMORY"), Some("4096M"));
+        // Other property fields fall back to defaults.
+        assert_eq!(env_value(&env, "PVP"), Some("true"));
     }
 }
