@@ -21,6 +21,7 @@ import { ConfirmDeleteDialog } from "../../components/ConfirmDeleteDialog";
 import { RangeSlider } from "../../components/RangeSlider";
 import { SegmentedControl } from "../../components/SegmentedControl";
 import { useToast } from "../../components/Toast";
+import { VersionChangeSheet } from "../../components/VersionChangeSheet";
 
 const AUTO_UPDATE_OPTIONS: ReadonlyArray<{
 	value: AutoUpdateMode;
@@ -58,6 +59,7 @@ export function SettingsBody(): ReactElement {
 	const [caps, setCaps] = useState<ClusterCapabilities | null>(null);
 	const [pendingSize, setPendingSize] = useState<number>(detail.storage_size_gi);
 	const [resizing, setResizing] = useState(false);
+	const [versionSheetOpen, setVersionSheetOpen] = useState(false);
 
 	useEffect(() => {
 		const ctrl = new AbortController();
@@ -74,6 +76,17 @@ export function SettingsBody(): ReactElement {
 	}, []);
 
 	const isModpack = detail.source_kind !== "vanilla";
+	const isVersionChangeable =
+		detail.source_kind !== "curseforge" && detail.source_kind !== "modrinth";
+	const moddedLoader = ((): { runtime: string; version: string | null } | null => {
+		if (detail.source_kind !== "modded") return null;
+		const cfg = detail.source_config;
+		if (cfg === null || typeof cfg !== "object") return null;
+		const r = (cfg as { runtime?: unknown }).runtime;
+		if (r !== "forge" && r !== "neoforge") return null;
+		const v = (cfg as { loader_version?: unknown }).loader_version;
+		return { runtime: r, version: typeof v === "string" ? v : null };
+	})();
 
 	const sc = detail.storage_class ?? caps?.default_storage_class ?? "";
 	const canExpand =
@@ -181,20 +194,53 @@ export function SettingsBody(): ReactElement {
 				</Card>
 			)}
 
-			<Card header="minecraft version · informational">
-				<p className="font-mono text-[12px] text-text-muted">
-					currently · {detail.mc_version}
-				</p>
-				{versions !== undefined && versions.versions.length > 0 && (
-					<p className="mt-2 font-mono text-[11px] text-text-faint">
-						upstream releases · {versions.versions.slice(0, 8).join(", ")}
-						{versions.versions.length > 8 && " …"}
-					</p>
-				)}
-				<p className="mt-2 font-mono text-[11px] text-text-faint">
-					version changes ship with sub-project B (modpack runtime registry).
-				</p>
-			</Card>
+			{isVersionChangeable && (
+				<Card header="version">
+					<div className="flex flex-col gap-2 font-mono text-[12px]">
+						<div className="flex items-baseline justify-between gap-3">
+							<div className="grid grid-cols-[80px_1fr] items-baseline gap-3">
+								<span className="text-[11px] uppercase tracking-wider text-text-muted">
+									mc
+								</span>
+								<span className="text-text-body">{detail.mc_version}</span>
+							</div>
+							<Button
+								variant="secondary"
+								size="sm"
+								onClick={() => {
+									setVersionSheetOpen(true);
+								}}
+							>
+								edit
+							</Button>
+						</div>
+						{moddedLoader !== null && (
+							<div className="grid grid-cols-[80px_1fr] items-baseline gap-3">
+								<span className="text-[11px] uppercase tracking-wider text-text-muted">
+									{moddedLoader.runtime}
+								</span>
+								<span className="text-text-body">
+									{moddedLoader.version ?? "—"}
+								</span>
+							</div>
+						)}
+						{versions !== undefined && versions.versions.length > 0 && (
+							<p className="mt-1 text-[11px] text-text-faint">
+								upstream releases · {versions.versions.slice(0, 8).join(", ")}
+								{versions.versions.length > 8 && " …"}
+							</p>
+						)}
+					</div>
+				</Card>
+			)}
+
+			<VersionChangeSheet
+				isOpen={versionSheetOpen}
+				onClose={() => {
+					setVersionSheetOpen(false);
+				}}
+				detail={detail}
+			/>
 
 			{isModpack && (
 				<Card header="modpack auto-update">

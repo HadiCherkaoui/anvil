@@ -516,6 +516,28 @@ export async function applyUpdate(
 	return jsonOrThrow(res, updateStartResponseSchema);
 }
 
+/// PATCHes the MC version (and optional loader version for modded servers).
+/// Returns 202 when the version-change FSM is started; the frontend reuses
+/// the existing /update/stream WS to render phase progress.
+export const changeVersionResponseSchema = z.object({
+	status: z.string(),
+	server_id: z.string(),
+});
+
+export type ChangeVersionResponse = z.infer<typeof changeVersionResponseSchema>;
+
+export async function changeServerVersion(
+	id: string,
+	body: { mc_version: string; loader_version?: string },
+): Promise<ChangeVersionResponse> {
+	const res = await fetch(`/api/servers/${encodeURIComponent(id)}/version`, {
+		method: "PATCH",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	return jsonOrThrow(res, changeVersionResponseSchema);
+}
+
 /// PATCHes per-server modpack settings (auto_update_mode, version_skip,
 /// force_version). Only the fields supplied are updated.
 export async function updateServerSettings(
