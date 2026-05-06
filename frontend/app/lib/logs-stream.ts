@@ -81,7 +81,11 @@ export function classifyLine(line: string): LogLevel {
 // Lines from MC's RCON Listener / Client threads — fires `Thread … started` and
 // `… shutting down` for every panel command. Drowns out signal in the live
 // panel; full fidelity is still in `kubectl logs`.
-const RCON_THREAD = /\[RCON (?:Listener|Client) [^\]]*\]:/;
+//
+// Match the bracketed thread tag itself (no trailing colon): the
+// vanilla format is `[20:56:02] [RCON Listener #1/INFO] [...]: …`,
+// so the colon lives after the next bracket pair, not this one.
+const RCON_THREAD = /\[RCON (?:Listener|Client) [^\]]*\]/;
 
 export function isNoise(line: string): boolean {
 	return RCON_THREAD.test(line);
