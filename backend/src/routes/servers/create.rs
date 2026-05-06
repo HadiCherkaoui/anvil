@@ -11,27 +11,30 @@
 //! latest `ServerFiles` file from the `CurseForge` API and persists the
 //! provider config so the update orchestrator can re-instantiate it later.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Secret, Service};
-use kube::api::PostParams;
 use kube::Api;
+use kube::api::PostParams;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::k8s_builders::{
-    build_headless_service, build_rcon_secret, build_service, build_statefulset, rcon_password,
-    BuildParams,
+    BuildParams, build_headless_service, build_rcon_secret, build_service, build_statefulset,
+    rcon_password,
 };
 use crate::modpack::curseforge::{AutoUpdateMode, Channel, Config as CfConfig};
+use crate::modpack::guard::UpdateGuard;
 use crate::modpack::modded::{Config as ModdedConfig, ModEntry, ModdedRuntime, PendingOp, Runtime};
 use crate::modpack::modrinth::{Config as MrPackConfig, ModrinthServerPack};
+use crate::modpack::mods_apply::{self, SyncTarget};
 use crate::modpack::paper::{Config as PaperConfig, PaperServerProvider};
 use crate::modpack::{
     CurseForgeServerPack, ModpackHttp, ModpackProvider, ProviderContext, VanillaProvider,
@@ -40,7 +43,6 @@ use crate::validation::{
     validate_exposure_mode, validate_mc_version, validate_memory_mi, validate_mod_filename,
     validate_modrinth_id_or_slug, validate_name, validate_runtime, validate_storage_size_gi,
 };
-use crate::AppState;
 
 /// Lowest `NodePort` allocated by the panel.
 const NODEPORT_MIN: i32 = 30_000;
@@ -235,6 +237,7 @@ pub async fn handle(
                 mc_version: mc_v,
                 source_kind: SOURCE_KIND_VANILLA,
                 source_config: "{}".to_owned(),
+                initial_pending_mods: 0,
             }
         }
         SOURCE_KIND_CURSEFORGE => resolve_curseforge(&state, curseforge).await?,
@@ -318,6 +321,30 @@ pub async fn handle(
         .await?;
     services.create(&pp, &build_service(&build_params)).await?;
 
+    // C#10: when the user pre-picked mods at create time, kick the same
+    // apply task the manual `POST /:id/mods/apply` endpoint spawns. This
+    // mirrors the manual flow without going through the HTTP handler.
+    // Failure to acquire the lock is logged + dropped; the pending ops
+    // remain in source_config and the user can apply manually.
+    if resolved.source_kind == SOURCE_KIND_MODDED && resolved.initial_pending_mods > 0 {
+        if let Some(guard) = UpdateGuard::try_acquire(
+            &id,
+            state.update_locks.clone(),
+            state.update_phase_buses.clone(),
+        ) {
+            let task_state = state.clone();
+            let task_id = id.clone();
+            tokio::spawn(async move {
+                mods_apply::run(task_state, task_id, guard, SyncTarget::Mods).await;
+            });
+        } else {
+            tracing::warn!(
+                server.id = %id,
+                "apply guard unavailable on create; user can apply manually",
+            );
+        }
+    }
+
     Ok((StatusCode::ACCEPTED, Json(CreateResponse { id, name })))
 }
 
@@ -327,6 +354,9 @@ struct ResolvedSource {
     mc_version: String,
     source_kind: &'static str,
     source_config: String,
+    /// Number of pending mod ops staged for the apply Job spawned post-create.
+    /// Non-zero only on the modded path with a non-empty `initial_mods`.
+    initial_pending_mods: usize,
 }
 
 /// Validates the `CurseForge` sub-form, hits the API to pick the newest
@@ -420,6 +450,7 @@ async fn resolve_curseforge(
         mc_version: pick.name,
         source_kind: SOURCE_KIND_CURSEFORGE,
         source_config,
+        initial_pending_mods: 0,
     })
 }
 
@@ -476,6 +507,7 @@ async fn resolve_modrinth(
         mc_version: pick.name,
         source_kind: SOURCE_KIND_MODRINTH,
         source_config,
+        initial_pending_mods: 0,
     })
 }
 
@@ -515,6 +547,7 @@ fn resolve_modded(
             mod_entry: m.clone(),
         })
         .collect();
+    let pending_count = pending.len();
     let loader_version = cfg.loader_version.filter(|s| !s.is_empty());
     let stored = ModdedConfig {
         runtime,
@@ -529,6 +562,7 @@ fn resolve_modded(
         mc_version: mc_v,
         source_kind: SOURCE_KIND_MODDED,
         source_config,
+        initial_pending_mods: pending_count,
     })
 }
 
@@ -555,6 +589,7 @@ async fn resolve_paper(
         mc_version: mc_v,
         source_kind: SOURCE_KIND_PAPER,
         source_config,
+        initial_pending_mods: 0,
     })
 }
 
