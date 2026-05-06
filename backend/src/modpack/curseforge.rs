@@ -28,7 +28,7 @@ use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 
 use super::cf_client::CfFile;
-use super::vanilla::{env_kv, env_secret};
+use super::vanilla::{IDLE_GC_OPTS, env_kv, env_secret, init_memory_mi};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
 /// Container image used for CurseForge-driven servers — same image as
@@ -230,7 +230,12 @@ impl ModpackProvider for CurseForgeServerPack {
             env_secret("CF_API_KEY", CF_API_KEY_SECRET, CF_API_KEY_SECRET_FIELD),
             env_kv("CF_SLUG", &self.config.slug),
             env_kv("CF_FILE_ID", &self.config.current_version_id.to_string()),
-            env_kv("MEMORY", &format!("{}M", ctx.memory_mi)),
+            env_kv(
+                "INIT_MEMORY",
+                &format!("{}M", init_memory_mi(ctx.memory_mi)),
+            ),
+            env_kv("MAX_MEMORY", &format!("{}M", ctx.memory_mi)),
+            env_kv("JVM_XX_OPTS", IDLE_GC_OPTS),
             env_kv("ENABLE_RCON", "true"),
             env_secret(
                 "RCON_PASSWORD",
@@ -446,7 +451,8 @@ mod tests {
         );
         assert_eq!(by_name.get("CF_SLUG").copied().flatten(), Some("atm-11"));
         assert_eq!(by_name.get("CF_FILE_ID").copied().flatten(), Some("7777"));
-        assert_eq!(by_name.get("MEMORY").copied().flatten(), Some("8192M"));
+        assert_eq!(by_name.get("MAX_MEMORY").copied().flatten(), Some("8192M"),);
+        assert_eq!(by_name.get("INIT_MEMORY").copied().flatten(), Some("2048M"),);
         assert_eq!(by_name.get("ENABLE_RCON").copied().flatten(), Some("true"));
     }
 

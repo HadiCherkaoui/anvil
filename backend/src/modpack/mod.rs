@@ -43,7 +43,7 @@ pub use vanilla::VanillaProvider;
 pub struct ProviderContext<'a> {
     /// Server UUID (drives the `mc-<id>-rcon` Secret reference).
     pub server_id: &'a str,
-    /// Memory budget in MiB (drives `MEMORY=4096M` style env).
+    /// Max heap budget in MiB (drives `MAX_MEMORY=4096M`; init is derived).
     pub memory_mi: i64,
 }
 

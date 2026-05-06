@@ -44,9 +44,9 @@ pub struct BuildParams<'a> {
     pub namespace: &'a str,
     /// Minecraft version snapshotted at create time. Stored as an annotation.
     pub mc_version: &'a str,
-    /// Memory budget in MiB. Panel-tracked metadata only — surfaces as the
-    /// `app.anvil.io/memory-mi` annotation and feeds provider env
-    /// (`MEMORY=…M` for vanilla, `JAVA_TOOL_OPTIONS=-Xmx…m` for CF) via
+    /// Max heap budget in MiB. Panel-tracked metadata only — surfaces as
+    /// the `app.anvil.io/memory-mi` annotation and feeds provider env
+    /// (`INIT_MEMORY` + `MAX_MEMORY` for itzg-driven providers) via
     /// `extra_env`. Not enforced as a k8s resource constraint; see the
     /// container builder for why.
     pub memory_mi: i64,
@@ -467,8 +467,10 @@ mod tests {
             .env
             .as_ref()
             .unwrap();
-        let mem = env.iter().find(|e| e.name == "MEMORY").unwrap();
-        assert_eq!(mem.value.as_deref(), Some("4096M"));
+        let max = env.iter().find(|e| e.name == "MAX_MEMORY").unwrap();
+        assert_eq!(max.value.as_deref(), Some("4096M"));
+        let init = env.iter().find(|e| e.name == "INIT_MEMORY").unwrap();
+        assert_eq!(init.value.as_deref(), Some("1024M"));
     }
 
     #[test]

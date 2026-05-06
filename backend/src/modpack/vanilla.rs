@@ -1,8 +1,8 @@
 //! Vanilla MC server provider (refactored from the M2 inline path).
 //!
 //! Drives the `itzg/minecraft-server` image which configures itself from
-//! env vars (EULA, TYPE, VERSION, MEMORY, RCON). The `extra_env` set
-//! mirrors what M2's `build_statefulset` hardcoded.
+//! env vars (EULA, TYPE, VERSION, `INIT_MEMORY`, `MAX_MEMORY`, RCON). The
+//! `extra_env` set mirrors what M2's `build_statefulset` hardcoded.
 
 use std::time::Duration;
 
@@ -49,7 +49,7 @@ impl VanillaProvider {
         Self::default()
     }
 
-    /// Builds the EULA / TYPE / VERSION / MEMORY env vars and the RCON pair.
+    /// Builds the EULA / TYPE / VERSION / memory env vars and the RCON pair.
     ///
     /// Pulled out so the create handler can call it directly when it has a
     /// validated `mc_version: &str` without needing to construct a typed
@@ -61,12 +61,34 @@ impl VanillaProvider {
             env_kv("EULA", "TRUE"),
             env_kv("TYPE", "VANILLA"),
             env_kv("VERSION", mc_version),
-            env_kv("MEMORY", &format!("{memory_mi}M")),
+            env_kv("INIT_MEMORY", &format!("{}M", init_memory_mi(memory_mi))),
+            env_kv("MAX_MEMORY", &format!("{memory_mi}M")),
+            env_kv("JVM_XX_OPTS", IDLE_GC_OPTS),
             env_kv("ENABLE_RCON", "true"),
             env_secret("RCON_PASSWORD", &format!("mc-{server_id}-rcon"), "password"),
         ]
     }
 }
+
+/// Initial JVM heap size in MiB given a max budget.
+///
+/// itzg's image sets `-Xms` from `INIT_MEMORY` and `-Xmx` from `MAX_MEMORY`;
+/// when `INIT_MEMORY` matches `MAX_MEMORY` the JVM commits the full heap up
+/// front and never returns pages to the OS, which leaves idle pods sitting
+/// at the configured ceiling. A quarter-of-max start (floor 1 GiB) lets the
+/// heap commit lazily as mods load — paired with [`IDLE_GC_OPTS`] so the
+/// heap also shrinks back during long idles.
+pub(super) fn init_memory_mi(max_mi: i64) -> i64 {
+    (max_mi / 4).max(1024)
+}
+
+/// JVM `-XX:` flags that let G1 release committed heap to the OS during
+/// long idles. Without these, G1 only grows the heap toward `-Xmx`; with
+/// them, every 30s of idle the JVM runs a concurrent collection that can
+/// return unused regions to the OS, so an idle pod's RSS tracks live-set
+/// rather than peak heap. JEP 346 — supported on Java 12+.
+pub(super) const IDLE_GC_OPTS: &str =
+    "-XX:+G1PeriodicGCInvokesConcurrent -XX:G1PeriodicGCInterval=30000";
 
 #[async_trait::async_trait]
 impl ModpackProvider for VanillaProvider {
@@ -139,7 +161,9 @@ mod tests {
                 "EULA",
                 "TYPE",
                 "VERSION",
-                "MEMORY",
+                "INIT_MEMORY",
+                "MAX_MEMORY",
+                "JVM_XX_OPTS",
                 "ENABLE_RCON",
                 "RCON_PASSWORD"
             ]
@@ -149,8 +173,19 @@ mod tests {
     #[test]
     fn build_env_memory_appends_m_suffix() {
         let env = VanillaProvider::build_env("abcd", "1.21.4", 4096);
-        let mem = env.iter().find(|e| e.name == "MEMORY").unwrap();
-        assert_eq!(mem.value.as_deref(), Some("4096M"));
+        let max = env.iter().find(|e| e.name == "MAX_MEMORY").unwrap();
+        assert_eq!(max.value.as_deref(), Some("4096M"));
+        let init = env.iter().find(|e| e.name == "INIT_MEMORY").unwrap();
+        assert_eq!(init.value.as_deref(), Some("1024M"));
+    }
+
+    #[test]
+    fn init_memory_mi_floors_at_one_gib() {
+        assert_eq!(init_memory_mi(1024), 1024);
+        assert_eq!(init_memory_mi(2048), 1024);
+        assert_eq!(init_memory_mi(4096), 1024);
+        assert_eq!(init_memory_mi(8192), 2048);
+        assert_eq!(init_memory_mi(17408), 4352);
     }
 
     #[test]

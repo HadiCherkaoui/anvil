@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::curseforge::{AutoUpdateMode, Channel};
 use super::mr_client::MrVersion;
-use super::vanilla::{env_kv, env_secret};
+use super::vanilla::{IDLE_GC_OPTS, env_kv, env_secret, init_memory_mi};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
 const MR_IMAGE: &str = "itzg/minecraft-server:java25";
@@ -117,7 +117,12 @@ impl ModpackProvider for ModrinthServerPack {
             env_kv("MODRINTH_PROJECT", &self.config.project_id),
             env_kv("MODRINTH_VERSION", &self.config.current_version_id),
             env_kv("MODRINTH_DOWNLOAD_DEPENDENCIES", "required"),
-            env_kv("MEMORY", &format!("{}M", ctx.memory_mi)),
+            env_kv(
+                "INIT_MEMORY",
+                &format!("{}M", init_memory_mi(ctx.memory_mi)),
+            ),
+            env_kv("MAX_MEMORY", &format!("{}M", ctx.memory_mi)),
+            env_kv("JVM_XX_OPTS", IDLE_GC_OPTS),
             env_kv("ENABLE_RCON", "true"),
             env_secret(
                 "RCON_PASSWORD",
