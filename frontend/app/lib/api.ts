@@ -72,6 +72,10 @@ export const serverDetailSchema = serverSummarySchema.extend({
 	// cached upstream version, when any.
 	source_config: z.unknown().default(null),
 	latest_version_id: z.number().int().nullable().default(null),
+	// True when the per-server file-helper Pod (`mc-{id}-files`) is up and
+	// not mid-deletion. The Files tab uses this to show a manual kill bar
+	// when the server is stopped but the helper is still running.
+	files_helper_running: z.boolean().default(false),
 });
 
 // --- capabilities ---------------------------------------------------------
@@ -341,6 +345,21 @@ export async function resizeServerStorage(
 		body: JSON.stringify({ size_gi: sizeGi }),
 	});
 	return jsonOrThrow(res, resizeStorageResponseSchema);
+}
+
+/// DELETEs the per-server file-helper Pod. 204 when the helper existed and
+/// was torn down; 200 with `{ already_gone: true }` when no helper Pod was
+/// present. 409 `helper_unsafe_to_kill` when the server is running.
+export async function killFilesHelper(id: string): Promise<void> {
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(id)}/files/helper`,
+		{ method: "DELETE" },
+	);
+	if (res.status === 200) {
+		// Already-gone is success.
+		return;
+	}
+	await noContentOrThrow(res);
 }
 
 export async function fetchMcVersions(

@@ -6,11 +6,12 @@ import { useState, type ReactElement } from "react";
 import {
 	ApiError,
 	downloadFileUrl,
+	killFilesHelper,
 	runFileAction,
 	startServer,
 	type FileEntry,
 } from "../../lib/api";
-import { useServerDetailCtx } from "../../lib/server-detail-context";
+import { useServerDetail } from "../../lib/server-detail-context";
 import { useFiles } from "../../lib/use-files";
 
 import { Button } from "../../components/Button";
@@ -42,7 +43,7 @@ function buildCrumbs(path: string): InlineCrumb[] {
 }
 
 export function FilesBody(): ReactElement {
-	const detail = useServerDetailCtx();
+	const { detail, refresh: refreshDetail } = useServerDetail();
 	const router = useRouter();
 	const search = useSearchParams();
 	const toast = useToast();
@@ -54,6 +55,30 @@ export function FilesBody(): ReactElement {
 		enabled,
 		serverStatus: detail.status,
 	});
+	const [killing, setKilling] = useState(false);
+
+	const onKillHelper = (): void => {
+		setKilling(true);
+		killFilesHelper(detail.id)
+			.then(() => {
+				toast.push("file viewer stopped", "success");
+				refreshDetail();
+			})
+			.catch((err: unknown) => {
+				const msg =
+					err instanceof ApiError
+						? `${err.code}: ${err.message}`
+						: err instanceof Error
+							? err.message
+							: "unknown error";
+				toast.push(`stop failed · ${msg}`, "error");
+			})
+			.finally(() => {
+				setKilling(false);
+			});
+	};
+	const showKillBar =
+		detail.status === "stopped" && detail.files_helper_running;
 
 	const [uploadOpen, setUploadOpen] = useState(false);
 	const [folderOpen, setFolderOpen] = useState(false);
@@ -164,6 +189,22 @@ export function FilesBody(): ReactElement {
 
 	return (
 		<div className="flex flex-col gap-4">
+			{showKillBar && (
+				<div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-surface px-3 py-2">
+					<span className="font-mono text-[12px] text-text-faint">
+						file viewer is running · idle
+					</span>
+					<Button
+						variant="danger"
+						size="sm"
+						onClick={onKillHelper}
+						disabled={killing}
+					>
+						stop file viewer
+					</Button>
+				</div>
+			)}
+
 			<div className="flex flex-wrap items-center justify-between gap-3">
 				<nav
 					aria-label="path"
