@@ -81,6 +81,10 @@ export const clusterCapabilitiesSchema = z.object({
 	nodeport: z.boolean(),
 	clusterip: z.boolean(),
 	available_storage_classes: z.array(z.string()),
+	// Subset of available_storage_classes whose `allowVolumeExpansion` is
+	// true; the storage-resize control in Settings is gated on the server's
+	// SC being in this list.
+	expandable_storage_classes: z.array(z.string()).default([]),
 	default_storage_class: z.string().nullable(),
 	// M5: gates the CurseForge option in the New Server modal.
 	cf_api_key_present: z.boolean().default(false),

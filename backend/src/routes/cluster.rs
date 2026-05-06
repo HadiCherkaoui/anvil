@@ -8,15 +8,15 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::Json;
 use axum::extract::State;
+use axum::Json;
 use k8s_openapi::api::storage::v1::StorageClass;
-use kube::Api;
 use kube::api::ListParams;
+use kube::Api;
 use serde::Serialize;
 
-use crate::AppState;
 use crate::error::AppError;
+use crate::AppState;
 
 /// How long to cache the `StorageClass` list before re-querying.
 pub const CAPABILITIES_TTL: Duration = Duration::from_mins(5);
@@ -36,6 +36,10 @@ pub struct ClusterCapabilities {
     pub clusterip: bool,
     /// Names of all `StorageClass`es discovered on the cluster.
     pub available_storage_classes: Vec<String>,
+    /// Names of `StorageClass`es with `allowVolumeExpansion: true`. Subset of
+    /// [`Self::available_storage_classes`]. The frontend gates the storage
+    /// resize control on the server's SC being in this list.
+    pub expandable_storage_classes: Vec<String>,
     /// Name of the `StorageClass` annotated `is-default-class=true`,
     /// if any.
     pub default_storage_class: Option<String>,
@@ -67,9 +71,29 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabil
     let storage_classes: Api<StorageClass> = Api::all(state.kube.clone());
     let lp = ListParams::default();
     let list = storage_classes.list(&lp).await?;
+    let caps = compute_caps_from_scs(
+        &list.items,
+        state.loadbalancer_supported,
+        state.cf_client.is_some(),
+    );
+    write_cache(&state.capabilities_cache, &caps);
+    Ok(Json(caps))
+}
+
+/// Reduces a `StorageClass` list to the panel's [`ClusterCapabilities`] view.
+///
+/// Pure function — extracted from [`handle`] so the `expandable_storage_classes`
+/// derivation can be unit-tested without driving a kube client.
+#[must_use]
+pub fn compute_caps_from_scs(
+    scs: &[StorageClass],
+    loadbalancer: bool,
+    cf_api_key_present: bool,
+) -> ClusterCapabilities {
     let mut classes: Vec<String> = Vec::new();
+    let mut expandable: Vec<String> = Vec::new();
     let mut default: Option<String> = None;
-    for sc in list.items {
+    for sc in scs {
         let Some(name) = sc.metadata.name.clone() else {
             continue;
         };
@@ -83,22 +107,24 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabil
         if is_default {
             default = Some(name.clone());
         }
+        if sc.allow_volume_expansion.unwrap_or(false) {
+            expandable.push(name.clone());
+        }
         classes.push(name);
     }
     classes.sort();
-
-    let caps = ClusterCapabilities {
-        loadbalancer: state.loadbalancer_supported,
+    expandable.sort();
+    ClusterCapabilities {
+        loadbalancer,
         // The cluster always has NodePort and ClusterIP available — these
         // do not depend on an external provider.
         nodeport: true,
         clusterip: true,
         available_storage_classes: classes,
+        expandable_storage_classes: expandable,
         default_storage_class: default,
-        cf_api_key_present: state.cf_client.is_some(),
-    };
-    write_cache(&state.capabilities_cache, &caps);
-    Ok(Json(caps))
+        cf_api_key_present,
+    }
 }
 
 fn read_cache(cache: &CapabilitiesCache) -> Option<ClusterCapabilities> {
@@ -115,4 +141,81 @@ fn read_cache(cache: &CapabilitiesCache) -> Option<ClusterCapabilities> {
 fn write_cache(cache: &CapabilitiesCache, caps: &ClusterCapabilities) {
     let mut guard = cache.lock().expect("capabilities cache poisoned");
     *guard = Some((caps.clone(), Instant::now()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kube::core::ObjectMeta;
+    use std::collections::BTreeMap;
+
+    fn sc(name: &str, allow_expand: bool, default: bool) -> StorageClass {
+        let annotations = if default {
+            let mut a = BTreeMap::new();
+            a.insert(
+                "storageclass.kubernetes.io/is-default-class".to_owned(),
+                "true".to_owned(),
+            );
+            Some(a)
+        } else {
+            None
+        };
+        StorageClass {
+            metadata: ObjectMeta {
+                name: Some(name.to_owned()),
+                annotations,
+                ..ObjectMeta::default()
+            },
+            allow_volume_expansion: Some(allow_expand),
+            ..StorageClass::default()
+        }
+    }
+
+    #[test]
+    fn capabilities_compute_expandable_set() {
+        let scs = vec![
+            sc("tank", true, true),
+            sc("openebs-hostpath", false, false),
+            sc("fast", true, false),
+        ];
+        let caps = compute_caps_from_scs(&scs, true, true);
+
+        assert_eq!(
+            caps.expandable_storage_classes,
+            vec!["fast".to_owned(), "tank".to_owned()],
+        );
+        assert_eq!(
+            caps.available_storage_classes,
+            vec![
+                "fast".to_owned(),
+                "openebs-hostpath".to_owned(),
+                "tank".to_owned(),
+            ],
+        );
+        assert_eq!(caps.default_storage_class, Some("tank".to_owned()));
+        assert!(caps.loadbalancer);
+        assert!(caps.nodeport);
+        assert!(caps.clusterip);
+        assert!(caps.cf_api_key_present);
+    }
+
+    #[test]
+    fn capabilities_no_expandable_when_all_disallow() {
+        let scs = vec![sc("a", false, false), sc("b", false, false)];
+        let caps = compute_caps_from_scs(&scs, false, false);
+        assert!(caps.expandable_storage_classes.is_empty());
+        assert!(!caps.loadbalancer);
+        assert!(!caps.cf_api_key_present);
+        assert_eq!(caps.default_storage_class, None);
+    }
+
+    #[test]
+    fn capabilities_skip_storage_class_without_name() {
+        let mut nameless = StorageClass::default();
+        nameless.metadata.name = None;
+        nameless.allow_volume_expansion = Some(true);
+        let scs = vec![nameless, sc("named", true, false)];
+        let caps = compute_caps_from_scs(&scs, true, false);
+        assert_eq!(caps.expandable_storage_classes, vec!["named".to_owned()],);
+    }
 }
