@@ -20,6 +20,7 @@ pub mod cf_client;
 pub mod curseforge;
 pub mod guard;
 pub mod jobs;
+pub mod memory;
 pub mod modded;
 pub mod modrinth;
 pub mod mods_apply;

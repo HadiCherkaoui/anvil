@@ -11,6 +11,10 @@ use k8s_openapi::api::core::v1::{EnvVar, EnvVarSource, SecretKeySelector};
 
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
+// Re-export so siblings can keep `use super::vanilla::{IDLE_GC_OPTS, init_memory_mi, ...}`
+// working until the next refactor moves them to import directly from `super::memory`.
+pub use super::memory::{init_memory_mi, IDLE_GC_OPTS};
+
 /// Container image used for managed vanilla Minecraft servers.
 ///
 /// Pinned to the Java 25 tag — the JRE is forward-compatible with vanilla
@@ -69,26 +73,6 @@ impl VanillaProvider {
         ]
     }
 }
-
-/// Initial JVM heap size in MiB given a max budget.
-///
-/// itzg's image sets `-Xms` from `INIT_MEMORY` and `-Xmx` from `MAX_MEMORY`;
-/// when `INIT_MEMORY` matches `MAX_MEMORY` the JVM commits the full heap up
-/// front and never returns pages to the OS, which leaves idle pods sitting
-/// at the configured ceiling. A quarter-of-max start (floor 1 GiB) lets the
-/// heap commit lazily as mods load — paired with [`IDLE_GC_OPTS`] so the
-/// heap also shrinks back during long idles.
-pub(super) fn init_memory_mi(max_mi: i64) -> i64 {
-    (max_mi / 4).max(1024)
-}
-
-/// JVM `-XX:` flags that let G1 release committed heap to the OS during
-/// long idles. Without these, G1 only grows the heap toward `-Xmx`; with
-/// them, every 30s of idle the JVM runs a concurrent collection that can
-/// return unused regions to the OS, so an idle pod's RSS tracks live-set
-/// rather than peak heap. JEP 346 — supported on Java 12+.
-pub(super) const IDLE_GC_OPTS: &str =
-    "-XX:+G1PeriodicGCInvokesConcurrent -XX:G1PeriodicGCInterval=30000";
 
 #[async_trait::async_trait]
 impl ModpackProvider for VanillaProvider {
