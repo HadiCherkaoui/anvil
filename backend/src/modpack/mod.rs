@@ -31,6 +31,7 @@ pub mod orchestrator;
 pub mod paper;
 pub mod poller;
 pub mod vanilla;
+pub mod version_change;
 
 pub use cf_client::CurseForgeClient;
 pub use curseforge::{Channel, CurseForgeServerPack};
