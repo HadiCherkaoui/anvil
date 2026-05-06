@@ -150,9 +150,9 @@ fn boot_timeout_for_kind(source_kind: &str) -> Duration {
     match source_kind {
         // Modded boots include forge/fabric setup + mod loading; matches
         // ModdedRuntime::boot_timeout() in modded.rs.
-        "modded" | "curseforge" | "modrinth" => Duration::from_secs(15 * 60),
+        "modded" | "curseforge" | "modrinth" => Duration::from_mins(15),
         // Vanilla / paper / unknown — Done marker comes within ~minute.
-        _ => Duration::from_secs(5 * 60),
+        _ => Duration::from_mins(5),
     }
 }
 

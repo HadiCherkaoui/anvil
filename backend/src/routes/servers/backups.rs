@@ -49,7 +49,7 @@ pub struct StartedResponse {
 /// Synchronous timeout for the delete Job. Manual archives are small —
 /// `rm` over a mounted PVC takes <1s; the timeout absorbs scheduling
 /// + image-pull on a cold node.
-const DELETE_JOB_TIMEOUT: Duration = Duration::from_secs(60);
+const DELETE_JOB_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Handler: `POST /api/servers/:id/backups`.
 ///

@@ -39,7 +39,7 @@ pub fn new_cache() -> LoaderVersionCache {
 }
 
 /// How long parsed loader-version listings stay in the cache.
-const CACHE_TTL: Duration = Duration::from_secs(3600);
+const CACHE_TTL: Duration = Duration::from_hours(1);
 /// Per-fetch HTTP timeout.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 const NEOFORGE_URL: &str =
