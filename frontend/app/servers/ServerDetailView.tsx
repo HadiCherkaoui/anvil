@@ -31,6 +31,7 @@ import { FilesBody } from "./tabs/FilesBody";
 import { ModsBody } from "./tabs/ModsBody";
 import { OverviewBody } from "./tabs/OverviewBody";
 import { PlayersBody } from "./tabs/PlayersBody";
+import { PropertiesBody } from "./tabs/PropertiesBody";
 import { SettingsBody } from "./tabs/SettingsBody";
 
 const POLL_INTERVAL_MS = 5_000;
@@ -42,6 +43,7 @@ type TabId =
 	| "players"
 	| "backups"
 	| "files"
+	| "properties"
 	| "settings";
 
 const TAB_IDS: ReadonlyArray<TabId> = [
@@ -51,6 +53,7 @@ const TAB_IDS: ReadonlyArray<TabId> = [
 	"players",
 	"backups",
 	"files",
+	"properties",
 	"settings",
 ];
 
@@ -204,6 +207,7 @@ export function ServerDetailView(): ReactElement {
 		{ id: "players", label: "players", href: tabHref("players") },
 		{ id: "backups", label: "backups", href: tabHref("backups") },
 		{ id: "files", label: "files", href: tabHref("files") },
+		{ id: "properties", label: "properties", href: tabHref("properties") },
 		{ id: "settings", label: "settings", href: tabHref("settings") },
 	];
 
@@ -333,6 +337,7 @@ export function ServerDetailView(): ReactElement {
 					{tab === "players" && <PlayersBody />}
 					{tab === "backups" && <BackupsBody />}
 					{tab === "files" && <FilesBody />}
+					{tab === "properties" && <PropertiesBody />}
 					{tab === "settings" && <SettingsBody />}
 				</div>
 
