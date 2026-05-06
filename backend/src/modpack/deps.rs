@@ -1,6 +1,6 @@
 //! Normalised mod-dependency types shared across providers.
 //!
-//! Modrinth and CurseForge each describe upstream dependencies in their own
+//! Modrinth and `CurseForge` each describe upstream dependencies in their own
 //! shape (see [`mr_client::MrDependency`] and [`cf_client::CfDependency`]).
 //! [`DependencySpec`] is the panel-internal normalised form the dep-resolver
 //! consumes, with kinds collapsed to the two we actually act on.
@@ -56,7 +56,7 @@ pub fn from_modrinth(deps: &[MrDependency]) -> Vec<DependencySpec> {
         .collect()
 }
 
-/// Normalises CurseForge dependency entries.
+/// Normalises `CurseForge` dependency entries.
 #[must_use]
 pub fn from_curseforge(deps: &[CfDependency]) -> Vec<DependencySpec> {
     deps.iter()

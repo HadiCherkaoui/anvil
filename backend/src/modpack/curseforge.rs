@@ -302,6 +302,8 @@ mod tests {
             server_pack_file_id: None,
             download_url: Some(format!("https://example.com/{id}.zip")),
             file_date: date.to_owned(),
+            file_name: format!("{id}.zip"),
+            game_versions: Vec::new(),
             dependencies: Vec::new(),
         }
     }

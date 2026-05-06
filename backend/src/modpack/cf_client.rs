@@ -57,6 +57,16 @@ pub struct CfFile {
     /// `fileDate`); kept as the raw string and parsed only when needed.
     #[serde(rename = "fileDate", default)]
     pub file_date: String,
+    /// Actual disk filename (e.g. `mymod-1.2.3.jar`). Distinct from
+    /// `displayName`. Used to construct `ModEntry.filename` when resolving
+    /// dependencies; older code paths fall back to `display_name`.
+    #[serde(rename = "fileName", default)]
+    pub file_name: String,
+    /// CF interleaves MC versions and loader labels in this single array
+    /// (e.g. `["1.21.4", "Forge", "Fabric"]`). Used for dep-resolver
+    /// compatibility filtering.
+    #[serde(rename = "gameVersions", default)]
+    pub game_versions: Vec<String>,
     /// Required / optional / incompatible / etc. relations to other projects.
     #[serde(default)]
     pub dependencies: Vec<CfDependency>,
@@ -64,7 +74,7 @@ pub struct CfFile {
 
 /// One entry in [`CfFile::dependencies`].
 ///
-/// `relation_type` mapping per CurseForge: `1` embedded, `2` optional,
+/// `relation_type` mapping per `CurseForge`: `1` embedded, `2` optional,
 /// `3` required, `4` tool, `5` incompatible, `6` include.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CfDependency {

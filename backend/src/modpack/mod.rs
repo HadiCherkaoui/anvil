@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod cf_client;
 pub mod curseforge;
+pub mod dep_resolver;
 pub mod deps;
 pub mod guard;
 pub mod jobs;
