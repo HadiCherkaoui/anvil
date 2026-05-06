@@ -7,7 +7,13 @@ import {
 	type ReactNode,
 } from "react";
 
-import type { CfChannel, ExposureMode, ModEntry, Runtime } from "../lib/api";
+import type {
+	CfChannel,
+	ExposureMode,
+	ModEntry,
+	Runtime,
+	ServerProperties,
+} from "../lib/api";
 
 export type CreateType = "vanilla" | "paper" | "modpack" | "modded";
 
@@ -29,6 +35,10 @@ export interface CreateDraft {
 	/// Forge / NeoForge loader version chosen from the cascading picker.
 	/// `null` means "use itzg's LATEST"; fabric ignores this.
 	loader_version: string | null;
+	/// Curated server.properties overrides — the World section in the create
+	/// form sets `difficulty`, `hardcore`, `gamemode`. Other fields stay at
+	/// vanilla defaults until the operator visits the Properties tab.
+	properties: ServerProperties;
 }
 
 export const CreateFormContext = createContext<CreateDraft | null>(null);

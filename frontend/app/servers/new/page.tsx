@@ -13,11 +13,14 @@ import {
 import {
 	ApiError,
 	createServer,
+	DEFAULT_PROPERTIES,
 	fetchCapabilities,
 	type CfChannel,
 	type ClusterCapabilities,
 	type CreateServerRequest,
+	type Difficulty,
 	type ExposureMode,
+	type Gamemode,
 	type ModEntry,
 	type Runtime,
 } from "../../lib/api";
@@ -56,6 +59,25 @@ const RUNTIME_OPTIONS: ReadonlyArray<{ value: Runtime; label: string }> = [
 	{ value: "neoforge", label: "neoforge" },
 ];
 
+const DIFFICULTY_OPTIONS: ReadonlyArray<{ value: Difficulty; label: string }> = [
+	{ value: "peaceful", label: "peaceful" },
+	{ value: "easy", label: "easy" },
+	{ value: "normal", label: "normal" },
+	{ value: "hard", label: "hard" },
+];
+
+const GAMEMODE_OPTIONS: ReadonlyArray<{ value: Gamemode; label: string }> = [
+	{ value: "survival", label: "survival" },
+	{ value: "creative", label: "creative" },
+	{ value: "adventure", label: "adventure" },
+	{ value: "spectator", label: "spectator" },
+];
+
+const HARDCORE_OPTIONS: ReadonlyArray<{ value: "off" | "on"; label: string }> = [
+	{ value: "off", label: "off" },
+	{ value: "on", label: "on" },
+];
+
 const INITIAL: CreateDraft = {
 	name: "",
 	type: "vanilla",
@@ -73,6 +95,7 @@ const INITIAL: CreateDraft = {
 	initial_mods: [],
 	initial_plugins: [],
 	loader_version: null,
+	properties: DEFAULT_PROPERTIES,
 };
 
 function buildExposureOptions(
@@ -299,6 +322,7 @@ export default function NewServerPage(): ReactElement {
 			...(isPaper && draft.initial_plugins.length > 0
 				? { paper: { initial_plugins: draft.initial_plugins } }
 				: {}),
+			properties: draft.properties,
 		};
 		createServer(request)
 			.then((created) => {
@@ -684,7 +708,66 @@ export default function NewServerPage(): ReactElement {
 						</Card>
 					</Section>
 
-					<Section number="05" title="storage">
+					<Section number="05" title="world">
+						<Card>
+							<div className="flex flex-col gap-4">
+								<div>
+									<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+										difficulty
+									</label>
+									<SegmentedControl
+										ariaLabel="difficulty"
+										value={draft.properties.difficulty}
+										onChange={(v) => {
+											set("properties", {
+												...draft.properties,
+												difficulty: v,
+											});
+										}}
+										options={DIFFICULTY_OPTIONS}
+									/>
+								</div>
+								<div>
+									<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+										gamemode
+									</label>
+									<SegmentedControl
+										ariaLabel="gamemode"
+										value={draft.properties.gamemode}
+										onChange={(v) => {
+											set("properties", {
+												...draft.properties,
+												gamemode: v,
+											});
+										}}
+										options={GAMEMODE_OPTIONS}
+									/>
+								</div>
+								<div>
+									<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+										hardcore
+									</label>
+									<SegmentedControl
+										ariaLabel="hardcore"
+										value={draft.properties.hardcore ? "on" : "off"}
+										onChange={(v) => {
+											set("properties", {
+												...draft.properties,
+												hardcore: v === "on",
+											});
+										}}
+										options={HARDCORE_OPTIONS}
+									/>
+									<p className="mt-1 font-mono text-[11px] text-text-faint">
+										hardcore bans players on death — only meaningful from a
+										fresh world
+									</p>
+								</div>
+							</div>
+						</Card>
+					</Section>
+
+					<Section number="06" title="storage">
 						<Card>
 							<div className="flex flex-col gap-4">
 								<RangeSlider
@@ -728,7 +811,7 @@ export default function NewServerPage(): ReactElement {
 						</Card>
 					</Section>
 
-					<Section number="06" title="network">
+					<Section number="07" title="network">
 						<Card>
 							<SegmentedControl
 								ariaLabel="exposure mode"
