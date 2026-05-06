@@ -9,10 +9,15 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use axum::Json;
+use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
+
+use crate::AppState;
+use crate::error::AppError;
 
 /// Parsed loader-version listing returned by the endpoint.
 #[derive(Debug, Clone, Serialize)]
@@ -31,6 +36,111 @@ pub type LoaderVersionCache = Arc<Mutex<HashMap<&'static str, (LoaderVersions, I
 #[must_use]
 pub fn new_cache() -> LoaderVersionCache {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// How long parsed loader-version listings stay in the cache.
+const CACHE_TTL: Duration = Duration::from_secs(3600);
+/// Per-fetch HTTP timeout.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+const NEOFORGE_URL: &str =
+    "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml";
+const FORGE_URL: &str =
+    "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml";
+
+/// Test-only seeder so integration tests can prime the cache without
+/// hitting the upstream maven.
+#[doc(hidden)]
+pub fn prime_cache(cache: &LoaderVersionCache, runtime: &'static str, parsed: LoaderVersions) {
+    if let Ok(mut g) = cache.lock() {
+        g.insert(runtime, (parsed, Instant::now()));
+    }
+}
+
+fn read_cache(cache: &LoaderVersionCache, key: &str) -> Option<LoaderVersions> {
+    let g = cache.lock().ok()?;
+    let (v, ts) = g.get(key)?;
+    if ts.elapsed() < CACHE_TTL {
+        Some(v.clone())
+    } else {
+        None
+    }
+}
+
+fn write_cache(cache: &LoaderVersionCache, key: &'static str, v: &LoaderVersions) {
+    if let Ok(mut g) = cache.lock() {
+        g.insert(key, (v.clone(), Instant::now()));
+    }
+}
+
+/// Handler for `GET /api/runtimes/{runtime}/versions`.
+///
+/// # Errors
+///
+/// - 404 `unknown_runtime` when `runtime` is anything other than `forge` or
+///   `neoforge` (Fabric covers every MC release; no listing is needed).
+/// - 503 `loader_versions_unreachable` if the upstream maven is down AND the
+///   cache is empty. A populated-but-stale cache is served as a graceful
+///   fallback so a transient outage doesn't break the create form.
+pub async fn handle_versions(
+    Path(runtime): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<LoaderVersions>, AppError> {
+    let key: &'static str = match runtime.as_str() {
+        "neoforge" => "neoforge",
+        "forge" => "forge",
+        _ => {
+            return Err(AppError::NotFound);
+        }
+    };
+
+    if let Some(v) = read_cache(&state.loader_version_cache, key) {
+        return Ok(Json(v));
+    }
+
+    let url = if key == "neoforge" {
+        NEOFORGE_URL
+    } else {
+        FORGE_URL
+    };
+    match fetch_and_parse(url, key).await {
+        Ok(parsed) => {
+            write_cache(&state.loader_version_cache, key, &parsed);
+            Ok(Json(parsed))
+        }
+        Err(e) => {
+            tracing::warn!(runtime = key, error = %e, "loader-versions upstream failed");
+            // Best-effort: serve stale cache if any (the freshness check above
+            // returned None because the entry was either missing or expired —
+            // serving expired beats failing the create form entirely).
+            if let Some(stale) = stale_cache(&state.loader_version_cache, key) {
+                return Ok(Json(stale));
+            }
+            Err(AppError::Internal(anyhow::anyhow!(
+                "loader_versions_unreachable: {e}"
+            )))
+        }
+    }
+}
+
+async fn fetch_and_parse(url: &str, runtime: &str) -> Result<LoaderVersions> {
+    let xml = reqwest::Client::new()
+        .get(url)
+        .timeout(FETCH_TIMEOUT)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    if runtime == "neoforge" {
+        parse_neoforge(&xml)
+    } else {
+        parse_forge(&xml)
+    }
+}
+
+fn stale_cache(cache: &LoaderVersionCache, key: &str) -> Option<LoaderVersions> {
+    let g = cache.lock().ok()?;
+    g.get(key).map(|(v, _)| v.clone())
 }
 
 #[derive(Debug, Deserialize)]

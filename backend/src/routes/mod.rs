@@ -142,6 +142,10 @@ fn api_routes(state: AppState) -> Router<AppState> {
         )
         .route("/api/cluster/capabilities", get(cluster::handle))
         .route("/api/cluster/mc-versions", get(mc_versions::handle))
+        .route(
+            "/api/runtimes/{runtime}/versions",
+            get(runtimes::handle_versions),
+        )
         .route("/api/catalog/search", get(catalog::search))
         .route(
             "/api/catalog/projects/{provider}/{id}/versions",
