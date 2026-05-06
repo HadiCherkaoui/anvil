@@ -11,8 +11,9 @@ use anyhow::{Result, anyhow};
 use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 
+use super::memory::build_memory_env;
 use super::modded::ModEntry;
-use super::vanilla::{IDLE_GC_OPTS, env_kv, env_secret, init_memory_mi};
+use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
 const PAPER_IMAGE: &str = "itzg/minecraft-server:java25";
@@ -73,19 +74,16 @@ impl ModpackProvider for PaperServerProvider {
             env_kv("EULA", "TRUE"),
             env_kv("TYPE", "PAPER"),
             env_kv("VERSION", &self.config.mc_version),
-            env_kv(
-                "INIT_MEMORY",
-                &format!("{}M", init_memory_mi(ctx.memory_mi)),
-            ),
-            env_kv("MAX_MEMORY", &format!("{}M", ctx.memory_mi)),
-            env_kv("JVM_XX_OPTS", IDLE_GC_OPTS),
+        ];
+        env.extend(build_memory_env(ctx.memory_mi));
+        env.extend([
             env_kv("ENABLE_RCON", "true"),
             env_secret(
                 "RCON_PASSWORD",
                 &format!("mc-{}-rcon", ctx.server_id),
                 "password",
             ),
-        ];
+        ]);
         if let Some(build) = self.config.paper_build.as_deref() {
             env.push(env_kv("PAPER_BUILD", build));
         }

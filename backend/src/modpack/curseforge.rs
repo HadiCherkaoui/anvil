@@ -28,7 +28,8 @@ use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 
 use super::cf_client::CfFile;
-use super::vanilla::{IDLE_GC_OPTS, env_kv, env_secret, init_memory_mi};
+use super::memory::build_memory_env;
+use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
 /// Container image used for CurseForge-driven servers — same image as
@@ -224,25 +225,23 @@ impl ModpackProvider for CurseForgeServerPack {
         // mc-image-helper compares the requested CF_FILE_ID to the persisted
         // one and reinstalls when they differ — the orchestrator just patches
         // this env var to apply an update.
-        vec![
+        let mut env = vec![
             env_kv("EULA", "TRUE"),
             env_kv("TYPE", "AUTO_CURSEFORGE"),
             env_secret("CF_API_KEY", CF_API_KEY_SECRET, CF_API_KEY_SECRET_FIELD),
             env_kv("CF_SLUG", &self.config.slug),
             env_kv("CF_FILE_ID", &self.config.current_version_id.to_string()),
-            env_kv(
-                "INIT_MEMORY",
-                &format!("{}M", init_memory_mi(ctx.memory_mi)),
-            ),
-            env_kv("MAX_MEMORY", &format!("{}M", ctx.memory_mi)),
-            env_kv("JVM_XX_OPTS", IDLE_GC_OPTS),
+        ];
+        env.extend(build_memory_env(ctx.memory_mi));
+        env.extend([
             env_kv("ENABLE_RCON", "true"),
             env_secret(
                 "RCON_PASSWORD",
                 &format!("mc-{}-rcon", ctx.server_id),
                 "password",
             ),
-        ]
+        ]);
+        env
     }
 
     fn boot_timeout(&self) -> Duration {

@@ -3,7 +3,7 @@
 //! itzg's image reads `INIT_MEMORY` and `MAX_MEMORY` to set `-Xms` / `-Xmx`.
 //! Sharing the helper keeps the math + GC flags in one place — both at boot
 //! (provider `extra_env`) and at runtime (settings PATCH that re-patches the
-//! StatefulSet env, see `routes/servers/settings.rs`).
+//! `StatefulSet` env, see `routes/servers/settings.rs`).
 
 use k8s_openapi::api::core::v1::EnvVar;
 

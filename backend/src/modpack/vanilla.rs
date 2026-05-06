@@ -11,10 +11,6 @@ use k8s_openapi::api::core::v1::{EnvVar, EnvVarSource, SecretKeySelector};
 
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
-// Re-export so siblings can keep `use super::vanilla::{IDLE_GC_OPTS, init_memory_mi, ...}`
-// working until the next refactor moves them to import directly from `super::memory`.
-pub use super::memory::{init_memory_mi, IDLE_GC_OPTS};
-
 /// Container image used for managed vanilla Minecraft servers.
 ///
 /// Pinned to the Java 25 tag — the JRE is forward-compatible with vanilla
@@ -61,16 +57,17 @@ impl VanillaProvider {
     /// already baked in.
     #[must_use]
     pub fn build_env(server_id: &str, mc_version: &str, memory_mi: i64) -> Vec<EnvVar> {
-        vec![
+        let mut env = vec![
             env_kv("EULA", "TRUE"),
             env_kv("TYPE", "VANILLA"),
             env_kv("VERSION", mc_version),
-            env_kv("INIT_MEMORY", &format!("{}M", init_memory_mi(memory_mi))),
-            env_kv("MAX_MEMORY", &format!("{memory_mi}M")),
-            env_kv("JVM_XX_OPTS", IDLE_GC_OPTS),
+        ];
+        env.extend(super::memory::build_memory_env(memory_mi));
+        env.extend([
             env_kv("ENABLE_RCON", "true"),
             env_secret("RCON_PASSWORD", &format!("mc-{server_id}-rcon"), "password"),
-        ]
+        ]);
+        env
     }
 }
 
@@ -161,15 +158,6 @@ mod tests {
         assert_eq!(max.value.as_deref(), Some("4096M"));
         let init = env.iter().find(|e| e.name == "INIT_MEMORY").unwrap();
         assert_eq!(init.value.as_deref(), Some("1024M"));
-    }
-
-    #[test]
-    fn init_memory_mi_floors_at_one_gib() {
-        assert_eq!(init_memory_mi(1024), 1024);
-        assert_eq!(init_memory_mi(2048), 1024);
-        assert_eq!(init_memory_mi(4096), 1024);
-        assert_eq!(init_memory_mi(8192), 2048);
-        assert_eq!(init_memory_mi(17408), 4352);
     }
 
     #[test]
