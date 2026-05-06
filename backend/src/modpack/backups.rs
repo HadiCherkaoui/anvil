@@ -1,10 +1,16 @@
 //! User-facing manual backup + restore tasks (Spec 5).
 //!
-//! Mirrors the orchestrator's phasing — announce → stop → backup/restore →
-//! [swap] → start → verify — but writes archives under the `manual/` subdir
-//! of the snapshots PVC, opts out of GC, and snapshots the server's full
-//! restore-time config in `SQLite` so a restore can revert `mc_version`,
-//! memory, source kind/config, and `StatefulSet` env in one shot.
+//! Backup is the lean path — `(maybe stop) → tar → (maybe start)` — no
+//! announce, no done-marker verify; a backup is just a copy of `/data`,
+//! not a state change. Restore mirrors the orchestrator's phasing
+//! (announce → stop → restore → swap → start → verify) because untarring
+//! into `/data` is destructive and the snapshot's runtime config has to
+//! be reapplied.
+//!
+//! Both write archives under the `manual/` subdir of the snapshots PVC,
+//! opt out of GC, and snapshot the server's full restore-time config in
+//! `SQLite` so a restore can revert `mc_version`, memory, source
+//! kind/config, and `StatefulSet` env in one shot.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -26,8 +32,8 @@ use crate::modpack::guard::UpdateGuard;
 use crate::modpack::jobs::{build_backup_job, build_restore_job};
 use crate::modpack::orchestrator::{
     BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT, RESTORE_JOB_TIMEOUT,
-    UpdatePhase, announce_and_save, scale_to, spawn_job, wait_for_done_marker, wait_job,
-    wait_pod_gone, wait_pod_running,
+    UpdatePhase, announce_and_save, current_replicas, scale_to, spawn_job, wait_for_done_marker,
+    wait_job, wait_pod_gone, wait_pod_running,
 };
 use crate::routes::servers::create::insert_audit;
 
@@ -159,6 +165,13 @@ fn boot_timeout_for_kind(source_kind: &str) -> Duration {
 /// Drives a single manual backup. Owns the [`UpdateGuard`] for its lifetime
 /// and emits phase transitions through it for the WS at
 /// `/api/servers/:id/update/stream`.
+///
+/// A manual backup is just a tar of `/data` while the data PVC is
+/// quiesced. If the server is running we stop it first (no announce —
+/// this isn't an update) and bring it back to its prior replica count
+/// when the tar finishes; if it was already stopped we never touch the
+/// `StatefulSet`. There is no done-marker verify: the success criterion
+/// is the tar Job, not a fresh boot.
 pub async fn run_backup(
     state: AppState,
     server_id: String,
@@ -166,7 +179,31 @@ pub async fn run_backup(
     name: Option<String>,
     guard: UpdateGuard,
 ) {
-    let outcome = run_backup_inner(&state, &server_id, &backup_id, name.as_deref(), &guard).await;
+    let was_running = match current_replicas(&state.kube, &state.mc_namespace, &server_id).await {
+        Ok(r) => r >= 1,
+        Err(err) => {
+            guard.emit(UpdatePhase::Failed);
+            let now = Utc::now().timestamp();
+            let _ = insert_audit(
+                &state.pool,
+                &server_id,
+                "backup_failed",
+                Some(json!({"backup_id": backup_id, "err": err.to_string()})),
+                now,
+            )
+            .await;
+            return;
+        }
+    };
+    let outcome = run_backup_inner(
+        &state,
+        &server_id,
+        &backup_id,
+        name.as_deref(),
+        was_running,
+        &guard,
+    )
+    .await;
     let now = Utc::now().timestamp();
     match outcome {
         Ok(()) => {
@@ -191,8 +228,12 @@ pub async fn run_backup(
                 now,
             )
             .await;
-            // Best-effort scale to 1 so the server isn't left stopped.
-            let _ = scale_to(&state.kube, &state.mc_namespace, &server_id, 1).await;
+            // Best-effort restore the server's prior replica count. If it
+            // was stopped before the backup started, leave it stopped —
+            // bringing it up would override the user's intent.
+            if was_running {
+                let _ = scale_to(&state.kube, &state.mc_namespace, &server_id, 1).await;
+            }
         }
     }
 }
@@ -202,6 +243,7 @@ async fn run_backup_inner(
     server_id: &str,
     backup_id: &str,
     name: Option<&str>,
+    was_running: bool,
     guard: &UpdateGuard,
 ) -> Result<()> {
     let snapshots_pvc = state.snapshots_pvc.as_ref();
@@ -219,19 +261,18 @@ async fn run_backup_inner(
 
     let _permit = state.snapshot_pvc_lock.lock().await;
 
-    guard.emit(UpdatePhase::Announcing);
-    let _ = announce_and_save(state, server_id).await;
-
-    guard.emit(UpdatePhase::Stopping);
-    scale_to(&state.kube, &state.mc_namespace, server_id, 0).await?;
     let pod = format!("mc-{server_id}-0");
-    wait_pod_gone(
-        &state.kube,
-        &state.mc_namespace,
-        &pod,
-        POD_TERMINATE_TIMEOUT,
-    )
-    .await?;
+    if was_running {
+        guard.emit(UpdatePhase::Stopping);
+        scale_to(&state.kube, &state.mc_namespace, server_id, 0).await?;
+        wait_pod_gone(
+            &state.kube,
+            &state.mc_namespace,
+            &pod,
+            POD_TERMINATE_TIMEOUT,
+        )
+        .await?;
+    }
 
     guard.emit(UpdatePhase::BackingUp);
     let job = build_backup_job(
@@ -256,13 +297,10 @@ async fn run_backup_inner(
     )
     .await?;
 
-    guard.emit(UpdatePhase::Starting);
-    scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
-
-    guard.emit(UpdatePhase::Verifying);
-    wait_pod_running(&state.kube, &state.mc_namespace, &pod, POD_RUNNING_TIMEOUT).await?;
-    let timeout = boot_timeout_for_kind(&snap.source_kind);
-    wait_for_done_marker(&state.kube, &state.mc_namespace, server_id, timeout).await?;
+    if was_running {
+        guard.emit(UpdatePhase::Starting);
+        scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
+    }
     Ok(())
 }
 

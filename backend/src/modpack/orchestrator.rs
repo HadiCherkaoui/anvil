@@ -465,6 +465,24 @@ pub(crate) async fn announce_and_save(state: &AppState, server_id: &str) -> Resu
     Ok(())
 }
 
+/// Reads the current `spec.replicas` of the server's `StatefulSet`.
+/// Returns 0 if the `StatefulSet` is missing (partial-create teardown
+/// safety) or if the field is unset.
+pub(crate) async fn current_replicas(
+    client: &kube::Client,
+    ns: &str,
+    server_id: &str,
+) -> Result<i32> {
+    let stsets: Api<StatefulSet> = Api::namespaced(client.clone(), ns);
+    let resource_name = format!("mc-{server_id}");
+    Ok(stsets
+        .get_opt(&resource_name)
+        .await
+        .with_context(|| format!("loading StatefulSet {resource_name}"))?
+        .and_then(|s| s.spec.and_then(|spec| spec.replicas))
+        .unwrap_or(0))
+}
+
 /// `kubectl scale --replicas=N statefulset/mc-{id}`.
 pub(crate) async fn scale_to(
     client: &kube::Client,

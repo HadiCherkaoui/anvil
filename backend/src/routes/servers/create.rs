@@ -16,7 +16,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::{Secret, Service};
+use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Secret, Service};
 use kube::Api;
 use kube::api::PostParams;
 use serde::{Deserialize, Serialize};
@@ -29,8 +29,8 @@ use std::collections::HashSet;
 use crate::AppState;
 use crate::error::AppError;
 use crate::k8s_builders::{
-    BuildParams, build_headless_service, build_rcon_secret, build_service, build_statefulset,
-    rcon_password,
+    BuildParams, build_data_pvc, build_headless_service, build_rcon_secret, build_service,
+    build_statefulset, rcon_password,
 };
 use crate::modpack::curseforge::{AutoUpdateMode, Channel, Config as CfConfig};
 use crate::modpack::dep_resolver::{ResolveContext, resolve_required};
@@ -344,6 +344,7 @@ pub async fn handle(
     let secrets: Api<Secret> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let services: Api<Service> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
+    let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
 
     secrets
         .create(&pp, &build_rcon_secret(&id, &state.mc_namespace, &rcon_pwd))
@@ -354,6 +355,10 @@ pub async fn handle(
     stsets
         .create(&pp, &build_statefulset(&build_params))
         .await?;
+    // Pre-create the data PVC so create-time Jobs (mod/plugin sync) can
+    // mount /data before the StatefulSet has ever scaled to 1. The
+    // StatefulSet adopts the matching name on first scale-up.
+    pvcs.create(&pp, &build_data_pvc(&build_params)).await?;
     services.create(&pp, &build_service(&build_params)).await?;
 
     // C#10: when the user pre-picked mods at create time, kick the same

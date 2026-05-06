@@ -203,6 +203,47 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
     }
 }
 
+/// Builds the data PVC (`data-mc-{id}-0`) the `StatefulSet`'s
+/// `volumeClaimTemplate` would otherwise create on first scale-up.
+///
+/// Pre-creating lets us run Jobs that mount `/data` (e.g. the create-time
+/// mod/plugin sync) before the `StatefulSet` has ever scaled to 1 — k8s
+/// only materialises template-backed PVCs when the corresponding pod is
+/// scheduled, so a fresh server has no `data-mc-{id}-0` to bind to. The
+/// `StatefulSet` controller adopts an existing PVC matching the
+/// template's `<name>-<sts>-<ord>` shape rather than creating a new one,
+/// so this pre-creation is benign.
+#[must_use]
+pub fn build_data_pvc(p: &BuildParams<'_>) -> PersistentVolumeClaim {
+    let pvc_name = format!("data-mc-{}-0", p.id);
+    let labels = server_labels(p.id);
+
+    let storage_request: BTreeMap<String, Quantity> = std::iter::once((
+        "storage".to_owned(),
+        Quantity(format!("{}Gi", p.storage_size_gi)),
+    ))
+    .collect();
+
+    PersistentVolumeClaim {
+        metadata: ObjectMeta {
+            name: Some(pvc_name),
+            namespace: Some(p.namespace.to_owned()),
+            labels: Some(labels),
+            ..ObjectMeta::default()
+        },
+        spec: Some(PersistentVolumeClaimSpec {
+            access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+            storage_class_name: p.storage_class.map(str::to_owned),
+            resources: Some(VolumeResourceRequirements {
+                requests: Some(storage_request),
+                ..VolumeResourceRequirements::default()
+            }),
+            ..PersistentVolumeClaimSpec::default()
+        }),
+        status: None,
+    }
+}
+
 /// Builds the Service for a managed server. Type comes from
 /// `exposure_mode`; for `NodePort` the assigned port is set from
 /// `params.nodeport`.
@@ -790,5 +831,39 @@ mod tests {
         let limits = res.limits.as_ref().unwrap();
         assert_eq!(limits.get("cpu").unwrap().0, "100m");
         assert_eq!(limits.get("memory").unwrap().0, "32Mi");
+    }
+
+    #[test]
+    fn data_pvc_name_matches_statefulset_template_shape() {
+        // The StatefulSet's volumeClaimTemplate is named `data` and the
+        // first ordinal is 0, so the controller-created name would be
+        // `data-mc-{id}-0`. The pre-create has to match so the
+        // StatefulSet adopts it on first scale-up.
+        let pvc = build_data_pvc(&params());
+        assert_eq!(pvc.metadata.name.as_deref(), Some("data-mc-abcd1234-0"));
+        assert_eq!(pvc.metadata.namespace.as_deref(), Some("mc"));
+    }
+
+    #[test]
+    fn data_pvc_spec_mirrors_volume_claim_template() {
+        let pvc = build_data_pvc(&params());
+        let spec = pvc.spec.as_ref().unwrap();
+        assert_eq!(
+            spec.access_modes.as_deref(),
+            Some(&["ReadWriteOnce".to_owned()][..])
+        );
+        assert_eq!(spec.storage_class_name.as_deref(), Some("tank"));
+        let req = spec.resources.as_ref().unwrap().requests.as_ref().unwrap();
+        assert_eq!(req.get("storage").unwrap().0, "10Gi");
+    }
+
+    #[test]
+    fn data_pvc_omits_storage_class_when_unset() {
+        // None means "use the cluster default" — the field must be
+        // omitted, not sent as an empty string.
+        let mut p = params();
+        p.storage_class = None;
+        let pvc = build_data_pvc(&p);
+        assert!(pvc.spec.unwrap().storage_class_name.is_none());
     }
 }
