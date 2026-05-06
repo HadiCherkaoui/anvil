@@ -366,6 +366,11 @@ export default function NewServerPage(): ReactElement {
 									if (v !== "modded") {
 										set("runtime", null);
 										set("initial_mods", []);
+										set("loader_version", null);
+									} else {
+										set("runtime", "fabric");
+										set("initial_mods", []);
+										set("loader_version", null);
 									}
 								}}
 								options={TYPE_OPTIONS}
