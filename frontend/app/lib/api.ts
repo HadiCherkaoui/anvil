@@ -27,12 +27,7 @@ export const exposureModeSchema = z.enum([
 
 // --- server.properties subset --------------------------------------------
 
-export const difficultySchema = z.enum([
-	"peaceful",
-	"easy",
-	"normal",
-	"hard",
-]);
+export const difficultySchema = z.enum(["peaceful", "easy", "normal", "hard"]);
 export const gamemodeSchema = z.enum([
 	"survival",
 	"creative",
@@ -57,6 +52,23 @@ export const serverPropertiesSchema = z.object({
 	allow_flight: z.boolean().default(false),
 	allow_nether: z.boolean().default(true),
 	enable_command_block: z.boolean().default(false),
+	// itzg `SEED` -> vanilla `level-seed`. Empty string = random world.
+	// Capped at 256 chars and must not contain control chars (matches the
+	// backend `properties_seed_invalid` validation).
+	seed: z
+		.string()
+		.max(256)
+		.refine(
+			(s) => {
+				for (let i = 0; i < s.length; i++) {
+					const code = s.charCodeAt(i);
+					if (code < 0x20 || code === 0x7f) return false;
+				}
+				return true;
+			},
+			{ message: "seed must not contain control characters" },
+		)
+		.default(""),
 });
 
 export type Difficulty = z.infer<typeof difficultySchema>;

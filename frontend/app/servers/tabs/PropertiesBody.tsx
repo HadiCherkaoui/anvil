@@ -112,15 +112,15 @@ const FIELD_HELP: Record<keyof ServerProperties, FieldHelp> = {
 		tip: "command blocks tickable by ops",
 		wikiAnchor: "enable-command-block",
 	},
+	seed: {
+		tip: "world seed; only meaningful from a fresh world. leave empty for random",
+		wikiAnchor: "level-seed",
+	},
 };
 
 const WIKI_BASE = "https://minecraft.wiki/w/Server.properties#";
 
-function InfoLink({
-	field,
-}: {
-	field: keyof ServerProperties;
-}): ReactElement {
+function InfoLink({ field }: { field: keyof ServerProperties }): ReactElement {
 	const help = FIELD_HELP[field];
 	return (
 		<Tooltip label={help.tip}>
@@ -216,6 +216,41 @@ function NumberRow({
 	);
 }
 
+interface TextRowProps {
+	field: keyof ServerProperties;
+	label: string;
+	value: string;
+	placeholder: string;
+	maxLength: number;
+	onChange: (next: string) => void;
+}
+
+function TextRow({
+	field,
+	label,
+	value,
+	placeholder,
+	maxLength,
+	onChange,
+}: TextRowProps): ReactElement {
+	return (
+		<Row field={field} label={label}>
+			<input
+				type="text"
+				value={value}
+				placeholder={placeholder}
+				maxLength={maxLength}
+				spellCheck={false}
+				autoComplete="off"
+				onChange={(e: ChangeEvent<HTMLInputElement>) => {
+					onChange(e.target.value);
+				}}
+				className="w-48 rounded-md border border-border bg-bg px-2 py-1 font-mono text-[12px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+			/>
+		</Row>
+	);
+}
+
 function shallowEqual(a: ServerProperties, b: ServerProperties): boolean {
 	const keys = Object.keys(a) as Array<keyof ServerProperties>;
 	return keys.every((k) => a[k] === b[k]);
@@ -294,6 +329,16 @@ export function PropertiesBody(): ReactElement {
 						value={props.force_gamemode}
 						onChange={(v) => {
 							set("force_gamemode", v);
+						}}
+					/>
+					<TextRow
+						field="seed"
+						label="seed"
+						value={props.seed}
+						placeholder="empty = random"
+						maxLength={256}
+						onChange={(v) => {
+							set("seed", v);
 						}}
 					/>
 				</div>

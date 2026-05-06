@@ -59,12 +59,13 @@ const RUNTIME_OPTIONS: ReadonlyArray<{ value: Runtime; label: string }> = [
 	{ value: "neoforge", label: "neoforge" },
 ];
 
-const DIFFICULTY_OPTIONS: ReadonlyArray<{ value: Difficulty; label: string }> = [
-	{ value: "peaceful", label: "peaceful" },
-	{ value: "easy", label: "easy" },
-	{ value: "normal", label: "normal" },
-	{ value: "hard", label: "hard" },
-];
+const DIFFICULTY_OPTIONS: ReadonlyArray<{ value: Difficulty; label: string }> =
+	[
+		{ value: "peaceful", label: "peaceful" },
+		{ value: "easy", label: "easy" },
+		{ value: "normal", label: "normal" },
+		{ value: "hard", label: "hard" },
+	];
 
 const GAMEMODE_OPTIONS: ReadonlyArray<{ value: Gamemode; label: string }> = [
 	{ value: "survival", label: "survival" },
@@ -73,10 +74,11 @@ const GAMEMODE_OPTIONS: ReadonlyArray<{ value: Gamemode; label: string }> = [
 	{ value: "spectator", label: "spectator" },
 ];
 
-const HARDCORE_OPTIONS: ReadonlyArray<{ value: "off" | "on"; label: string }> = [
-	{ value: "off", label: "off" },
-	{ value: "on", label: "on" },
-];
+const HARDCORE_OPTIONS: ReadonlyArray<{ value: "off" | "on"; label: string }> =
+	[
+		{ value: "off", label: "off" },
+		{ value: "on", label: "on" },
+	];
 
 const INITIAL: CreateDraft = {
 	name: "",
@@ -533,8 +535,7 @@ export default function NewServerPage(): ReactElement {
 										}}
 										versions={moddedMcOptions}
 										showFallbackWarning={
-											loaderRuntime === null &&
-											versions?.source === "fallback"
+											loaderRuntime === null && versions?.source === "fallback"
 										}
 									/>
 									{loaderRuntime !== null && draft.mc_version !== null && (
@@ -761,6 +762,28 @@ export default function NewServerPage(): ReactElement {
 									<p className="mt-1 font-mono text-[11px] text-text-faint">
 										hardcore bans players on death — only meaningful from a
 										fresh world
+									</p>
+								</div>
+								<div>
+									<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+										seed
+									</label>
+									<input
+										value={draft.properties.seed}
+										onChange={(e: ChangeEvent<HTMLInputElement>) => {
+											set("properties", {
+												...draft.properties,
+												seed: e.target.value,
+											});
+										}}
+										placeholder="empty = random"
+										maxLength={256}
+										spellCheck={false}
+										autoComplete="off"
+										className="w-full rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text-body placeholder:text-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+									/>
+									<p className="mt-1 font-mono text-[11px] text-text-faint">
+										numeric or text · only meaningful at world generation
 									</p>
 								</div>
 							</div>

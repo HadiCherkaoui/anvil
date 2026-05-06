@@ -6,7 +6,7 @@
 //! (now backfilled to `'{}'`) decode cleanly to vanilla MC defaults.
 //!
 //! itzg's image overlays env vars onto `server.properties` on every boot,
-//! so [`ServerProperties::to_env`] always emits all 16 entries — the
+//! so [`ServerProperties::to_env`] always emits every entry — the
 //! stored JSON is canonical and the next pod start picks the values up.
 
 use k8s_openapi::api::core::v1::EnvVar;
@@ -65,8 +65,8 @@ impl Gamemode {
 /// matches vanilla MC defaults). New fields can be added without a schema
 /// migration: existing rows fall back to the new `Default` value.
 ///
-/// The companion [`ServerProperties::to_env`] always emits all sixteen
-/// entries, matching itzg's `KEY=VALUE` overlay convention.
+/// The companion [`ServerProperties::to_env`] always emits every entry,
+/// matching itzg's `KEY=VALUE` overlay convention.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 #[allow(
@@ -90,6 +90,10 @@ pub struct ServerProperties {
     pub allow_flight: bool,
     pub allow_nether: bool,
     pub enable_command_block: bool,
+    /// World seed (itzg `SEED`, vanilla `level-seed`). Empty = random.
+    /// Only meaningful at world generation; existing worlds keep their
+    /// `level.dat` seed regardless of what is written here on restart.
+    pub seed: String,
 }
 
 impl Default for ServerProperties {
@@ -113,6 +117,7 @@ impl Default for ServerProperties {
             allow_flight: false,
             allow_nether: true,
             enable_command_block: false,
+            seed: String::new(),
         }
     }
 }
@@ -152,14 +157,35 @@ impl ServerProperties {
                 message: "spawn_protection must be 0..=256".to_owned(),
             });
         }
+        // Cap at 256 bytes (any usable seed fits) and forbid control chars
+        // because itzg renders SEED into the line-based server.properties
+        // file as `level-seed=<value>` — a stray newline would corrupt it.
+        if self.seed.len() > 256 {
+            return Err(AppError::BadRequest {
+                code: "properties_seed_invalid",
+                message: "seed must be ≤ 256 characters".to_owned(),
+            });
+        }
+        if self
+            .seed
+            .chars()
+            .any(|c| (c as u32) < 0x20 || c == '\u{7f}')
+        {
+            return Err(AppError::BadRequest {
+                code: "properties_seed_invalid",
+                message: "seed must not contain control characters".to_owned(),
+            });
+        }
         Ok(())
     }
 
-    /// Emits all sixteen env vars itzg consumes to populate server.properties.
+    /// Emits the env vars itzg consumes to populate server.properties.
     ///
     /// Every field is always emitted: the stored JSON is the canonical
     /// state, so re-applying it on each pod start keeps the live world in
-    /// sync without needing to track which fields changed.
+    /// sync without needing to track which fields changed. `SEED` is
+    /// emitted with an empty value when no seed is set — itzg interprets
+    /// that the same as unset (random world generation).
     #[must_use]
     pub fn to_env(&self) -> Vec<EnvVar> {
         fn kv(name: &str, value: String) -> EnvVar {
@@ -191,6 +217,7 @@ impl ServerProperties {
             kv("ALLOW_FLIGHT", bool_str(self.allow_flight)),
             kv("ALLOW_NETHER", bool_str(self.allow_nether)),
             kv("ENABLE_COMMAND_BLOCK", bool_str(self.enable_command_block)),
+            kv("SEED", self.seed.clone()),
         ]
     }
 }
@@ -212,6 +239,7 @@ mod tests {
         assert_eq!(d.spawn_protection, 16);
         assert!(d.allow_nether);
         assert!(!d.allow_flight);
+        assert!(d.seed.is_empty());
     }
 
     #[test]
@@ -240,9 +268,27 @@ mod tests {
     }
 
     #[test]
-    fn to_env_emits_sixteen_vars() {
+    fn to_env_emits_seventeen_vars() {
         let env = ServerProperties::default().to_env();
-        assert_eq!(env.len(), 16);
+        assert_eq!(env.len(), 17);
+    }
+
+    #[test]
+    fn to_env_emits_seed_empty_by_default() {
+        let env = ServerProperties::default().to_env();
+        let seed = env.iter().find(|e| e.name == "SEED").unwrap();
+        assert_eq!(seed.value.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn to_env_emits_seed_when_set() {
+        let p = ServerProperties {
+            seed: "1234567890".to_owned(),
+            ..ServerProperties::default()
+        };
+        let env = p.to_env();
+        let seed = env.iter().find(|e| e.name == "SEED").unwrap();
+        assert_eq!(seed.value.as_deref(), Some("1234567890"));
     }
 
     #[test]
@@ -370,5 +416,41 @@ mod tests {
         ServerProperties::default()
             .validate()
             .expect("default valid");
+    }
+
+    #[test]
+    fn validate_accepts_empty_and_typical_seeds() {
+        for s in ["", "0", "-1", "1234567890", "my custom text seed"] {
+            let p = ServerProperties {
+                seed: s.to_owned(),
+                ..ServerProperties::default()
+            };
+            assert!(p.validate().is_ok(), "expected {s:?} to pass");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_seed_over_256_bytes() {
+        let p = ServerProperties {
+            seed: "a".repeat(257),
+            ..ServerProperties::default()
+        };
+        match p.validate().unwrap_err() {
+            AppError::BadRequest { code, .. } => {
+                assert_eq!(code, "properties_seed_invalid");
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_seed_with_control_chars() {
+        for bad in ["with\nnewline", "with\rcarriage", "with\ttab", "with\0null"] {
+            let p = ServerProperties {
+                seed: bad.to_owned(),
+                ..ServerProperties::default()
+            };
+            assert!(p.validate().is_err(), "expected {bad:?} to fail");
+        }
     }
 }

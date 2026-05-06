@@ -27,6 +27,7 @@ async fn properties_default_emits_full_env_block() {
         "ALLOW_FLIGHT",
         "ALLOW_NETHER",
         "ENABLE_COMMAND_BLOCK",
+        "SEED",
     ] {
         assert!(names.contains(&k), "missing env var {k}");
     }
