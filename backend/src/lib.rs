@@ -34,6 +34,7 @@ pub mod k8s_status;
 pub mod modpack;
 pub mod players;
 pub mod routes;
+pub mod server_properties;
 #[cfg(any(feature = "serve-dir", feature = "embed"))]
 pub mod static_serve;
 pub mod validation;
