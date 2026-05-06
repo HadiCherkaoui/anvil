@@ -324,6 +324,25 @@ export async function fetchCapabilities(
 	return jsonOrThrow(res, clusterCapabilitiesSchema);
 }
 
+const resizeStorageResponseSchema = z.object({
+	size_gi: z.number().int().positive(),
+});
+
+/// PATCHes the server's data PVC to a larger size_gi. Grow only — backend
+/// rejects shrink with 400 `shrink_unsupported`. Filesystem expansion is async
+/// (CSI), so the displayed size only reflects after the next detail fetch.
+export async function resizeServerStorage(
+	id: string,
+	sizeGi: number,
+): Promise<{ size_gi: number }> {
+	const res = await fetch(`/api/servers/${encodeURIComponent(id)}/storage`, {
+		method: "PATCH",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ size_gi: sizeGi }),
+	});
+	return jsonOrThrow(res, resizeStorageResponseSchema);
+}
+
 export async function fetchMcVersions(
 	signal?: AbortSignal,
 ): Promise<McVersionsResponse> {
@@ -598,18 +617,28 @@ export const modsApplyResponseSchema = z.object({
 	pending_count: z.number().int().nonnegative(),
 });
 
-/// Appends a pending op to a modded server's modlist draft.
+export const addPendingResponseSchema = z.object({
+	added: z.array(modEntrySchema).default([]),
+	added_count: z.number().int().nonnegative(),
+});
+
+export type AddPendingResponse = z.infer<typeof addPendingResponseSchema>;
+
+/// Appends a pending op to a modded server's modlist draft. The backend
+/// resolves required dependencies of an Add op upstream and folds them
+/// into the same response — `added` lists every mod that landed in
+/// `pending` from this call (seed + transitive deps).
 export async function addPendingMod(
 	serverId: string,
 	op: ModPendingOp,
-): Promise<void> {
+): Promise<AddPendingResponse> {
 	const validated = modPendingOpSchema.parse(op);
 	const res = await fetch(`/api/servers/${encodeURIComponent(serverId)}/mods`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(validated),
 	});
-	await noContentOrThrow(res);
+	return jsonOrThrow(res, addPendingResponseSchema);
 }
 
 /// Drops a pending op by index.
@@ -671,11 +700,13 @@ export async function listServerPlugins(
 	return jsonOrThrow(res, pluginsListResponseSchema);
 }
 
-/// Stages adding a plugin to a Paper server's pending list.
+/// Stages adding a plugin to a Paper server's pending list. The backend
+/// resolves required dependencies upstream and appends them too — `added`
+/// lists every plugin that landed in pending (seed + transitive deps).
 export async function addServerPlugin(
 	serverId: string,
 	entry: ModEntry,
-): Promise<void> {
+): Promise<AddPendingResponse> {
 	const validated = modEntrySchema.parse(entry);
 	const res = await fetch(
 		`/api/servers/${encodeURIComponent(serverId)}/plugins`,
@@ -685,7 +716,7 @@ export async function addServerPlugin(
 			body: JSON.stringify(validated),
 		},
 	);
-	await noContentOrThrow(res);
+	return jsonOrThrow(res, addPendingResponseSchema);
 }
 
 /// Stages removing a plugin from a Paper server's pending list.

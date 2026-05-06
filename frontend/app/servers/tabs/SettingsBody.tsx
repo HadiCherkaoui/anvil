@@ -1,16 +1,19 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 
 import {
 	ApiError,
 	deleteServer,
+	fetchCapabilities,
+	resizeServerStorage,
 	updateServerSettings,
 	type AutoUpdateMode,
+	type ClusterCapabilities,
 } from "../../lib/api";
 import { useMcVersions } from "../../lib/use-mc-versions";
-import { useServerDetailCtx } from "../../lib/server-detail-context";
+import { useServerDetail } from "../../lib/server-detail-context";
 
 import { Button } from "../../components/Button";
 import { Card } from "../../components/Card";
@@ -29,7 +32,7 @@ const AUTO_UPDATE_OPTIONS: ReadonlyArray<{
 ];
 
 function readAutoUpdate(
-	detail: ReturnType<typeof useServerDetailCtx>,
+	detail: ReturnType<typeof useServerDetail>["detail"],
 ): AutoUpdateMode {
 	if (detail.source_kind === "vanilla") return "notify";
 	const cfg = detail.source_config;
@@ -41,7 +44,7 @@ function readAutoUpdate(
 }
 
 export function SettingsBody(): ReactElement {
-	const detail = useServerDetailCtx();
+	const { detail, refresh } = useServerDetail();
 	const router = useRouter();
 	const toast = useToast();
 	const versions = useMcVersions();
@@ -52,8 +55,55 @@ export function SettingsBody(): ReactElement {
 	);
 	const [busy, setBusy] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
+	const [caps, setCaps] = useState<ClusterCapabilities | null>(null);
+	const [pendingSize, setPendingSize] = useState<number>(detail.storage_size_gi);
+	const [resizing, setResizing] = useState(false);
+
+	useEffect(() => {
+		const ctrl = new AbortController();
+		fetchCapabilities(ctrl.signal)
+			.then((c) => {
+				setCaps(c);
+			})
+			.catch(() => {
+				// non-fatal: storage card stays hidden if caps fail
+			});
+		return (): void => {
+			ctrl.abort();
+		};
+	}, []);
 
 	const isModpack = detail.source_kind !== "vanilla";
+
+	const sc = detail.storage_class ?? caps?.default_storage_class ?? "";
+	const canExpand =
+		caps !== null && sc !== "" && caps.expandable_storage_classes.includes(sc);
+	const storageMax = Math.max(
+		detail.storage_size_gi * 4,
+		detail.storage_size_gi + 10,
+	);
+
+	const onExpand = (): void => {
+		if (pendingSize <= detail.storage_size_gi) return;
+		setResizing(true);
+		resizeServerStorage(detail.id, pendingSize)
+			.then(() => {
+				toast.push("resize requested", "success");
+				refresh();
+			})
+			.catch((err: unknown) => {
+				const msg =
+					err instanceof ApiError
+						? `${err.code}: ${err.message}`
+						: err instanceof Error
+							? err.message
+							: "unknown error";
+				toast.push(`resize failed · ${msg}`, "error");
+			})
+			.finally(() => {
+				setResizing(false);
+			});
+	};
 
 	const memoryDirty = memory !== detail.memory_mi;
 	const autoUpdateDirty = isModpack && autoUpdate !== readAutoUpdate(detail);
@@ -98,6 +148,38 @@ export function SettingsBody(): ReactElement {
 					/>
 				</div>
 			</Card>
+
+			{canExpand && (
+				<Card header="storage · grow only">
+					<div className="flex flex-col gap-3">
+						<p className="font-mono text-[12px] text-text-muted">
+							current · {detail.storage_size_gi} GiB
+						</p>
+						<RangeSlider
+							label="resize to"
+							value={pendingSize}
+							onChange={setPendingSize}
+							min={detail.storage_size_gi}
+							max={storageMax}
+							step={1}
+							unit="GiB"
+						/>
+						<div className="flex items-center justify-between gap-3">
+							<p className="font-mono text-[11px] text-text-faint">
+								shrink not supported · CSI expansion is asynchronous
+							</p>
+							<Button
+								variant="primary"
+								size="sm"
+								onClick={onExpand}
+								disabled={pendingSize <= detail.storage_size_gi || resizing}
+							>
+								expand to {pendingSize} GiB
+							</Button>
+						</div>
+					</div>
+				</Card>
+			)}
 
 			<Card header="minecraft version · informational">
 				<p className="font-mono text-[12px] text-text-muted">
