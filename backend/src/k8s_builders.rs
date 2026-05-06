@@ -102,6 +102,18 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
     // requests would exceed allocatable capacity. Dropping resources
     // entirely puts the pod in BestEffort QoS — fine for a single-user
     // homelab where the operator picks the per-server JVM heap.
+    //
+    // Layer the panel-wide `TZ` after the provider env so log timestamps
+    // (Minecraft, JVM, mc-image-helper) line up with the operator's locale.
+    // itzg's image bundles tzdata and reads `TZ` per the general-options
+    // docs (docker-minecraft-server.readthedocs.io).
+    let mut env = p.extra_env.to_vec();
+    env.push(EnvVar {
+        name: "TZ".to_owned(),
+        value: Some("Europe/Zurich".to_owned()),
+        value_from: None,
+    });
+
     let container = Container {
         name: "mc".to_owned(),
         image: Some(p.image.to_owned()),
@@ -109,7 +121,7 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
         // The data volume mounts at /data; CurseForge packs unpack here and
         // their startserver.sh expects /data as the working directory.
         working_dir: Some("/data".to_owned()),
-        env: Some(p.extra_env.to_vec()),
+        env: Some(env),
         ports: Some(vec![
             ContainerPort {
                 container_port: i32::from(MC_PORT),
@@ -471,6 +483,25 @@ mod tests {
         assert_eq!(max.value.as_deref(), Some("4096M"));
         let init = env.iter().find(|e| e.name == "INIT_MEMORY").unwrap();
         assert_eq!(init.value.as_deref(), Some("1024M"));
+    }
+
+    #[test]
+    fn statefulset_carries_tz_env_for_log_timestamps() {
+        let sts = build_statefulset(&params());
+        let env = sts
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers[0]
+            .env
+            .as_ref()
+            .unwrap();
+        let tz = env.iter().find(|e| e.name == "TZ").unwrap();
+        assert_eq!(tz.value.as_deref(), Some("Europe/Zurich"));
     }
 
     #[test]
