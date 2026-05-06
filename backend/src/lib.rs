@@ -28,6 +28,7 @@ pub mod files;
 pub mod files_helper;
 pub mod k8s;
 pub mod k8s_builders;
+pub mod k8s_patches;
 pub mod k8s_status;
 pub mod modpack;
 pub mod players;

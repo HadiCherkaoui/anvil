@@ -30,6 +30,7 @@ use tokio::time::{Instant, sleep, timeout};
 use tracing::{Level, event};
 
 use crate::AppState;
+use crate::k8s_patches::patch_statefulset_env;
 use crate::k8s_status::RCON_PORT;
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::jobs::{build_backup_job, build_restore_job};
@@ -420,49 +421,6 @@ fn build_provider_for_version(
         }
         other => bail!("provider {other} cannot be swapped via env patch"),
     }
-}
-
-/// Patches the `StatefulSet`'s container env so the next pod start picks up
-/// the new `CF_FILE_ID` / `MODRINTH_VERSION` and itzg redownloads.
-///
-/// Strategic merge patches the `mc` container's env array. K8s strategic-
-/// merge keys the env array by `name` (per the `OpenAPI` extensions on the
-/// `Container` schema), so the call updates / inserts the env vars we send
-/// without touching unrelated entries the `StatefulSet` might still hold.
-/// The full env block is sent because the typical case is "everything
-/// matches except `CF_FILE_ID`" — sending the full block also covers the
-/// initial-create boot where the SS may be missing `CF_SLUG` entirely.
-async fn patch_statefulset_env(
-    client: &kube::Client,
-    ns: &str,
-    server_id: &str,
-    env: &[k8s_openapi::api::core::v1::EnvVar],
-) -> Result<()> {
-    let stsets: Api<StatefulSet> = Api::namespaced(client.clone(), ns);
-    let resource_name = format!("mc-{server_id}");
-    let patch = json!({
-        "spec": {
-            "template": {
-                "spec": {
-                    "containers": [
-                        {
-                            "name": "mc",
-                            "env": env,
-                        }
-                    ]
-                }
-            }
-        }
-    });
-    stsets
-        .patch(
-            &resource_name,
-            &PatchParams::default(),
-            &Patch::Strategic(&patch),
-        )
-        .await
-        .with_context(|| format!("patching env on StatefulSet {resource_name}"))?;
-    Ok(())
 }
 
 /// Best-effort RCON announce + save-all so the world flushes before stop.
