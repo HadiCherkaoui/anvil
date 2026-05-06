@@ -12,6 +12,7 @@ import { cn } from "../lib/cn";
 
 interface LiveLogPanelProps {
 	readonly serverId: string;
+	readonly enabled: boolean;
 }
 
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
@@ -29,8 +30,13 @@ const STATUS_DOT: Record<ConnectionStatus, string> = {
 	closed: "bg-text-faint",
 };
 
-export function LiveLogPanel({ serverId }: LiveLogPanelProps): ReactElement {
-	const { lines, status, lastError, endedReason } = useLogsStream(serverId);
+export function LiveLogPanel({
+	serverId,
+	enabled,
+}: LiveLogPanelProps): ReactElement {
+	const { lines, status, lastError, endedReason } = useLogsStream(serverId, {
+		enabled,
+	});
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const [autoScroll, setAutoScroll] = useState(true);
 
@@ -55,8 +61,14 @@ export function LiveLogPanel({ serverId }: LiveLogPanelProps): ReactElement {
 		setAutoScroll(true);
 	};
 
-	const statusText =
-		endedReason !== null ? `ended · ${friendlyEndReason(endedReason)}` : status;
+	const statusText = !enabled
+		? "server stopped"
+		: endedReason !== null
+			? `ended · ${friendlyEndReason(endedReason)}`
+			: status;
+	const emptyText = !enabled
+		? "(start the server to see logs)"
+		: "(waiting for log lines…)";
 
 	return (
 		<section className="flex flex-col gap-3 rounded-md border border-border bg-surface p-4">
@@ -88,7 +100,7 @@ export function LiveLogPanel({ serverId }: LiveLogPanelProps): ReactElement {
 				className="max-h-96 overflow-auto rounded-sm bg-bg p-3 font-mono text-[12px] leading-relaxed"
 			>
 				{lines.length === 0 ? (
-					<span className="text-text-faint">(waiting for log lines…)</span>
+					<span className="text-text-faint">{emptyText}</span>
 				) : (
 					lines.map((l) => (
 						<div key={l.key} className={LEVEL_CLASS[l.level]}>

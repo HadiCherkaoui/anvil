@@ -112,22 +112,31 @@ const NORMAL_CLOSE_CODE = 1000;
 
 export type UseLogsStreamOptions = {
 	readonly maxLines?: number;
+	readonly enabled?: boolean;
 };
 
 /// Subscribes to /api/servers/{id}/logs/stream and exposes a bounded
 /// in-memory log tail. Reconnects with exponential backoff on
 /// unexpected close. Cleans up on unmount.
+///
+/// When `enabled` is false (e.g. the server is stopped — no pod, no
+/// logs) the hook keeps the WebSocket closed and reports an idle
+/// snapshot. This avoids the 60s `wait_for_running` + reconnect-backoff
+/// loop that would otherwise spin forever against a missing pod.
 export function useLogsStream(
 	id: string,
 	options: UseLogsStreamOptions = {},
 ): UseLogsStreamResult {
 	const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
+	const enabled = options.enabled ?? true;
 	const [lines, setLines] = useState<readonly LogLine[]>([]);
 	const [status, setStatus] = useState<ConnectionStatus>("connecting");
 	const [lastError, setLastError] = useState<string | null>(null);
 	const [endedReason, setEndedReason] = useState<EndReason | null>(null);
 
 	useEffect(() => {
+		if (!enabled) return;
+
 		let cancelled = false;
 		let ws: WebSocket | null = null;
 		let backoff = BACKOFF_INITIAL_MS;
@@ -224,7 +233,10 @@ export function useLogsStream(
 			setStatus("closed");
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- maxLines is read once at mount; changing it mid-life would orphan buffered lines anyway
-	}, [id]);
+	}, [id, enabled]);
 
+	if (!enabled) {
+		return { lines: [], status: "closed", lastError: null, endedReason: null };
+	}
 	return { lines, status, lastError, endedReason };
 }
