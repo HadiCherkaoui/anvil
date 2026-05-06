@@ -11,14 +11,14 @@
 //! latest `ServerFiles` file from the `CurseForge` API and persists the
 //! provider config so the update orchestrator can re-instantiate it later.
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Secret, Service};
-use kube::Api;
 use kube::api::PostParams;
+use kube::Api;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -26,14 +26,13 @@ use uuid::Uuid;
 
 use std::collections::HashSet;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s_builders::{
-    BuildParams, build_headless_service, build_rcon_secret, build_service, build_statefulset,
-    rcon_password,
+    build_headless_service, build_rcon_secret, build_service, build_statefulset, rcon_password,
+    BuildParams,
 };
 use crate::modpack::curseforge::{AutoUpdateMode, Channel, Config as CfConfig};
-use crate::modpack::dep_resolver::{ResolveContext, resolve_required};
+use crate::modpack::dep_resolver::{resolve_required, ResolveContext};
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::modded::{Config as ModdedConfig, ModEntry, ModdedRuntime, PendingOp, Runtime};
 use crate::modpack::modrinth::{Config as MrPackConfig, ModrinthServerPack};
@@ -42,10 +41,12 @@ use crate::modpack::paper::{Config as PaperConfig, PaperServerProvider};
 use crate::modpack::{
     CurseForgeServerPack, ModpackHttp, ModpackProvider, ProviderContext, VanillaProvider,
 };
+use crate::server_properties::ServerProperties;
 use crate::validation::{
     validate_exposure_mode, validate_mc_version, validate_memory_mi, validate_mod_filename,
     validate_modrinth_id_or_slug, validate_name, validate_runtime, validate_storage_size_gi,
 };
+use crate::AppState;
 
 /// Lowest `NodePort` allocated by the panel.
 const NODEPORT_MIN: i32 = 30_000;
@@ -103,6 +104,11 @@ pub struct CreateRequest {
     /// `pending_plugins` and spawns the apply Job post-create.
     #[serde(default)]
     pub paper: Option<PaperCreateConfig>,
+    /// Curated subset of `server.properties` overrides. Missing => vanilla
+    /// defaults; itzg overlays the resulting env onto `server.properties`
+    /// on every pod start.
+    #[serde(default)]
+    pub properties: Option<ServerProperties>,
 }
 
 /// Sub-form fields for the Paper plugin pre-pick path.
@@ -185,6 +191,7 @@ pub async fn handle(
         modrinth,
         modded,
         paper,
+        properties,
     } = request;
     validate_name(&name)?;
     validate_memory_mi(memory_mi)?;
@@ -214,6 +221,13 @@ pub async fn handle(
 
     let storage_size_gi = storage_size_gi.unwrap_or(DEFAULT_STORAGE_SIZE_GI);
     validate_storage_size_gi(storage_size_gi)?;
+
+    // Properties default to vanilla MC values when the form omits them.
+    let properties = properties.unwrap_or_default();
+    properties.validate()?;
+    let properties_json =
+        serde_json::to_string(&properties).map_err(|e| AppError::Internal(e.into()))?;
+
     let storage_class = storage_class.filter(|s| !s.is_empty());
     let effective_storage_class = storage_class.clone().or_else(|| {
         if state.mc_storage_class.is_empty() {
@@ -278,6 +292,7 @@ pub async fn handle(
         storage_class.as_deref(),
         storage_size_gi,
         &resolved.source_config,
+        &properties_json,
         nodeport,
         now,
     )
@@ -295,6 +310,7 @@ pub async fn handle(
             "storage_size_gi": storage_size_gi,
             "nodeport": nodeport,
             "source_kind": resolved.source_kind,
+            "properties": &properties,
         })),
         now,
     )
@@ -305,7 +321,8 @@ pub async fn handle(
         server_id: &id,
         memory_mi,
     };
-    let extra_env = resolved.provider.extra_env(&ctx);
+    let mut extra_env = resolved.provider.extra_env(&ctx);
+    extra_env.extend(properties.to_env());
     let command_owned = resolved.provider.launch_command();
     let build_params = BuildParams {
         id: &id,
@@ -756,6 +773,7 @@ async fn insert_server(
     storage_class: Option<&str>,
     storage_size_gi: i64,
     source_config: &str,
+    properties_json: &str,
     nodeport: Option<i32>,
     created_at: i64,
 ) -> Result<(), AppError> {
@@ -763,8 +781,8 @@ async fn insert_server(
         "INSERT INTO servers (
             id, name, mc_version, memory_mi,
             exposure_mode, storage_class, storage_size_gi, source_config,
-            source_kind, nodeport, created_at, last_started_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            source_kind, properties, nodeport, created_at, last_started_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
     )
     .bind(id)
     .bind(name)
@@ -775,6 +793,7 @@ async fn insert_server(
     .bind(storage_size_gi)
     .bind(source_config)
     .bind(source_kind)
+    .bind(properties_json)
     .bind(nodeport.map(i64::from))
     .bind(created_at)
     .execute(pool)
@@ -828,6 +847,7 @@ mod tests {
             "nodeport",
             None,
             10,
+            "{}",
             "{}",
             nodeport,
             0,
@@ -920,6 +940,7 @@ mod tests {
             Some("tank"),
             20,
             r#"{"project_id":1148445}"#,
+            "{}",
             None,
             1,
         )
