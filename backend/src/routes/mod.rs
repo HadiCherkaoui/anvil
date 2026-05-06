@@ -51,6 +51,10 @@ pub fn stateless_router() -> Router {
 }
 
 /// Internal: routes that exercise [`AppState`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "flat list of route registrations; splitting would add indirection without clarity"
+)]
 fn api_routes(state: AppState) -> Router<AppState> {
     let public = Router::new()
         .route("/api/health", get(health::get))
@@ -89,6 +93,10 @@ fn api_routes(state: AppState) -> Router<AppState> {
         .route(
             "/api/servers/{id}/settings",
             axum::routing::patch(servers::settings::handle),
+        )
+        .route(
+            "/api/servers/{id}/storage",
+            axum::routing::patch(servers::storage::handle),
         )
         .route("/api/servers/{id}/mods", post(servers::mods::add_pending))
         .route(

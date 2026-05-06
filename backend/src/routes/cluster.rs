@@ -64,10 +64,24 @@ pub fn new_cache() -> CapabilitiesCache {
 /// Returns [`AppError::KubeUnavailable`] if listing `StorageClass`es
 /// fails. Cached responses never error.
 pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabilities>, AppError> {
-    if let Some(cached) = read_cache(&state.capabilities_cache) {
-        return Ok(Json(cached));
-    }
+    Ok(Json(current_caps(&state).await?))
+}
 
+/// Returns the current [`ClusterCapabilities`], serving from the in-memory
+/// cache when fresh and otherwise listing `StorageClass`es from the cluster.
+///
+/// Used both by [`handle`] and by handlers that need to know whether the
+/// server's SC is in `expandable_storage_classes` (e.g. the PVC resize
+/// endpoint).
+///
+/// # Errors
+///
+/// Returns [`AppError::KubeUnavailable`] if listing `StorageClass`es fails
+/// on a cache miss.
+pub async fn current_caps(state: &AppState) -> Result<ClusterCapabilities, AppError> {
+    if let Some(cached) = read_cache(&state.capabilities_cache) {
+        return Ok(cached);
+    }
     let storage_classes: Api<StorageClass> = Api::all(state.kube.clone());
     let lp = ListParams::default();
     let list = storage_classes.list(&lp).await?;
@@ -77,7 +91,7 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabil
         state.cf_client.is_some(),
     );
     write_cache(&state.capabilities_cache, &caps);
-    Ok(Json(caps))
+    Ok(caps)
 }
 
 /// Reduces a `StorageClass` list to the panel's [`ClusterCapabilities`] view.

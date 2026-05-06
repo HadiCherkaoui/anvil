@@ -20,6 +20,7 @@ pub mod restart;
 pub mod settings;
 pub mod start;
 pub mod stop;
+pub mod storage;
 pub mod update;
 pub mod update_stream;
 
