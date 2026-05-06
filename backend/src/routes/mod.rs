@@ -148,6 +148,10 @@ fn api_routes(state: AppState) -> Router<AppState> {
             "/api/servers/{id}/files/action",
             post(servers::files::action),
         )
+        .route(
+            "/api/servers/{id}/files/helper",
+            axum::routing::delete(servers::files::kill_helper),
+        )
         .route("/api/cluster/capabilities", get(cluster::handle))
         .route("/api/cluster/mc-versions", get(mc_versions::handle))
         .route(

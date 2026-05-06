@@ -5,18 +5,18 @@
 //! absent (returns `Ok(None)` to the join). Status and endpoint are
 //! derived in [`crate::k8s_status`].
 
-use axum::Json;
 use axum::extract::{Path, State};
+use axum::Json;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::Api;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::{Endpoint, ServerStatus};
 use crate::k8s_status::{derive_endpoint, derive_status};
+use crate::AppState;
 
 /// Detail body for `GET /api/servers/:id`.
 #[derive(Debug, Serialize)]
@@ -45,6 +45,10 @@ pub struct ServerDetail {
     pub latest_version_name: Option<String>,
     /// `true` while the orchestrator is mid-update for this server.
     pub update_in_progress: bool,
+    /// `true` when the file-helper Pod (`mc-{id}-files`) exists and is not
+    /// mid-deletion. The frontend uses this to surface a manual "stop file
+    /// viewer" control on stopped servers.
+    pub files_helper_running: bool,
 }
 
 /// Handler for `GET /api/servers/:id`.
@@ -90,19 +94,25 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
 
     let resource_name = format!("mc-{id}");
     let pod_name = format!("{resource_name}-0");
+    let helper_name = format!("{resource_name}-files");
 
     let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let services: Api<Service> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
 
-    let (sts_res, pod_res, svc_res) = tokio::join!(
+    let (sts_res, pod_res, svc_res, helper_res) = tokio::join!(
         stsets.get_opt(&resource_name),
         pods.get_opt(&pod_name),
         services.get_opt(&resource_name),
+        pods.get_opt(&helper_name),
     );
     let sts = sts_res?;
     let pod = pod_res?;
     let svc = svc_res?;
+    let files_helper_running = helper_res
+        .ok()
+        .flatten()
+        .is_some_and(|p| p.metadata.deletion_timestamp.is_none());
 
     let (replicas, ready) = sts.as_ref().map_or((0, 0), |s| {
         let r = s.spec.as_ref().and_then(|sp| sp.replicas).unwrap_or(0);
@@ -172,6 +182,7 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         latest_version_id,
         latest_version_name,
         update_in_progress,
+        files_helper_running,
     })
 }
 

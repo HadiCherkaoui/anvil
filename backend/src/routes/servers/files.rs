@@ -5,25 +5,29 @@
 //! path(s) → exec the appropriate command → audit (mutating only) →
 //! respond.
 
-use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use chrono::Utc;
+use k8s_openapi::api::apps::v1::StatefulSet;
+use k8s_openapi::api::core::v1::Pod;
+use kube::Api;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::files::{
-    FileListResponse, LIST_SCRIPT, is_enotdir_sentinel, parse_list_output, parse_stat_size,
+    is_enotdir_sentinel, parse_list_output, parse_stat_size, FileListResponse, LIST_SCRIPT,
 };
 use crate::files_helper::{
     pod_exec_capture, pod_exec_stream_in, pod_exec_stream_out, target_pod_for_files,
+    tear_down_helper,
 };
 use crate::routes::servers::create::insert_audit;
 use crate::validation::validate_data_path;
+use crate::AppState;
 
 /// 100 MiB upload cap (sub-project D scope) as bytes.
 pub const UPLOAD_CAP_BYTES: u64 = 100 * 1024 * 1024;
@@ -392,4 +396,54 @@ async fn action_delete(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/servers/{id}/files/helper` — manual file-helper teardown.
+///
+/// The helper Pod (`mc-{id}-files`) auto-tears-down on server start; this
+/// endpoint exists for the case where the user is done browsing files on a
+/// stopped server and wants the helper gone before they (eventually) start.
+///
+/// # Errors
+///
+/// - 404 — server row missing.
+/// - 409 `helper_unsafe_to_kill` — the `StatefulSet` has `replicas > 0`,
+///   meaning the MC server is (or is about to be) running and the helper
+///   may have files mid-write.
+/// - 500 — kube transport / wait timeout.
+pub async fn kill_helper(
+    State(state): State<AppState>,
+    Path(server_id): Path<String>,
+) -> Result<Response, AppError> {
+    let ss_api: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
+    let ss = ss_api
+        .get_opt(&format!("mc-{server_id}"))
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let replicas = ss.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+    if replicas > 0 {
+        return Err(AppError::Conflict {
+            code: "helper_unsafe_to_kill",
+            message: "stop the server first".to_owned(),
+        });
+    }
+
+    let pod_api: Api<Pod> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
+    let helper_name = format!("mc-{server_id}-files");
+    let exists = pod_api.get_opt(&helper_name).await?.is_some();
+    if !exists {
+        return Ok((StatusCode::OK, Json(json!({ "already_gone": true }))).into_response());
+    }
+    tear_down_helper(&state, &server_id).await?;
+
+    insert_audit(
+        &state.pool,
+        &server_id,
+        "files.helper.kill",
+        None,
+        Utc::now().timestamp(),
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
