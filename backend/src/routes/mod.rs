@@ -128,6 +128,18 @@ fn api_routes(state: AppState) -> Router<AppState> {
             "/api/servers/{id}/plugins/apply/stream",
             get(servers::plugins::apply_stream),
         )
+        .route(
+            "/api/servers/{id}/backups",
+            post(servers::backups::create).get(servers::backups::list),
+        )
+        .route(
+            "/api/servers/{id}/backups/{backup_id}/restore",
+            post(servers::backups::restore),
+        )
+        .route(
+            "/api/servers/{id}/backups/{backup_id}",
+            axum::routing::delete(servers::backups::delete),
+        )
         .route("/api/servers/{id}/metrics", get(servers::metrics::handle))
         .route(
             "/api/servers/{id}/players",

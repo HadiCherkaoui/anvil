@@ -5,6 +5,7 @@
 //! `SQLite` metadata with the live `StatefulSet` / `Pod` / `Service`
 //! triples, returning the M2 wire shape.
 
+pub mod backups;
 pub mod create;
 pub mod delete;
 pub mod files;

@@ -6,14 +6,19 @@
 //! restore-time config in `SQLite` so a restore can revert `mc_version`,
 //! memory, source kind/config, and `StatefulSet` env in one shot.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context as _, Result};
 use chrono::Utc;
+use k8s_openapi::api::batch::v1::{Job, JobSpec};
+use k8s_openapi::api::core::v1::{
+    Container, EnvVar, PersistentVolumeClaimVolumeSource, PodSpec, PodTemplateSpec, Volume,
+    VolumeMount,
+};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde_json::json;
 use uuid::Uuid;
-
-use k8s_openapi::api::core::v1::EnvVar;
 
 use crate::k8s_patches::patch_statefulset_env;
 use crate::modpack::guard::UpdateGuard;
@@ -424,5 +429,139 @@ fn build_runtime_env_from_snapshot(snap: &BackupSnapshot, server_id: &str) -> Re
             Ok(p.extra_env(&ctx))
         }
         other => Err(anyhow!("unsupported source_kind {other}")),
+    }
+}
+
+/// Builds a one-shot busybox Job that removes the manual backup tarball
+/// for `backup_id`. Mounts only the snapshots PVC; idempotent (`rm -f`).
+#[must_use]
+pub fn build_delete_job(
+    server_id: &str,
+    backup_id: &str,
+    namespace: &str,
+    snapshots_pvc: &str,
+) -> Job {
+    let cmd = format!(
+        "rm -f /snap/mc-{server_id}/manual/{backup_id}.tgz; \
+         echo deleted /snap/mc-{server_id}/manual/{backup_id}.tgz"
+    );
+    small_pvc_job(
+        &format!("backup-delete-{backup_id}"),
+        namespace,
+        snapshots_pvc,
+        &cmd,
+    )
+}
+
+/// Builds a one-shot busybox Job that removes the per-server `manual/`
+/// subdir on the snapshots PVC. Used by the server delete cascade.
+#[must_use]
+pub fn build_dir_cleanup_job(server_id: &str, namespace: &str, snapshots_pvc: &str) -> Job {
+    let cmd = format!(
+        "rm -rf /snap/mc-{server_id}/manual; \
+         echo cleaned /snap/mc-{server_id}/manual"
+    );
+    small_pvc_job(
+        &format!("backup-cleanup-{server_id}"),
+        namespace,
+        snapshots_pvc,
+        &cmd,
+    )
+}
+
+/// Constructs a busybox Job that mounts the snapshots PVC at `/snap` and
+/// runs the given shell command. Backed by the same image / `RestartPolicy`
+/// pattern the orchestrator's backup Jobs use.
+fn small_pvc_job(name: &str, namespace: &str, snapshots_pvc: &str, cmd: &str) -> Job {
+    let mut labels = BTreeMap::new();
+    labels.insert("app.kubernetes.io/name".to_owned(), "anvil".to_owned());
+    let container = Container {
+        name: "rm".to_owned(),
+        image: Some("busybox:1.36".to_owned()),
+        command: Some(vec!["sh".to_owned(), "-c".to_owned(), cmd.to_owned()]),
+        volume_mounts: Some(vec![VolumeMount {
+            name: "snap".to_owned(),
+            mount_path: "/snap".to_owned(),
+            ..VolumeMount::default()
+        }]),
+        ..Container::default()
+    };
+    Job {
+        metadata: ObjectMeta {
+            name: Some(name.to_owned()),
+            namespace: Some(namespace.to_owned()),
+            labels: Some(labels.clone()),
+            ..ObjectMeta::default()
+        },
+        spec: Some(JobSpec {
+            backoff_limit: Some(0),
+            ttl_seconds_after_finished: Some(60),
+            template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(labels),
+                    ..ObjectMeta::default()
+                }),
+                spec: Some(PodSpec {
+                    restart_policy: Some("Never".to_owned()),
+                    containers: vec![container],
+                    volumes: Some(vec![Volume {
+                        name: "snap".to_owned(),
+                        persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                            claim_name: snapshots_pvc.to_owned(),
+                            ..PersistentVolumeClaimVolumeSource::default()
+                        }),
+                        ..Volume::default()
+                    }]),
+                    ..PodSpec::default()
+                }),
+            },
+            ..JobSpec::default()
+        }),
+        status: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extract_command(j: &Job) -> String {
+        j.spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers[0]
+            .command
+            .as_ref()
+            .unwrap()[2]
+            .clone()
+    }
+
+    #[test]
+    fn delete_job_targets_manual_subdir() {
+        let j = build_delete_job("abc", "bk-uuid", "mc", "mc-snapshots");
+        let cmd = extract_command(&j);
+        assert!(cmd.contains("/snap/mc-abc/manual/bk-uuid.tgz"));
+        assert_eq!(j.metadata.name.as_deref(), Some("backup-delete-bk-uuid"));
+    }
+
+    #[test]
+    fn cleanup_job_wipes_manual_dir() {
+        let j = build_dir_cleanup_job("abc", "mc", "mc-snapshots");
+        let cmd = extract_command(&j);
+        assert!(cmd.contains("rm -rf /snap/mc-abc/manual"));
+        assert_eq!(j.metadata.name.as_deref(), Some("backup-cleanup-abc"));
+    }
+
+    #[test]
+    fn small_pvc_job_mounts_snapshots_pvc() {
+        let j = build_delete_job("abc", "bk-uuid", "mc", "mc-snapshots");
+        let v = j.spec.unwrap().template.spec.unwrap().volumes.unwrap();
+        let snap = v.iter().find(|x| x.name == "snap").unwrap();
+        let pvc = snap.persistent_volume_claim.as_ref().unwrap();
+        assert_eq!(pvc.claim_name, "mc-snapshots");
     }
 }
