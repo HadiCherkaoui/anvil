@@ -929,6 +929,85 @@ export async function broadcastMessage(
 	await noContentOrThrow(res);
 }
 
+// --- backups (Spec 5) ----------------------------------------------------
+
+export const backupSchema = z.object({
+	id: z.string(),
+	name: z.string().nullable(),
+	created_at: z.number().int(),
+	mc_version: z.string(),
+	size_bytes: z.number().int().nullable(),
+});
+
+export type Backup = z.infer<typeof backupSchema>;
+
+const backupListSchema = z.array(backupSchema);
+
+const createBackupResponseSchema = z.object({
+	status: z.string(),
+	backup_id: z.string(),
+});
+
+const startedResponseSchema = z.object({ status: z.string() });
+
+/// Lists manual backups for a server, newest first.
+export async function fetchBackups(
+	serverId: string,
+	signal?: AbortSignal,
+): Promise<readonly Backup[]> {
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/backups`,
+		init,
+	);
+	return jsonOrThrow(res, backupListSchema);
+}
+
+/// Kicks off a new manual backup. The /update/stream WS surfaces phases.
+export async function createBackup(
+	serverId: string,
+	name?: string,
+): Promise<{ status: string; backup_id: string }> {
+	const body =
+		name !== undefined && name.length > 0
+			? JSON.stringify({ name })
+			: JSON.stringify({});
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/backups`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body,
+		},
+	);
+	return jsonOrThrow(res, createBackupResponseSchema);
+}
+
+/// Starts a restore from a manual backup. Reuses /update/stream for phases.
+export async function restoreBackup(
+	serverId: string,
+	backupId: string,
+): Promise<{ status: string }> {
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/backups/${encodeURIComponent(backupId)}/restore`,
+		{ method: "POST" },
+	);
+	return jsonOrThrow(res, startedResponseSchema);
+}
+
+/// Synchronously deletes a manual backup (the Job runs + waits server-side;
+/// `rm` over a mounted PVC is sub-second). 204 on success.
+export async function deleteBackup(
+	serverId: string,
+	backupId: string,
+): Promise<void> {
+	const res = await fetch(
+		`/api/servers/${encodeURIComponent(serverId)}/backups/${encodeURIComponent(backupId)}`,
+		{ method: "DELETE" },
+	);
+	await noContentOrThrow(res);
+}
+
 // --- Sub-project D: file browser ----------------------------------------
 
 export const fileEntryTypeSchema = z.enum(["f", "d", "l", "o"]);

@@ -30,6 +30,7 @@ function labels(target: ApplyTarget): Record<UpdatePhase, string> {
 		starting: "starting",
 		verifying: "verifying",
 		succeeded: "succeeded",
+		restoring: "restoring",
 		"rolling-back": "rolling back",
 		"rolled-back": "rolled back",
 		failed: "failed",

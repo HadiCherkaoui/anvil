@@ -25,6 +25,7 @@ import { Tabs, type Tab } from "../components/Tabs";
 import { useToast } from "../components/Toast";
 import { UpdateSheet } from "../components/UpdateSheet";
 
+import { BackupsBody } from "./tabs/BackupsBody";
 import { ConsoleBody } from "./tabs/ConsoleBody";
 import { FilesBody } from "./tabs/FilesBody";
 import { ModsBody } from "./tabs/ModsBody";
@@ -34,13 +35,21 @@ import { SettingsBody } from "./tabs/SettingsBody";
 
 const POLL_INTERVAL_MS = 5_000;
 
-type TabId = "overview" | "console" | "mods" | "players" | "files" | "settings";
+type TabId =
+	| "overview"
+	| "console"
+	| "mods"
+	| "players"
+	| "backups"
+	| "files"
+	| "settings";
 
 const TAB_IDS: ReadonlyArray<TabId> = [
 	"overview",
 	"console",
 	"mods",
 	"players",
+	"backups",
 	"files",
 	"settings",
 ];
@@ -193,6 +202,7 @@ export function ServerDetailView(): ReactElement {
 				: {}),
 		},
 		{ id: "players", label: "players", href: tabHref("players") },
+		{ id: "backups", label: "backups", href: tabHref("backups") },
 		{ id: "files", label: "files", href: tabHref("files") },
 		{ id: "settings", label: "settings", href: tabHref("settings") },
 	];
@@ -321,6 +331,7 @@ export function ServerDetailView(): ReactElement {
 					{tab === "console" && <ConsoleBody />}
 					{tab === "mods" && <ModsBody />}
 					{tab === "players" && <PlayersBody />}
+					{tab === "backups" && <BackupsBody />}
 					{tab === "files" && <FilesBody />}
 					{tab === "settings" && <SettingsBody />}
 				</div>
