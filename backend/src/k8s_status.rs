@@ -58,7 +58,10 @@ pub fn derive_status(replicas: i32, ready_replicas: i32, pod: Option<&Pod>) -> S
     ServerStatus::Starting
 }
 
-/// Returns `true` if any container is waiting with one of the [`ERROR_REASONS`].
+/// Returns `true` if any container is in a terminal failure: either waiting
+/// with one of the [`ERROR_REASONS`], or restarted at least once and not yet
+/// ready (catches the window between a crash and `CrashLoopBackOff` taking
+/// over).
 fn pod_in_error_state(pod: &Pod) -> bool {
     let Some(status) = pod.status.as_ref() else {
         return false;
@@ -67,11 +70,14 @@ fn pod_in_error_state(pod: &Pod) -> bool {
         return false;
     };
     statuses.iter().any(|cs| {
-        cs.state
+        let waiting_error = cs
+            .state
             .as_ref()
             .and_then(|st| st.waiting.as_ref())
             .and_then(|w| w.reason.as_deref())
-            .is_some_and(|r| ERROR_REASONS.contains(&r))
+            .is_some_and(|r| ERROR_REASONS.contains(&r));
+        let restarted_unready = cs.restart_count > 0 && !cs.ready;
+        waiting_error || restarted_unready
     })
 }
 
@@ -159,6 +165,22 @@ mod tests {
         }
     }
 
+    fn make_pod_with_restart_count(restart_count: i32, ready: bool) -> Pod {
+        Pod {
+            status: Some(PodStatus {
+                container_statuses: Some(vec![ContainerStatus {
+                    name: "mc".to_owned(),
+                    restart_count,
+                    ready,
+                    state: Some(ContainerState::default()),
+                    ..ContainerStatus::default()
+                }]),
+                ..PodStatus::default()
+            }),
+            ..Pod::default()
+        }
+    }
+
     #[test]
     fn replicas_zero_no_pod_is_stopped() {
         assert_eq!(derive_status(0, 0, None), ServerStatus::Stopped);
@@ -204,6 +226,25 @@ mod tests {
     #[test]
     fn replicas_one_pod_pending_is_starting() {
         let pod = make_pod_with_waiting("PodInitializing");
+        assert_eq!(derive_status(1, 0, Some(&pod)), ServerStatus::Starting);
+    }
+
+    #[test]
+    fn replicas_one_restart_count_unready_is_error() {
+        let pod = make_pod_with_restart_count(1, false);
+        assert_eq!(derive_status(1, 0, Some(&pod)), ServerStatus::Error);
+    }
+
+    #[test]
+    fn replicas_one_restart_count_ready_is_running() {
+        // ready_replicas short-circuits to Running before pod_in_error_state runs.
+        let pod = make_pod_with_restart_count(2, true);
+        assert_eq!(derive_status(1, 1, Some(&pod)), ServerStatus::Running);
+    }
+
+    #[test]
+    fn replicas_one_zero_restarts_no_error_reason_is_starting() {
+        let pod = make_pod_with_restart_count(0, false);
         assert_eq!(derive_status(1, 0, Some(&pod)), ServerStatus::Starting);
     }
 
