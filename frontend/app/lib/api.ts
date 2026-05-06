@@ -147,6 +147,7 @@ export const modEntrySchema = z.object({
 export const moddedCreateSchema = z.object({
 	runtime: runtimeSchema,
 	initial_mods: z.array(modEntrySchema).default([]),
+	loader_version: z.string().min(1).optional(),
 });
 
 export const createServerRequestSchema = z.object({
@@ -195,6 +196,13 @@ export const settingsRequestSchema = z.object({
 	force_version: z.string().nullable().optional(),
 });
 
+// --- loader versions (Forge / NeoForge maven-metadata) -------------------
+
+export const loaderVersionsSchema = z.object({
+	mc_versions: z.array(z.string()),
+	by_mc: z.record(z.string(), z.array(z.string())),
+});
+
 // --- inferred types -------------------------------------------------------
 
 export type ServerSummary = z.infer<typeof serverSummarySchema>;
@@ -210,6 +218,7 @@ export type AutoUpdateMode = z.infer<typeof autoUpdateModeSchema>;
 export type SettingsRequest = z.infer<typeof settingsRequestSchema>;
 export type UpdateStartResponse = z.infer<typeof updateStartResponseSchema>;
 export type McVersionsResponse = z.infer<typeof mcVersionsResponseSchema>;
+export type LoaderVersions = z.infer<typeof loaderVersionsSchema>;
 
 // --- typed error wrapper --------------------------------------------------
 
@@ -317,6 +326,15 @@ export async function fetchMcVersions(
 	const init: RequestInit = signal ? { signal } : {};
 	const res = await fetch("/api/cluster/mc-versions", init);
 	return jsonOrThrow(res, mcVersionsResponseSchema);
+}
+
+export async function fetchLoaderVersions(
+	runtime: "forge" | "neoforge",
+	signal?: AbortSignal,
+): Promise<LoaderVersions> {
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch(`/api/runtimes/${runtime}/versions`, init);
+	return jsonOrThrow(res, loaderVersionsSchema);
 }
 
 export async function fetchLogs(

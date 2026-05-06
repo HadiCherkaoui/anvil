@@ -21,6 +21,7 @@ import {
 	type ModEntry,
 	type Runtime,
 } from "../../lib/api";
+import { useLoaderVersions } from "../../lib/use-loader-versions";
 import { useMcVersions } from "../../lib/use-mc-versions";
 
 import {
@@ -70,6 +71,7 @@ const INITIAL: CreateDraft = {
 	modrinth: null,
 	runtime: null,
 	initial_mods: [],
+	loader_version: null,
 };
 
 function buildExposureOptions(
@@ -190,6 +192,7 @@ export default function NewServerPage(): ReactElement {
 		}
 		set("runtime", next);
 		set("initial_mods", []);
+		set("loader_version", null);
 	};
 
 	const switchMcWithGuard = (next: string | null): void => {
@@ -204,7 +207,10 @@ export default function NewServerPage(): ReactElement {
 			return;
 		}
 		set("mc_version", next);
-		if (draft.type === "modded") set("initial_mods", []);
+		if (draft.type === "modded") {
+			set("initial_mods", []);
+			set("loader_version", null);
+		}
 	};
 
 	const submit = (): void => {
@@ -257,6 +263,9 @@ export default function NewServerPage(): ReactElement {
 						modded: {
 							runtime: draft.runtime,
 							initial_mods: draft.initial_mods,
+							...(effectiveLoaderVersion !== null
+								? { loader_version: effectiveLoaderVersion }
+								: {}),
 						},
 					}
 				: {}),
@@ -277,6 +286,34 @@ export default function NewServerPage(): ReactElement {
 				setSubmitting(false);
 			});
 	};
+
+	const loaderRuntime: "forge" | "neoforge" | null =
+		draft.type === "modded" &&
+		(draft.runtime === "forge" || draft.runtime === "neoforge")
+			? draft.runtime
+			: null;
+	const loaderVs = useLoaderVersions(loaderRuntime);
+	const moddedMcOptions: readonly string[] = useMemo(
+		() =>
+			loaderRuntime !== null
+				? (loaderVs?.mc_versions ?? [])
+				: (versions?.versions ?? []),
+		[loaderRuntime, loaderVs, versions],
+	);
+	const loaderChoicesForMc: readonly string[] = useMemo(
+		() =>
+			loaderRuntime !== null && draft.mc_version !== null
+				? (loaderVs?.by_mc[draft.mc_version] ?? [])
+				: [],
+		[loaderRuntime, draft.mc_version, loaderVs],
+	);
+	// Default to the newest loader for the current MC when the user hasn't
+	// picked one explicitly. Derived rather than stored to avoid a setState-
+	// in-effect dance — the request submit reads this directly.
+	const effectiveLoaderVersion: string | null =
+		loaderRuntime !== null && draft.mc_version !== null
+			? (draft.loader_version ?? loaderChoicesForMc[0] ?? null)
+			: null;
 
 	const browseMode: "modpack" | "mod" =
 		draft.type === "modded" ? "mod" : "modpack";
@@ -349,27 +386,61 @@ export default function NewServerPage(): ReactElement {
 								/>
 							) : draft.type === "modded" ? (
 								<div className="flex flex-col gap-3">
-									<div>
-										<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
-											runtime
-										</label>
-										<SegmentedControl
-											ariaLabel="modded runtime"
-											value={draft.runtime ?? "fabric"}
-											onChange={(v) => {
-												switchRuntimeWithGuard(v);
-											}}
-											options={RUNTIME_OPTIONS}
-										/>
-									</div>
+									{draft.runtime !== null && (
+										<div>
+											<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+												runtime
+											</label>
+											<SegmentedControl
+												ariaLabel="modded runtime"
+												value={draft.runtime}
+												onChange={(v) => {
+													switchRuntimeWithGuard(v);
+												}}
+												options={RUNTIME_OPTIONS}
+											/>
+										</div>
+									)}
+									{loaderRuntime !== null && loaderVs === null && (
+										<p className="font-mono text-[11px] text-text-faint">
+											loading {loaderRuntime} versions…
+										</p>
+									)}
 									<McVersionPicker
 										value={draft.mc_version}
 										onChange={(v) => {
 											switchMcWithGuard(v);
 										}}
-										versions={versions?.versions ?? []}
-										showFallbackWarning={versions?.source === "fallback"}
+										versions={moddedMcOptions}
+										showFallbackWarning={
+											loaderRuntime === null &&
+											versions?.source === "fallback"
+										}
 									/>
+									{loaderRuntime !== null && draft.mc_version !== null && (
+										<div>
+											<label className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-text-muted">
+												{loaderRuntime} version
+											</label>
+											<select
+												value={effectiveLoaderVersion ?? ""}
+												onChange={(e) => {
+													set(
+														"loader_version",
+														e.target.value === "" ? null : e.target.value,
+													);
+												}}
+												className="rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-[12px] text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+											>
+												<option value="">— select —</option>
+												{loaderChoicesForMc.map((v) => (
+													<option key={v} value={v}>
+														{v}
+													</option>
+												))}
+											</select>
+										</div>
+									)}
 									<div className="flex items-center gap-2">
 										<Button
 											onClick={() => {

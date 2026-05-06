@@ -112,6 +112,10 @@ pub struct ModdedCreateConfig {
     /// as Add ops so the Mods tab shows "N pending — apply now" on first load.
     #[serde(default)]
     pub initial_mods: Vec<ModEntry>,
+    /// Forge / NeoForge loader version chosen from the cascading picker.
+    /// `None` keeps itzg's default (`*_VERSION=LATEST`); fabric ignores it.
+    #[serde(default)]
+    pub loader_version: Option<String>,
 }
 
 /// Sub-form fields for the `CurseForge` path.
@@ -511,10 +515,11 @@ fn resolve_modded(
             mod_entry: m.clone(),
         })
         .collect();
+    let loader_version = cfg.loader_version.filter(|s| !s.is_empty());
     let stored = ModdedConfig {
         runtime,
         mc_version: mc_v.clone(),
-        loader_version: None,
+        loader_version,
         mods: Vec::new(),
         pending,
     };

@@ -23,6 +23,9 @@ export interface CreateDraft {
 	modrinth: { project_id: string; channel: CfChannel } | null;
 	runtime: Runtime | null;
 	initial_mods: ModEntry[];
+	/// Forge / NeoForge loader version chosen from the cascading picker.
+	/// `null` means "use itzg's LATEST"; fabric ignores this.
+	loader_version: string | null;
 }
 
 export const CreateFormContext = createContext<CreateDraft | null>(null);
