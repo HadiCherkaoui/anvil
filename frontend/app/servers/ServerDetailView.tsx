@@ -186,7 +186,7 @@ export function ServerDetailView(): ReactElement {
 		{ id: "console", label: "console", href: tabHref("console") },
 		{
 			id: "mods",
-			label: "mods",
+			label: detail.source_kind === "paper" ? "plugins" : "mods",
 			href: tabHref("mods"),
 			...(detail.update_available ? { mark: true } : {}),
 		},
