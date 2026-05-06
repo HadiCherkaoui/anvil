@@ -54,11 +54,11 @@ fn read_versions(xml: &str) -> Result<Vec<String>> {
     Ok(m.versioning.versions.version)
 }
 
-/// Parses a NeoForge `maven-metadata.xml` and groups loader versions by the
-/// MC version they target. Beta entries (`*-beta` suffix) are dropped.
+/// Parses a `NeoForge` `maven-metadata.xml` and groups loader versions by
+/// the MC version they target. Beta entries (`*-beta` suffix) are dropped.
 ///
-/// NeoForge versions follow `<a>.<b>.<c>` where `1.<a>.<b>` is the MC version
-/// (e.g. `21.4.81` ⇒ `1.21.4`).
+/// `NeoForge` versions follow `<a>.<b>.<c>` where `1.<a>.<b>` is the MC
+/// version (e.g. `21.4.81` ⇒ `1.21.4`).
 ///
 /// # Errors
 ///
