@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, bail};
-use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
+use anyhow::{bail, Context as _, Result};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
@@ -60,6 +60,19 @@ pub struct MrVersion {
     pub game_versions: Vec<String>,
     pub date_published: String,
     pub files: Vec<MrFile>,
+    #[serde(default)]
+    pub dependencies: Vec<MrDependency>,
+}
+
+/// One entry in [`MrVersion::dependencies`].
+///
+/// `dependency_type` is `"required"` | `"optional"` | `"incompatible"` | `"embedded"`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MrDependency {
+    pub version_id: Option<String>,
+    pub project_id: Option<String>,
+    pub file_name: Option<String>,
+    pub dependency_type: String,
 }
 
 /// One file inside an [`MrVersion`].
@@ -320,6 +333,38 @@ mod tests {
         assert_eq!(v[0].id, "8VJ4TfX1");
         assert_eq!(v[0].files[0].filename, "sodium-fabric-0.5.13.jar");
         assert_eq!(v[0].files[0].hashes.sha512.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn parses_dependency_array() {
+        let body = r#"{
+            "id": "ver1", "project_id": "proj1", "name": "X",
+            "version_number": "1.0.0", "version_type": "release",
+            "loaders": ["fabric"], "game_versions": ["1.21.4"],
+            "date_published": "2026-01-01T00:00:00Z",
+            "files": [],
+            "dependencies": [
+                {"version_id": null, "project_id": "fabric-api", "file_name": null, "dependency_type": "required"},
+                {"version_id": "ver-x", "project_id": null, "file_name": null, "dependency_type": "optional"}
+            ]
+        }"#;
+        let v: MrVersion = serde_json::from_str(body).expect("parses");
+        assert_eq!(v.dependencies.len(), 2);
+        assert_eq!(v.dependencies[0].project_id.as_deref(), Some("fabric-api"));
+        assert_eq!(v.dependencies[0].dependency_type, "required");
+        assert_eq!(v.dependencies[1].version_id.as_deref(), Some("ver-x"));
+        assert_eq!(v.dependencies[1].dependency_type, "optional");
+    }
+
+    #[test]
+    fn missing_dependency_array_is_empty() {
+        let body = r#"{
+            "id": "v", "project_id": "p", "name": "X", "version_number": "1",
+            "version_type": "release", "loaders": [], "game_versions": [],
+            "date_published": "2026-01-01T00:00:00Z", "files": []
+        }"#;
+        let v: MrVersion = serde_json::from_str(body).expect("parses");
+        assert!(v.dependencies.is_empty());
     }
 
     #[test]

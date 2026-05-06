@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 
@@ -172,6 +172,7 @@ mod tests {
                 primary: true,
                 hashes: MrHashes::default(),
             }],
+            dependencies: Vec::new(),
         }
     }
 
