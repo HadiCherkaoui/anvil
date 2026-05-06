@@ -25,6 +25,47 @@ export const exposureModeSchema = z.enum([
 	"clusterip",
 ]);
 
+// --- server.properties subset --------------------------------------------
+
+export const difficultySchema = z.enum([
+	"peaceful",
+	"easy",
+	"normal",
+	"hard",
+]);
+export const gamemodeSchema = z.enum([
+	"survival",
+	"creative",
+	"adventure",
+	"spectator",
+]);
+
+export const serverPropertiesSchema = z.object({
+	difficulty: difficultySchema.default("normal"),
+	hardcore: z.boolean().default(false),
+	gamemode: gamemodeSchema.default("survival"),
+	force_gamemode: z.boolean().default(false),
+	max_players: z.number().int().min(1).max(200).default(20),
+	view_distance: z.number().int().min(3).max(32).default(10),
+	simulation_distance: z.number().int().min(3).max(32).default(10),
+	pvp: z.boolean().default(true),
+	white_list: z.boolean().default(false),
+	spawn_protection: z.number().int().min(0).max(256).default(16),
+	spawn_animals: z.boolean().default(true),
+	spawn_monsters: z.boolean().default(true),
+	spawn_npcs: z.boolean().default(true),
+	allow_flight: z.boolean().default(false),
+	allow_nether: z.boolean().default(true),
+	enable_command_block: z.boolean().default(false),
+});
+
+export type Difficulty = z.infer<typeof difficultySchema>;
+export type Gamemode = z.infer<typeof gamemodeSchema>;
+export type ServerProperties = z.infer<typeof serverPropertiesSchema>;
+
+export const DEFAULT_PROPERTIES: ServerProperties =
+	serverPropertiesSchema.parse({});
+
 const errorResponseSchema = z.object({
 	error: z.string(),
 	code: z.string(),
@@ -88,6 +129,9 @@ export const serverDetailSchema = serverSummarySchema.extend({
 	files_helper_running: z.boolean().default(false),
 	// Per-mod / per-plugin updates the poller has detected.
 	mod_updates: z.array(modUpdateInfoSchema).default([]),
+	// User-tunable subset of server.properties. Defaults applied when the
+	// backend hasn't been redeployed with the column yet.
+	properties: serverPropertiesSchema.default(DEFAULT_PROPERTIES),
 });
 
 // --- capabilities ---------------------------------------------------------
@@ -190,6 +234,7 @@ export const createServerRequestSchema = z.object({
 	modrinth: modrinthCreateSchema.optional(),
 	modded: moddedCreateSchema.optional(),
 	paper: paperCreateSchema.optional(),
+	properties: serverPropertiesSchema.optional(),
 });
 
 export const createServerResponseSchema = z.object({
@@ -219,6 +264,7 @@ export const settingsRequestSchema = z.object({
 	auto_update_mode: autoUpdateModeSchema.optional(),
 	version_skip: z.array(z.string()).optional(),
 	force_version: z.string().nullable().optional(),
+	properties: serverPropertiesSchema.optional(),
 });
 
 // --- loader versions (Forge / NeoForge maven-metadata) -------------------
@@ -836,13 +882,6 @@ export const playersResponseSchema = z.object({
 	history: z.array(playerEventSchema),
 });
 
-export const gamemodeSchema = z.enum([
-	"survival",
-	"creative",
-	"adventure",
-	"spectator",
-]);
-
 export const playerActionSchema = z.discriminatedUnion("action", [
 	z.object({
 		action: z.literal("kick"),
@@ -881,7 +920,6 @@ export type PlayersResponse = z.infer<typeof playersResponseSchema>;
 export type PlayerEvent = z.infer<typeof playerEventSchema>;
 export type BanEntry = z.infer<typeof banEntrySchema>;
 export type BanIpEntry = z.infer<typeof banIpEntrySchema>;
-export type Gamemode = z.infer<typeof gamemodeSchema>;
 export type PlayerAction = z.infer<typeof playerActionSchema>;
 
 /// Fetches the bulk Players response. 409 on stopped server is
