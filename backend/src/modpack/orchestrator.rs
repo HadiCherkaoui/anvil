@@ -33,7 +33,7 @@ use crate::AppState;
 use crate::k8s_patches::patch_statefulset_env;
 use crate::k8s_status::RCON_PORT;
 use crate::modpack::guard::UpdateGuard;
-use crate::modpack::jobs::{build_backup_job, build_restore_job};
+use crate::modpack::jobs::{BACKUP_KEEP_COUNT, build_backup_job, build_restore_job};
 use crate::modpack::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo, from_db};
 use crate::routes::servers::create::insert_audit;
 
@@ -203,9 +203,11 @@ async fn run_inner(
     let backup_ts = Utc::now().timestamp();
     let backup_job = build_backup_job(
         server_id,
-        backup_ts,
+        &backup_ts.to_string(),
         &state.mc_namespace,
         snapshots_pvc.as_str(),
+        "auto",
+        Some(BACKUP_KEEP_COUNT),
     );
     let backup_name = backup_job
         .metadata
@@ -692,18 +694,28 @@ async fn rollback(state: &AppState, server_id: &str, _guard: &UpdateGuard) -> Re
     // baked into a custom command.
     let ts = Utc::now().timestamp();
     let jobs: Api<Job> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
-    let mut restore = build_restore_job(server_id, ts, &state.mc_namespace, snapshots_pvc.as_str());
-    // Override the command to find + restore the newest archive.
+    let mut restore = build_restore_job(
+        server_id,
+        &ts.to_string(),
+        &state.mc_namespace,
+        snapshots_pvc.as_str(),
+        "auto",
+    );
+    // Override the command to find + restore the newest archive in the auto
+    // subdir. The backup ts that just ran is unknown to the rollback path
+    // when failure occurs mid-step, so the Job picks the newest tarball
+    // itself via `ls -t | head -n 1` instead of relying on the archive_id
+    // baked into the path.
     if let Some(spec) = restore.spec.as_mut()
         && let Some(pod) = spec.template.spec.as_mut()
         && let Some(c) = pod.containers.first_mut()
     {
         let resource_name = format!("mc-{server_id}");
         let cmd = format!(
-            "set -eu; latest=$(ls -t /snap/{resource_name}/ | head -n 1); \
+            "set -eu; latest=$(ls -t /snap/{resource_name}/auto/ | head -n 1); \
                      if [ -z \"$latest\" ]; then echo no backup to restore; exit 1; fi; \
                      echo restoring $latest; find /data -mindepth 1 -delete; \
-                     tar xzf /snap/{resource_name}/$latest -C /data"
+                     tar xzf /snap/{resource_name}/auto/$latest -C /data"
         );
         c.command = Some(vec!["sh".to_owned(), "-c".to_owned(), cmd]);
     }

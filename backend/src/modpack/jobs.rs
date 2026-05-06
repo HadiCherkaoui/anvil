@@ -32,31 +32,46 @@ const BUSYBOX_IMAGE: &str = "busybox:1.36";
 /// via `apk add`. Pinned to a recent stable tag.
 const ALPINE_IMAGE: &str = "alpine:3.20";
 
-/// How many tar backups the GC tail of the backup Job keeps per server.
+/// How many tar backups the GC tail of the orchestrator's auto-backup Job
+/// keeps per server.
 ///
 /// 3 fits ATM-11's ~5–10 GB-per-archive footprint into a 100 GiB shared
-/// PVC across ~5 servers. Hardcoded per the M5 plan (no UI control).
-const BACKUP_KEEP_COUNT: usize = 3;
+/// PVC across ~5 servers. Manual backups (Spec 5) opt out of GC entirely
+/// by passing `gc_keep = None`.
+pub const BACKUP_KEEP_COUNT: usize = 3;
 
 /// Builds the backup Job.
 ///
-/// Tars `/data` into `/snap/mc-{id}/mc-{id}-{ts}.tgz` on the shared snapshots
-/// PVC, then GCs old archives down to the newest [`BACKUP_KEEP_COUNT`]. The
-/// data PVC is mounted read-only — the `StatefulSet` must be scaled to 0
-/// first so the RWO mount is available.
+/// Tars `/data` into `/snap/mc-{id}/{subdir}/{archive_id}.tgz` on the shared
+/// snapshots PVC. When `gc_keep = Some(n)`, prunes the newest-n in `subdir`
+/// after writing; when `None`, no GC runs (manual backups own retention).
+/// The data PVC is mounted read-only — the `StatefulSet` must be scaled to
+/// 0 first so the RWO mount is available.
 #[must_use]
-pub fn build_backup_job(server_id: &str, ts: i64, namespace: &str, snapshots_pvc: &str) -> Job {
+pub fn build_backup_job(
+    server_id: &str,
+    archive_id: &str,
+    namespace: &str,
+    snapshots_pvc: &str,
+    subdir: &str,
+    gc_keep: Option<usize>,
+) -> Job {
     let resource_name = format!("mc-{server_id}");
     let pvc_name = format!("data-{resource_name}-0");
-    let job_name = format!("backup-{resource_name}-{ts}");
-    let archive_path = format!("/snap/{resource_name}/{resource_name}-{ts}.tgz");
-    // Tar, then `ls -t` newest-first, drop the first N (lines after) — busybox
+    let job_name = format!("backup-{resource_name}-{archive_id}");
+    let archive_path = format!("/snap/{resource_name}/{subdir}/{archive_id}.tgz");
+    // Tar, then optionally `ls -t` newest-first and drop the first N — busybox
     // `xargs -r` skips the rm when the list is empty.
-    let gc_skip = BACKUP_KEEP_COUNT + 1;
+    let gc_cmd = match gc_keep {
+        Some(keep) => format!(
+            " && cd /snap/{resource_name}/{subdir} && ls -t | tail -n +{} | xargs -r rm -f",
+            keep + 1
+        ),
+        None => String::new(),
+    };
     let cmd = format!(
-        "set -eu; mkdir -p /snap/{resource_name}; tar czf {archive_path} -C /data .; \
-         echo backup wrote {archive_path}; \
-         cd /snap/{resource_name} && ls -t | tail -n +{gc_skip} | xargs -r rm -f"
+        "set -eu; mkdir -p /snap/{resource_name}/{subdir}; tar czf {archive_path} -C /data .; \
+         echo backup wrote {archive_path}{gc_cmd}"
     );
 
     let container = Container {
@@ -90,14 +105,21 @@ pub fn build_backup_job(server_id: &str, ts: i64, namespace: &str, snapshots_pvc
 
 /// Builds the restore Job.
 ///
-/// Wipes `/data/*`, then untars `/snap/mc-{id}/mc-{id}-{ts}.tgz` back into
-/// `/data`. Use case: rolling back after a failed update.
+/// Wipes `/data/*`, then untars `/snap/mc-{id}/{subdir}/{archive_id}.tgz`
+/// back into `/data`. Use cases: orchestrator rollback (`subdir = "auto"`)
+/// and Spec 5 manual restore (`subdir = "manual"`).
 #[must_use]
-pub fn build_restore_job(server_id: &str, ts: i64, namespace: &str, snapshots_pvc: &str) -> Job {
+pub fn build_restore_job(
+    server_id: &str,
+    archive_id: &str,
+    namespace: &str,
+    snapshots_pvc: &str,
+    subdir: &str,
+) -> Job {
     let resource_name = format!("mc-{server_id}");
     let pvc_name = format!("data-{resource_name}-0");
-    let job_name = format!("restore-{resource_name}-{ts}");
-    let archive_path = format!("/snap/{resource_name}/{resource_name}-{ts}.tgz");
+    let job_name = format!("restore-{resource_name}-{archive_id}");
+    let archive_path = format!("/snap/{resource_name}/{subdir}/{archive_id}.tgz");
     // `find /data -mindepth 1 -delete` rather than `rm -rf /data/*` so dotfiles
     // (e.g. `.eulafailures`) get cleaned up too. busybox find supports `-delete`.
     let cmd = format!(
@@ -313,9 +335,31 @@ fn env_kv(name: &str, value: &str) -> EnvVar {
 mod tests {
     use super::*;
 
+    fn extract_command(j: &Job) -> String {
+        j.spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers[0]
+            .command
+            .as_ref()
+            .unwrap()[2]
+            .clone()
+    }
+
     #[test]
-    fn backup_job_name_includes_server_id_and_ts() {
-        let j = build_backup_job("abc123", 1_700_000_000, "mc", "mc-snapshots");
+    fn backup_job_name_includes_server_id_and_archive_id() {
+        let j = build_backup_job(
+            "abc123",
+            "1700000000",
+            "mc",
+            "mc-snapshots",
+            "auto",
+            Some(3),
+        );
         assert_eq!(
             j.metadata.name.as_deref(),
             Some("backup-mc-abc123-1700000000")
@@ -325,7 +369,7 @@ mod tests {
 
     #[test]
     fn backup_job_mounts_data_read_only() {
-        let j = build_backup_job("abc", 1, "mc", "mc-snapshots");
+        let j = build_backup_job("abc", "1", "mc", "mc-snapshots", "auto", Some(3));
         let vmounts = j.spec.unwrap().template.spec.unwrap().containers[0]
             .volume_mounts
             .clone()
@@ -336,20 +380,41 @@ mod tests {
 
     #[test]
     fn backup_job_no_retries() {
-        let j = build_backup_job("abc", 1, "mc", "mc-snapshots");
+        let j = build_backup_job("abc", "1", "mc", "mc-snapshots", "auto", Some(3));
         assert_eq!(j.spec.unwrap().backoff_limit, Some(0));
     }
 
     #[test]
+    fn auto_backup_keeps_gc() {
+        let j = build_backup_job("abc", "1700000000", "mc", "mc-snapshots", "auto", Some(3));
+        let cmd = extract_command(&j);
+        assert!(cmd.contains("xargs -r rm -f"));
+        assert!(cmd.contains("/snap/mc-abc/auto/1700000000.tgz"));
+        assert!(cmd.contains("cd /snap/mc-abc/auto"));
+    }
+
+    #[test]
+    fn manual_backup_does_not_emit_gc_command() {
+        let j = build_backup_job("abc", "bk-uuid", "mc", "mc-snapshots", "manual", None);
+        let cmd = extract_command(&j);
+        assert!(!cmd.contains("xargs"), "manual backup must not GC: {cmd}");
+        assert!(cmd.contains("/snap/mc-abc/manual/bk-uuid.tgz"));
+    }
+
+    #[test]
     fn restore_job_wipes_then_untars() {
-        let j = build_restore_job("abc", 1, "mc", "mc-snapshots");
-        let cmd = j.spec.unwrap().template.spec.unwrap().containers[0]
-            .command
-            .clone()
-            .unwrap();
-        let script = cmd.last().unwrap();
+        let j = build_restore_job("abc", "1", "mc", "mc-snapshots", "auto");
+        let script = extract_command(&j);
         assert!(script.contains("find /data -mindepth 1 -delete"));
-        assert!(script.contains("tar xzf"));
+        assert!(script.contains("tar xzf /snap/mc-abc/auto/1.tgz"));
+    }
+
+    #[test]
+    fn restore_job_subdir_path_is_honoured() {
+        let j = build_restore_job("abc", "bk-uuid", "mc", "mc-snapshots", "manual");
+        let script = extract_command(&j);
+        assert!(script.contains("/snap/mc-abc/manual/bk-uuid.tgz"));
+        assert_eq!(j.metadata.name.as_deref(), Some("restore-mc-abc-bk-uuid"));
     }
 
     #[test]
@@ -370,13 +435,11 @@ mod tests {
         let desired = env.iter().find(|e| e.name == "DESIRED_URLS").unwrap();
         assert!(keep.value.as_deref().unwrap().contains("sodium.jar"));
         assert!(keep.value.as_deref().unwrap().contains("lithium.jar"));
-        assert!(
-            desired
-                .value
-                .as_deref()
-                .unwrap()
-                .contains("iris.jar\thttps://example/iris.jar\tffff")
-        );
+        assert!(desired
+            .value
+            .as_deref()
+            .unwrap()
+            .contains("iris.jar\thttps://example/iris.jar\tffff"));
     }
 
     #[test]
