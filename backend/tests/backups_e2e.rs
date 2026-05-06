@@ -9,15 +9,15 @@
 //! the manual e2e in the implementation plan §verification.
 
 use axum::body::Body;
-use axum::http::{header, Method, Request, StatusCode};
+use axum::http::{Method, Request, StatusCode, header};
 use axum_extra::extract::cookie::Key;
 use http_body_util::BodyExt as _;
 use tower::ServiceExt as _;
 
-use anvil::auth::session::{mint, SESSION_COOKIE};
-use anvil::auth::types::SessionClaims;
-use anvil::auth::OidcState;
 use anvil::AppState;
+use anvil::auth::OidcState;
+use anvil::auth::session::{SESSION_COOKIE, mint};
+use anvil::auth::types::SessionClaims;
 
 fn test_state() -> AppState {
     use kube::client::Body as KubeBody;
