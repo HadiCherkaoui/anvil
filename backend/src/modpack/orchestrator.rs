@@ -49,6 +49,8 @@ pub enum UpdatePhase {
     Starting,
     Verifying,
     Succeeded,
+    /// Spec 5 manual restore: untarring the snapshot back into /data.
+    Restoring,
     RollingBack,
     RolledBack,
     Failed,

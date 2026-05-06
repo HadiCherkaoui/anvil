@@ -16,6 +16,7 @@ const phaseSchema = z.enum([
 	"starting",
 	"verifying",
 	"succeeded",
+	"restoring",
 	"rolling-back",
 	"rolled-back",
 	"failed",

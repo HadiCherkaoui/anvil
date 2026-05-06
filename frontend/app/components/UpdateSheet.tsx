@@ -12,6 +12,7 @@ const ORDER: ReadonlyArray<UpdatePhase> = [
 	"announcing",
 	"stopping",
 	"backing-up",
+	"restoring",
 	"swapping",
 	"starting",
 	"verifying",
