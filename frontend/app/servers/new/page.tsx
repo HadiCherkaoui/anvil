@@ -462,6 +462,36 @@ export default function NewServerPage(): ReactElement {
 											{draft.initial_mods.length} picked
 										</span>
 									</div>
+									{draft.initial_mods.length > 0 && (
+										<ul className="mt-2 flex flex-col gap-1">
+											{draft.initial_mods.map((m, i) => (
+												<li
+													key={`${m.provider}:${m.version_id}`}
+													className="flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1"
+												>
+													<span className="font-mono text-[12px] text-text-body">
+														{m.project_name}
+													</span>
+													<span className="font-mono text-[11px] text-text-faint">
+														{m.version_name}
+													</span>
+													<button
+														type="button"
+														onClick={() => {
+															set(
+																"initial_mods",
+																draft.initial_mods.filter((_, j) => j !== i),
+															);
+														}}
+														aria-label={`remove ${m.project_name}`}
+														className="ml-auto rounded p-1 text-text-faint hover:text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+													>
+														×
+													</button>
+												</li>
+											))}
+										</ul>
+									)}
 								</div>
 							) : (
 								<div className="flex flex-col gap-3">
