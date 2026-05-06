@@ -23,7 +23,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{anyhow, Context as _, Result};
 use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 
@@ -302,6 +302,7 @@ mod tests {
             server_pack_file_id: None,
             download_url: Some(format!("https://example.com/{id}.zip")),
             file_date: date.to_owned(),
+            dependencies: Vec::new(),
         }
     }
 
