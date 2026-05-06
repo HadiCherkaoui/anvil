@@ -170,6 +170,10 @@ export const moddedCreateSchema = z.object({
 	loader_version: z.string().min(1).optional(),
 });
 
+export const paperCreateSchema = z.object({
+	initial_plugins: z.array(modEntrySchema).default([]),
+});
+
 export const createServerRequestSchema = z.object({
 	name: z
 		.string()
@@ -185,6 +189,7 @@ export const createServerRequestSchema = z.object({
 	curseforge: curseforgeCreateSchema.optional(),
 	modrinth: modrinthCreateSchema.optional(),
 	modded: moddedCreateSchema.optional(),
+	paper: paperCreateSchema.optional(),
 });
 
 export const createServerResponseSchema = z.object({

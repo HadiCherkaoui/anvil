@@ -71,6 +71,7 @@ const INITIAL: CreateDraft = {
 	modrinth: null,
 	runtime: null,
 	initial_mods: [],
+	initial_plugins: [],
 	loader_version: null,
 };
 
@@ -178,6 +179,19 @@ export default function NewServerPage(): ReactElement {
 				sha512: pick.version.primary_sha512,
 			};
 			set("initial_mods", [...draft.initial_mods, entry]);
+		} else if (draft.type === "paper") {
+			const entry: ModEntry = {
+				provider: pick.hit.provider,
+				project_id: pick.hit.project_id,
+				project_slug: pick.hit.slug,
+				project_name: pick.hit.name,
+				version_id: pick.version.version_id,
+				version_name: pick.version.version_name,
+				filename: pick.version.primary_filename,
+				download_url: pick.version.primary_url,
+				sha512: pick.version.primary_sha512,
+			};
+			set("initial_plugins", [...draft.initial_plugins, entry]);
 		}
 	};
 
@@ -206,10 +220,23 @@ export default function NewServerPage(): ReactElement {
 		) {
 			return;
 		}
+		if (
+			draft.type === "paper" &&
+			draft.initial_plugins.length > 0 &&
+			next !== draft.mc_version &&
+			!window.confirm(
+				`switching mc version clears ${draft.initial_plugins.length.toString()} picked plugins. continue?`,
+			)
+		) {
+			return;
+		}
 		set("mc_version", next);
 		if (draft.type === "modded") {
 			set("initial_mods", []);
 			set("loader_version", null);
+		}
+		if (draft.type === "paper") {
+			set("initial_plugins", []);
 		}
 	};
 
@@ -269,6 +296,9 @@ export default function NewServerPage(): ReactElement {
 						},
 					}
 				: {}),
+			...(isPaper && draft.initial_plugins.length > 0
+				? { paper: { initial_plugins: draft.initial_plugins } }
+				: {}),
 		};
 		createServer(request)
 			.then((created) => {
@@ -315,14 +345,21 @@ export default function NewServerPage(): ReactElement {
 			? (draft.loader_version ?? loaderChoicesForMc[0] ?? null)
 			: null;
 
-	const browseMode: "modpack" | "mod" =
-		draft.type === "modded" ? "mod" : "modpack";
-	const browseLoader: Runtime | undefined =
+	const browseMode: "modpack" | "mod" | "plugin" =
+		draft.type === "modded"
+			? "mod"
+			: draft.type === "paper"
+				? "plugin"
+				: "modpack";
+	const browseLoader: Runtime | "paper" | undefined =
 		draft.type === "modded" && draft.runtime !== null
 			? draft.runtime
-			: undefined;
+			: draft.type === "paper"
+				? "paper"
+				: undefined;
 	const browseMc: string | undefined =
-		draft.type === "modded" && draft.mc_version !== null
+		(draft.type === "modded" || draft.type === "paper") &&
+		draft.mc_version !== null
 			? draft.mc_version
 			: undefined;
 
@@ -372,6 +409,9 @@ export default function NewServerPage(): ReactElement {
 										set("initial_mods", []);
 										set("loader_version", null);
 									}
+									if (v !== "paper") {
+										set("initial_plugins", []);
+									}
 								}}
 								options={TYPE_OPTIONS}
 							/>
@@ -381,14 +421,65 @@ export default function NewServerPage(): ReactElement {
 					<Section number="03" title="source">
 						<Card>
 							{draft.type === "vanilla" || draft.type === "paper" ? (
-								<McVersionPicker
-									value={draft.mc_version}
-									onChange={(v) => {
-										switchMcWithGuard(v);
-									}}
-									versions={versions?.versions ?? []}
-									showFallbackWarning={versions?.source === "fallback"}
-								/>
+								<div className="flex flex-col gap-3">
+									<McVersionPicker
+										value={draft.mc_version}
+										onChange={(v) => {
+											switchMcWithGuard(v);
+										}}
+										versions={versions?.versions ?? []}
+										showFallbackWarning={versions?.source === "fallback"}
+									/>
+									{draft.type === "paper" && (
+										<>
+											<div className="flex items-center gap-2">
+												<Button
+													onClick={() => {
+														if (draft.mc_version !== null) setBrowseOpen(true);
+													}}
+													disabled={draft.mc_version === null}
+												>
+													+ pre-pick plugins
+												</Button>
+												<span className="font-mono text-[11px] text-text-faint">
+													{draft.initial_plugins.length} picked
+												</span>
+											</div>
+											{draft.initial_plugins.length > 0 && (
+												<ul className="mt-2 flex flex-col gap-1">
+													{draft.initial_plugins.map((p, i) => (
+														<li
+															key={`${p.provider}:${p.version_id}`}
+															className="flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1"
+														>
+															<span className="font-mono text-[12px] text-text-body">
+																{p.project_name}
+															</span>
+															<span className="font-mono text-[11px] text-text-faint">
+																{p.version_name}
+															</span>
+															<button
+																type="button"
+																onClick={() => {
+																	set(
+																		"initial_plugins",
+																		draft.initial_plugins.filter(
+																			(_, j) => j !== i,
+																		),
+																	);
+																}}
+																aria-label={`remove ${p.project_name}`}
+																className="ml-auto rounded p-1 text-text-faint hover:text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+															>
+																×
+															</button>
+														</li>
+													))}
+												</ul>
+											)}
+										</>
+									)}
+								</div>
 							) : draft.type === "modded" ? (
 								<div className="flex flex-col gap-3">
 									{draft.runtime !== null && (
