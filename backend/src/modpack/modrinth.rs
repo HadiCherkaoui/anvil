@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 

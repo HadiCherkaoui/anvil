@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context as _, Result};
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT};
+use anyhow::{Context as _, Result, bail};
+use reqwest::header::{ACCEPT, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 

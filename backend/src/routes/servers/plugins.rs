@@ -8,11 +8,11 @@
 
 use std::time::Duration;
 
+use axum::Json;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use axum::Json;
 use bytes::Bytes;
 use chrono::Utc;
 use futures_util::sink::SinkExt as _;
@@ -20,22 +20,22 @@ use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{oneshot, watch};
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::time::{MissedTickBehavior, interval};
 
 use std::collections::HashSet;
 
+use crate::AppState;
 use crate::error::AppError;
-use crate::modpack::dep_resolver::{resolve_required, ResolveContext};
+use crate::modpack::ModpackHttp;
+use crate::modpack::dep_resolver::{ResolveContext, resolve_required};
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::modded::ModEntry;
 use crate::modpack::mods_apply::{self, SyncTarget};
 use crate::modpack::orchestrator::UpdatePhase;
 use crate::modpack::paper::Config as PaperConfig;
-use crate::modpack::ModpackHttp;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
 use crate::validation::validate_mod_filename;
-use crate::AppState;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 

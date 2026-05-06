@@ -23,7 +23,7 @@
 
 use std::time::Duration;
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Serialize};
 

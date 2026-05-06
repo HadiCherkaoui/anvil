@@ -12,12 +12,12 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use anyhow::{anyhow, Result};
-use tracing::{event, Level};
+use anyhow::{Result, anyhow};
+use tracing::{Level, event};
 
-use super::deps::{from_curseforge, from_modrinth, DepKind, DependencySpec};
-use super::modded::ModEntry;
 use super::ModpackHttp;
+use super::deps::{DepKind, DependencySpec, from_curseforge, from_modrinth};
+use super::modded::ModEntry;
 
 /// How deep a chain of required deps the resolver follows before bailing.
 ///

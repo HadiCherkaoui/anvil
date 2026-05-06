@@ -12,11 +12,11 @@ use std::time::Duration;
 use serde_json::Value;
 use sqlx::Row as _;
 use tokio::time::sleep;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
-use crate::modpack::guard::UpdateGuard;
-use crate::modpack::{from_db, orchestrator, ModpackHttp};
 use crate::AppState;
+use crate::modpack::guard::UpdateGuard;
+use crate::modpack::{ModpackHttp, from_db, orchestrator};
 
 /// Defensive gap between upstream calls in the per-mod pass. Modrinth's
 /// anonymous limit is 300/min, CF's limit depends on the API key tier;
