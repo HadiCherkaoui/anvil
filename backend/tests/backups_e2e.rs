@@ -3,7 +3,7 @@
 //! The kube client is a tower-test mock without a configured responder,
 //! so any path that polls k8s blocks forever. We exercise the synchronous
 //! validation paths (server / backup existence, name validation, the
-//! UpdateGuard contention check, list ordering). The Job-running paths —
+//! `UpdateGuard` contention check, list ordering). The Job-running paths —
 //! tar, restore, the synchronous delete Job — would hang against the
 //! mock and need a real cluster to verify; those paths are covered by
 //! the manual e2e in the implementation plan §verification.
@@ -126,7 +126,7 @@ async fn seed_backup_row(state: &AppState, server_id: &str, backup_id: &str, nam
     .expect("seed backup");
 }
 
-fn json_request(method: Method, uri: &str, token: &str, body: serde_json::Value) -> Request<Body> {
+fn json_request(method: Method, uri: &str, token: &str, body: &serde_json::Value) -> Request<Body> {
     Request::builder()
         .method(method)
         .uri(uri)
@@ -155,7 +155,7 @@ async fn create_backup_unknown_server_404() {
             Method::POST,
             "/api/servers/missing/backups",
             &token,
-            serde_json::json!({"name": "smoke"}),
+            &serde_json::json!({"name": "smoke"}),
         ))
         .await
         .unwrap();
@@ -174,7 +174,7 @@ async fn create_backup_invalid_name_400() {
             Method::POST,
             "/api/servers/ts-bk/backups",
             &token,
-            body,
+            &body,
         ))
         .await
         .unwrap();
@@ -195,7 +195,7 @@ async fn create_backup_succeeds_202() {
             Method::POST,
             "/api/servers/ts-bk/backups",
             &token,
-            serde_json::json!({"name": "pre-test"}),
+            &serde_json::json!({"name": "pre-test"}),
         ))
         .await
         .unwrap();
@@ -226,7 +226,7 @@ async fn create_backup_conflicts_with_running_update() {
             Method::POST,
             "/api/servers/ts-bk/backups",
             &token,
-            serde_json::json!({}),
+            &serde_json::json!({}),
         ))
         .await
         .unwrap();

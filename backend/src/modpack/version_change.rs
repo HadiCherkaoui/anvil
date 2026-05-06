@@ -8,24 +8,24 @@
 
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, bail};
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::EnvVar;
 use kube::Api;
 use serde_json::json;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
+use crate::AppState;
 use crate::k8s_patches::patch_statefulset_env;
 use crate::modpack::guard::UpdateGuard;
-use crate::modpack::jobs::{build_backup_job, build_restore_job, BACKUP_KEEP_COUNT};
+use crate::modpack::jobs::{BACKUP_KEEP_COUNT, build_backup_job, build_restore_job};
 use crate::modpack::orchestrator::{
-    announce_and_save, scale_to, spawn_job, wait_for_done_marker, wait_job, wait_pod_gone,
-    wait_pod_running, UpdatePhase, BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT,
-    RESTORE_JOB_TIMEOUT,
+    BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT, RESTORE_JOB_TIMEOUT,
+    UpdatePhase, announce_and_save, scale_to, spawn_job, wait_for_done_marker, wait_job,
+    wait_pod_gone, wait_pod_running,
 };
 use crate::routes::servers::create::insert_audit;
-use crate::AppState;
 
 /// Pre-swap state captured by [`run_inner`] so [`rollback`] can revert the
 /// `StatefulSet` env, the `SQLite` row, and the data PVC if a phase 4–6
@@ -369,11 +369,11 @@ async fn apply_swap(
     new_loader: Option<&str>,
     memory_mi: i64,
 ) -> Result<Duration> {
+    use crate::modpack::ModpackProvider as _;
+    use crate::modpack::ProviderContext;
     use crate::modpack::modded::{Config as ModdedCfg, ModdedRuntime};
     use crate::modpack::paper::{Config as PaperCfg, PaperServerProvider};
     use crate::modpack::vanilla::VanillaProvider;
-    use crate::modpack::ModpackProvider as _;
-    use crate::modpack::ProviderContext;
 
     let ctx = ProviderContext {
         server_id,

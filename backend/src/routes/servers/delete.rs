@@ -14,14 +14,14 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret, Service};
-use kube::api::DeleteParams;
 use kube::Api;
+use kube::api::DeleteParams;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::files_helper::tear_down_helper;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
-use crate::AppState;
 
 /// Maximum time to wait for the pod to disappear before bailing.
 const POD_TERMINATE_TIMEOUT: Duration = Duration::from_mins(2);

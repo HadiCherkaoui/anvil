@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use chrono::Utc;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
@@ -20,16 +20,16 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::AppState;
 use crate::k8s_patches::patch_statefulset_env;
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::jobs::{build_backup_job, build_restore_job};
 use crate::modpack::orchestrator::{
-    announce_and_save, scale_to, spawn_job, wait_for_done_marker, wait_job, wait_pod_gone,
-    wait_pod_running, UpdatePhase, BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT,
-    RESTORE_JOB_TIMEOUT,
+    BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT, RESTORE_JOB_TIMEOUT,
+    UpdatePhase, announce_and_save, scale_to, spawn_job, wait_for_done_marker, wait_job,
+    wait_pod_gone, wait_pod_running,
 };
 use crate::routes::servers::create::insert_audit;
-use crate::AppState;
 
 /// Snapshot of the live `servers` row taken at backup time and re-applied
 /// on restore.
@@ -398,11 +398,11 @@ async fn run_restore_inner(
 /// configuration. Mirrors `version_change::apply_swap` for vanilla / paper
 /// / modded; reuses [`crate::modpack::from_db`] for upstream modpacks.
 fn build_runtime_env_from_snapshot(snap: &BackupSnapshot, server_id: &str) -> Result<Vec<EnvVar>> {
+    use crate::modpack::ModpackProvider as _;
+    use crate::modpack::ProviderContext;
     use crate::modpack::modded::{Config as ModdedCfg, ModdedRuntime};
     use crate::modpack::paper::{Config as PaperCfg, PaperServerProvider};
     use crate::modpack::vanilla::VanillaProvider;
-    use crate::modpack::ModpackProvider as _;
-    use crate::modpack::ProviderContext;
 
     let ctx = ProviderContext {
         server_id,

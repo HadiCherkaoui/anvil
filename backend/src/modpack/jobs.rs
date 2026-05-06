@@ -435,11 +435,13 @@ mod tests {
         let desired = env.iter().find(|e| e.name == "DESIRED_URLS").unwrap();
         assert!(keep.value.as_deref().unwrap().contains("sodium.jar"));
         assert!(keep.value.as_deref().unwrap().contains("lithium.jar"));
-        assert!(desired
-            .value
-            .as_deref()
-            .unwrap()
-            .contains("iris.jar\thttps://example/iris.jar\tffff"));
+        assert!(
+            desired
+                .value
+                .as_deref()
+                .unwrap()
+                .contains("iris.jar\thttps://example/iris.jar\tffff")
+        );
     }
 
     #[test]

@@ -171,15 +171,13 @@ pub async fn delete(
     backup_must_exist(&state, &id, &backup_id).await?;
 
     let snapshots_pvc = state.snapshots_pvc.as_ref();
-    let job = backups::build_delete_job(
-        &id,
-        &backup_id,
-        &state.mc_namespace,
-        snapshots_pvc.as_str(),
-    );
-    let job_name = job.metadata.name.clone().ok_or_else(|| {
-        AppError::Internal(anyhow::anyhow!("delete Job missing name"))
-    })?;
+    let job =
+        backups::build_delete_job(&id, &backup_id, &state.mc_namespace, snapshots_pvc.as_str());
+    let job_name = job
+        .metadata
+        .name
+        .clone()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("delete Job missing name")))?;
     let _permit = state.snapshot_pvc_lock.lock().await;
     crate::modpack::orchestrator::spawn_job(&state.kube, &state.mc_namespace, &job).await?;
     crate::modpack::orchestrator::wait_job(
