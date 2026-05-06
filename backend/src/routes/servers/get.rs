@@ -5,18 +5,19 @@
 //! absent (returns `Ok(None)` to the join). Status and endpoint are
 //! derived in [`crate::k8s_status`].
 
-use axum::Json;
 use axum::extract::{Path, State};
+use axum::Json;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::Api;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::k8s::{Endpoint, ServerStatus};
 use crate::k8s_status::{derive_endpoint, derive_status};
+use crate::server_properties::ServerProperties;
+use crate::AppState;
 
 /// Detail body for `GET /api/servers/:id`.
 #[derive(Debug, Serialize)]
@@ -52,6 +53,9 @@ pub struct ServerDetail {
     /// Per-mod / per-plugin updates the poller has detected. Empty for
     /// vanilla and modpack-driven servers.
     pub mod_updates: Vec<ModUpdateInfo>,
+    /// User-tunable subset of server.properties applied via env on the
+    /// next pod start. Defaults match vanilla MC for legacy rows.
+    pub properties: ServerProperties,
 }
 
 /// One row of `mod_updates` surfaced on the server detail.
@@ -199,6 +203,7 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         update_in_progress,
         files_helper_running,
         mod_updates,
+        properties: row.properties,
     })
 }
 
@@ -251,6 +256,7 @@ pub(crate) struct ServerRow {
     pub nodeport: Option<i32>,
     pub created_at: i64,
     pub last_started_at: Option<i64>,
+    pub properties: ServerProperties,
 }
 
 /// Tuple shape returned by the SELECT in [`fetch_server_row`]. Aliased
@@ -266,6 +272,7 @@ type ServerRowTuple = (
     Option<i64>,
     i64,
     Option<i64>,
+    String,
 );
 
 /// Fetches one row from `servers` by id. Returns `AppError::NotFound`
@@ -273,7 +280,8 @@ type ServerRowTuple = (
 pub(crate) async fn fetch_server_row(pool: &SqlitePool, id: &str) -> Result<ServerRow, AppError> {
     let opt: Option<ServerRowTuple> = sqlx::query_as(
         "SELECT id, name, mc_version, memory_mi, exposure_mode,
-                storage_class, storage_size_gi, nodeport, created_at, last_started_at
+                storage_class, storage_size_gi, nodeport, created_at, last_started_at,
+                properties
          FROM servers WHERE id = ?",
     )
     .bind(id)
@@ -293,6 +301,7 @@ pub(crate) async fn fetch_server_row(pool: &SqlitePool, id: &str) -> Result<Serv
             nodeport,
             created_at,
             last_started_at,
+            properties_json,
         )) => Ok(ServerRow {
             id,
             name,
@@ -304,6 +313,10 @@ pub(crate) async fn fetch_server_row(pool: &SqlitePool, id: &str) -> Result<Serv
             nodeport: nodeport.and_then(|n| i32::try_from(n).ok()),
             created_at,
             last_started_at,
+            // Corrupt JSON falls back to defaults rather than 500-ing the
+            // whole detail fetch — the panel still renders, the user can
+            // re-save to fix the column.
+            properties: serde_json::from_str(&properties_json).unwrap_or_default(),
         }),
     }
 }
