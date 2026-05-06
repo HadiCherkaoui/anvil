@@ -5,16 +5,16 @@
 //! consumes phase progress through the existing `/api/servers/:id/update/stream`
 //! WS the modpack update flow already uses.
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::version_change;
 use crate::validation::validate_mc_version;
-use crate::AppState;
 
 /// Request body for `PATCH /api/servers/:id/version`.
 #[derive(Debug, Deserialize)]
