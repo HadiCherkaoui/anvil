@@ -8,6 +8,7 @@ import {
 	addServerPlugin,
 	applyMods,
 	applyServerPlugins,
+	fetchCatalogVersions,
 	fetchFileList,
 	listServerPlugins,
 	moddedConfigSchema,
@@ -17,6 +18,7 @@ import {
 	type FileEntry,
 	type ModEntry,
 	type ModPendingOp,
+	type ModUpdateInfo,
 	type ModdedConfig,
 	type ServerDetail,
 } from "../../lib/api";
@@ -56,6 +58,7 @@ export function ModsBody(): ReactElement {
 			<PaperPluginsBody
 				serverId={detail.id}
 				sourceConfig={detail.source_config}
+				modUpdates={detail.mod_updates}
 				browseOpen={browseOpen}
 				setBrowseOpen={setBrowseOpen}
 				applyOpen={applyOpen}
@@ -129,7 +132,53 @@ export function ModsBody(): ReactElement {
 			});
 	};
 
+	const updatesByKey = new Map<string, ModUpdateInfo>();
+	for (const u of detail.mod_updates) {
+		updatesByKey.set(`${u.provider}:${u.project_id}`, u);
+	}
 
+	const bumpMod = async (
+		mod: ModEntry,
+		latestVersionId: string,
+	): Promise<void> => {
+		try {
+			const versions = await fetchCatalogVersions(mod.provider, mod.project_id, {
+				mc: cfg.mc_version,
+				loader: cfg.runtime,
+			});
+			const v = versions.find((x) => x.version_id === latestVersionId);
+			if (!v) {
+				toast.push(`bump failed · target version not in upstream`, "error");
+				return;
+			}
+			const op: ModPendingOp = {
+				op: "bump",
+				filename: mod.filename,
+				to_version_id: v.version_id,
+				to_version_name: v.version_name,
+				to_filename: v.primary_filename,
+				to_download_url: v.primary_url,
+				to_sha512: v.primary_sha512,
+			};
+			await addPendingMod(detail.id, op);
+			refresh();
+			toast.push(`queued bump · ${mod.project_name}`, "success");
+		} catch (err: unknown) {
+			toast.push(
+				`bump failed · ${err instanceof ApiError ? err.code : "unknown"}`,
+				"error",
+			);
+		}
+	};
+
+	const updateAll = async (): Promise<void> => {
+		for (const m of cfg.mods) {
+			const u = updatesByKey.get(`${m.provider}:${m.project_id}`);
+			if (!u) continue;
+			// Sequential keeps the toast/refresh ordering predictable.
+			await bumpMod(m, u.latest_version_id);
+		}
+	};
 
 	const discardPending = (idx: number): void => {
 		removePendingMod(detail.id, idx)
@@ -179,41 +228,78 @@ export function ModsBody(): ReactElement {
 					</Button>
 				</div>
 
+				{detail.mod_updates.length > 0 && (
+					<div className="mt-3 flex items-center justify-between rounded-sm border border-state-warning/30 bg-state-warning/5 px-3 py-2 font-mono text-[12px]">
+						<span className="text-state-warning">
+							↑ {detail.mod_updates.length.toString()}{" "}
+							{detail.mod_updates.length === 1 ? "update" : "updates"} available
+						</span>
+						<Button
+							onClick={() => {
+								void updateAll();
+							}}
+						>
+							update all
+						</Button>
+					</div>
+				)}
+
 				<ul className="mt-4 flex flex-col">
 					{cfg.mods.length === 0 && (
 						<li className="py-2 font-mono text-[12px] text-text-faint">
 							no mods installed yet — click `+ add mods` to start.
 						</li>
 					)}
-					{cfg.mods.map((m) => (
-						<li
-							key={m.filename}
-							className="group flex items-center justify-between border-b border-border-soft py-2 font-mono text-[12px]"
-						>
-							<div className="flex items-center gap-3">
-								<span
-									className="h-3.5 w-1 rounded-sm"
-									style={{
-										background:
-											m.provider === "modrinth"
-												? "var(--color-source-modrinth)"
-												: "var(--color-source-curseforge)",
-									}}
-								/>
-								<span className="text-text-body">{m.project_name}</span>
-								<span className="text-text-faint">{m.version_name}</span>
-							</div>
-							<button
-								type="button"
-								onClick={() => {
-									removeInstalled(m.filename);
-								}}
-								className="opacity-0 transition-opacity hover:text-state-error focus-visible:opacity-100 group-hover:opacity-100"
+					{cfg.mods.map((m) => {
+						const u = updatesByKey.get(`${m.provider}:${m.project_id}`);
+						return (
+							<li
+								key={m.filename}
+								className="group flex items-center justify-between border-b border-border-soft py-2 font-mono text-[12px]"
 							>
-								remove
-							</button>
-						</li>
-					))}
+								<div className="flex items-center gap-3">
+									<span
+										className="h-3.5 w-1 rounded-sm"
+										style={{
+											background:
+												m.provider === "modrinth"
+													? "var(--color-source-modrinth)"
+													: "var(--color-source-curseforge)",
+										}}
+									/>
+									<span className="text-text-body">{m.project_name}</span>
+									<span className="text-text-faint">{m.version_name}</span>
+									{u && (
+										<span className="rounded-sm bg-state-warning/10 px-1.5 text-[11px] text-state-warning">
+											↑ {u.latest_version_name}
+										</span>
+									)}
+								</div>
+								<div className="flex items-center gap-3">
+									{u && (
+										<button
+											type="button"
+											onClick={() => {
+												void bumpMod(m, u.latest_version_id);
+											}}
+											className="text-state-warning hover:text-state-warning/80"
+										>
+											update
+										</button>
+									)}
+									<button
+										type="button"
+										onClick={() => {
+											removeInstalled(m.filename);
+										}}
+										className="opacity-0 transition-opacity hover:text-state-error focus-visible:opacity-100 group-hover:opacity-100"
+									>
+										remove
+									</button>
+								</div>
+							</li>
+						);
+					})}
 				</ul>
 
 				{cfg.pending.length > 0 && (
@@ -298,6 +384,7 @@ function PendingLabel({ op }: { op: ModPendingOp }): ReactElement {
 interface PaperPluginsProps {
 	serverId: string;
 	sourceConfig: unknown;
+	modUpdates: readonly ModUpdateInfo[];
 	browseOpen: boolean;
 	setBrowseOpen: (v: boolean) => void;
 	applyOpen: boolean;
@@ -344,6 +431,7 @@ function diffPending(
 function PaperPluginsBody({
 	serverId,
 	sourceConfig,
+	modUpdates,
 	browseOpen,
 	setBrowseOpen,
 	applyOpen,
@@ -496,6 +584,59 @@ function PaperPluginsBody({
 			});
 	};
 
+	const updatesByKey = new Map<string, ModUpdateInfo>();
+	for (const u of modUpdates) {
+		updatesByKey.set(`${u.provider}:${u.project_id}`, u);
+	}
+
+	const bumpPlugin = async (
+		p: ModEntry,
+		latestVersionId: string,
+	): Promise<void> => {
+		try {
+			const versions = await fetchCatalogVersions(p.provider, p.project_id, {
+				mc: mcVersion,
+				loader: "paper",
+			});
+			const v = versions.find((x) => x.version_id === latestVersionId);
+			if (!v) {
+				onToast(`bump failed · target version not in upstream`, "error");
+				return;
+			}
+			const newEntry: ModEntry = {
+				provider: p.provider,
+				project_id: p.project_id,
+				project_slug: p.project_slug,
+				project_name: p.project_name,
+				version_id: v.version_id,
+				version_name: v.version_name,
+				filename: v.primary_filename,
+				download_url: v.primary_url,
+				sha512: v.primary_sha512,
+			};
+			// For paper plugins there's no Bump op — stage a remove of the
+			// old filename + add of the new one in pending_plugins.
+			await removeServerPlugin(serverId, p.filename);
+			await addServerPlugin(serverId, newEntry);
+			onToast(`queued bump · ${p.project_name}`, "success");
+			refresh();
+			onMutated();
+		} catch (err: unknown) {
+			onToast(
+				`bump failed · ${err instanceof ApiError ? err.code : "unknown"}`,
+				"error",
+			);
+		}
+	};
+
+	const updateAllPlugins = async (): Promise<void> => {
+		for (const p of plugins) {
+			const u = updatesByKey.get(`${p.provider}:${p.project_id}`);
+			if (!u) continue;
+			await bumpPlugin(p, u.latest_version_id);
+		}
+	};
+
 	return (
 		<>
 			<Card>
@@ -517,36 +658,73 @@ function PaperPluginsBody({
 					</Button>
 				</div>
 
+				{modUpdates.length > 0 && (
+					<div className="mt-3 flex items-center justify-between rounded-sm border border-state-warning/30 bg-state-warning/5 px-3 py-2 font-mono text-[12px]">
+						<span className="text-state-warning">
+							↑ {modUpdates.length.toString()}{" "}
+							{modUpdates.length === 1 ? "update" : "updates"} available
+						</span>
+						<Button
+							onClick={() => {
+								void updateAllPlugins();
+							}}
+						>
+							update all
+						</Button>
+					</div>
+				)}
+
 				<ul className="mt-4 flex flex-col">
 					{plugins.length === 0 && (
 						<li className="py-2 font-mono text-[12px] text-text-faint">
 							no plugins installed yet — click `+ add plugins` to start.
 						</li>
 					)}
-					{plugins.map((p) => (
-						<li
-							key={p.filename}
-							className="group flex items-center justify-between border-b border-border-soft py-2 font-mono text-[12px]"
-						>
-							<div className="flex items-center gap-3">
-								<span
-									className="h-3.5 w-1 rounded-sm"
-									style={{ background: "var(--color-source-modrinth)" }}
-								/>
-								<span className="text-text-body">{p.project_name}</span>
-								<span className="text-text-faint">{p.version_name}</span>
-							</div>
-							<button
-								type="button"
-								onClick={() => {
-									removeInstalled(p.filename);
-								}}
-								className="opacity-0 transition-opacity hover:text-state-error focus-visible:opacity-100 group-hover:opacity-100"
+					{plugins.map((p) => {
+						const u = updatesByKey.get(`${p.provider}:${p.project_id}`);
+						return (
+							<li
+								key={p.filename}
+								className="group flex items-center justify-between border-b border-border-soft py-2 font-mono text-[12px]"
 							>
-								remove
-							</button>
-						</li>
-					))}
+								<div className="flex items-center gap-3">
+									<span
+										className="h-3.5 w-1 rounded-sm"
+										style={{ background: "var(--color-source-modrinth)" }}
+									/>
+									<span className="text-text-body">{p.project_name}</span>
+									<span className="text-text-faint">{p.version_name}</span>
+									{u && (
+										<span className="rounded-sm bg-state-warning/10 px-1.5 text-[11px] text-state-warning">
+											↑ {u.latest_version_name}
+										</span>
+									)}
+								</div>
+								<div className="flex items-center gap-3">
+									{u && (
+										<button
+											type="button"
+											onClick={() => {
+												void bumpPlugin(p, u.latest_version_id);
+											}}
+											className="text-state-warning hover:text-state-warning/80"
+										>
+											update
+										</button>
+									)}
+									<button
+										type="button"
+										onClick={() => {
+											removeInstalled(p.filename);
+										}}
+										className="opacity-0 transition-opacity hover:text-state-error focus-visible:opacity-100 group-hover:opacity-100"
+									>
+										remove
+									</button>
+								</div>
+							</li>
+						);
+					})}
 				</ul>
 
 				{changes.length > 0 && (

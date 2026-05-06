@@ -188,7 +188,9 @@ export function ServerDetailView(): ReactElement {
 			id: "mods",
 			label: detail.source_kind === "paper" ? "plugins" : "mods",
 			href: tabHref("mods"),
-			...(detail.update_available ? { mark: true } : {}),
+			...(detail.update_available || detail.mod_updates.length > 0
+				? { mark: true }
+				: {}),
 		},
 		{ id: "players", label: "players", href: tabHref("players") },
 		{ id: "files", label: "files", href: tabHref("files") },
