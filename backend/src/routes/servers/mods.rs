@@ -8,11 +8,11 @@
 
 use std::time::Duration;
 
-use axum::Json;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
+use axum::Json;
 use bytes::Bytes;
 use chrono::Utc;
 use futures_util::sink::SinkExt as _;
@@ -20,17 +20,21 @@ use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{oneshot, watch};
-use tokio::time::{MissedTickBehavior, interval};
+use tokio::time::{interval, MissedTickBehavior};
 
-use crate::AppState;
+use std::collections::HashSet;
+
 use crate::error::AppError;
+use crate::modpack::dep_resolver::{resolve_required, ResolveContext};
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::modded::{Config as ModdedConfig, ModEntry, PendingOp};
 use crate::modpack::mods_apply::{self, SyncTarget};
 use crate::modpack::orchestrator::UpdatePhase;
+use crate::modpack::ModpackHttp;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
 use crate::validation::validate_mod_filename;
+use crate::AppState;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 
@@ -79,6 +83,17 @@ impl From<PendingOpRequest> for PendingOp {
     }
 }
 
+/// Response body for `POST /api/servers/{id}/mods`.
+///
+/// `added` lists every mod that was added by this call — for an Add op
+/// that resolves required deps, this is the seed plus the resolved deps.
+/// For Remove and Bump ops, `added` is empty.
+#[derive(Debug, Serialize)]
+pub struct AddResponse {
+    pub added: Vec<ModEntry>,
+    pub added_count: usize,
+}
+
 /// `POST /api/servers/{id}/mods` — append a pending op to the modlist draft.
 ///
 /// # Errors
@@ -90,7 +105,7 @@ pub async fn add_pending(
     Path(id): Path<String>,
     State(state): State<AppState>,
     Json(req): Json<PendingOpRequest>,
-) -> Result<StatusCode, AppError> {
+) -> Result<Json<AddResponse>, AppError> {
     match &req {
         PendingOpRequest::Add { mod_entry } => validate_mod_filename(&mod_entry.filename)?,
         PendingOpRequest::Remove { filename } => validate_mod_filename(filename)?,
@@ -105,18 +120,90 @@ pub async fn add_pending(
     }
 
     let mut cfg = load_modded_cfg(&state, &id).await?;
-    cfg.pending.push(req.into());
+
+    let (new_ops, added_entries): (Vec<PendingOp>, Vec<ModEntry>) = match &req {
+        PendingOpRequest::Add { mod_entry } => {
+            let extra = resolve_for_add(&state, &cfg, mod_entry, "modrinth_or_seed_provider").await;
+            let mut ops: Vec<PendingOp> = Vec::with_capacity(1 + extra.len());
+            ops.push(PendingOp::Add {
+                mod_entry: mod_entry.clone(),
+            });
+            for dep in &extra {
+                ops.push(PendingOp::Add {
+                    mod_entry: dep.clone(),
+                });
+            }
+            let mut added = Vec::with_capacity(1 + extra.len());
+            added.push(mod_entry.clone());
+            added.extend(extra);
+            (ops, added)
+        }
+        _ => (vec![req.into()], Vec::new()),
+    };
+
+    cfg.pending.extend(new_ops);
     save_modded_cfg(&state, &id, &cfg).await?;
     let now = Utc::now().timestamp();
     let _ = insert_audit(
         &state.pool,
         &id,
         "mods_pending_add",
-        Some(json!({"pending_count": cfg.pending.len()})),
+        Some(json!({
+            "pending_count": cfg.pending.len(),
+            "added_count": added_entries.len(),
+        })),
         now,
     )
     .await;
-    Ok(StatusCode::NO_CONTENT)
+
+    let added_count = added_entries.len();
+    Ok(Json(AddResponse {
+        added: added_entries,
+        added_count,
+    }))
+}
+
+async fn resolve_for_add(
+    state: &AppState,
+    cfg: &ModdedConfig,
+    seed: &ModEntry,
+    _label: &str,
+) -> Vec<ModEntry> {
+    let installed: HashSet<(String, String)> = cfg
+        .mods
+        .iter()
+        .map(|m| (m.provider.clone(), m.project_id.clone()))
+        .collect();
+    let mut pending: HashSet<(String, String)> = cfg
+        .pending
+        .iter()
+        .filter_map(|p| match p {
+            PendingOp::Add { mod_entry } => {
+                Some((mod_entry.provider.clone(), mod_entry.project_id.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    pending.insert((seed.provider.clone(), seed.project_id.clone()));
+
+    let loader = cfg.runtime.type_env().to_lowercase();
+    let mut ctx = ResolveContext {
+        mc_version: &cfg.mc_version,
+        loader: loader.as_str(),
+        installed,
+        pending,
+    };
+    let http = ModpackHttp {
+        cf: state.cf_client.as_deref(),
+        mr: state.mr_client.as_ref(),
+    };
+    match resolve_required(seed, &mut ctx, &http).await {
+        Ok(extra) => extra,
+        Err(err) => {
+            tracing::warn!(error = %err, "dep resolver failed; proceeding without extras");
+            Vec::new()
+        }
+    }
 }
 
 /// `DELETE /api/servers/{id}/mods/pending/{idx}` — drop one pending op.

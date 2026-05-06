@@ -11,26 +11,28 @@
 //! latest `ServerFiles` file from the `CurseForge` API and persists the
 //! provider config so the update orchestrator can re-instantiate it later.
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::Json;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Secret, Service};
-use kube::Api;
 use kube::api::PostParams;
+use kube::Api;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::AppState;
+use std::collections::HashSet;
+
 use crate::error::AppError;
 use crate::k8s_builders::{
-    BuildParams, build_headless_service, build_rcon_secret, build_service, build_statefulset,
-    rcon_password,
+    build_headless_service, build_rcon_secret, build_service, build_statefulset, rcon_password,
+    BuildParams,
 };
 use crate::modpack::curseforge::{AutoUpdateMode, Channel, Config as CfConfig};
+use crate::modpack::dep_resolver::{resolve_required, ResolveContext};
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::modded::{Config as ModdedConfig, ModEntry, ModdedRuntime, PendingOp, Runtime};
 use crate::modpack::modrinth::{Config as MrPackConfig, ModrinthServerPack};
@@ -43,6 +45,7 @@ use crate::validation::{
     validate_exposure_mode, validate_mc_version, validate_memory_mi, validate_mod_filename,
     validate_modrinth_id_or_slug, validate_name, validate_runtime, validate_storage_size_gi,
 };
+use crate::AppState;
 
 /// Lowest `NodePort` allocated by the panel.
 const NODEPORT_MIN: i32 = 30_000;
@@ -242,7 +245,7 @@ pub async fn handle(
         }
         SOURCE_KIND_CURSEFORGE => resolve_curseforge(&state, curseforge).await?,
         SOURCE_KIND_MODRINTH => resolve_modrinth(&state, modrinth).await?,
-        SOURCE_KIND_MODDED => resolve_modded(mc_version, modded)?,
+        SOURCE_KIND_MODDED => resolve_modded(&state, mc_version, modded).await?,
         SOURCE_KIND_PAPER => resolve_paper(&state, mc_version).await?,
         _ => unreachable!("validated above"),
     };
@@ -513,7 +516,11 @@ async fn resolve_modrinth(
 
 /// Builds a modded `ResolvedSource`. Initial mods are folded into `pending`
 /// as Add ops so the Mods tab shows "N pending — apply now" on first load.
-fn resolve_modded(
+/// Required dependencies of every initial mod are resolved upstream and
+/// appended to `pending`, so the apply Job spawned post-create installs
+/// them in one pass.
+async fn resolve_modded(
+    state: &AppState,
     mc_version: Option<String>,
     cfg: Option<ModdedCreateConfig>,
 ) -> Result<ResolvedSource, AppError> {
@@ -540,13 +547,25 @@ fn resolve_modded(
     for m in &cfg.initial_mods {
         validate_mod_filename(&m.filename)?;
     }
-    let pending: Vec<PendingOp> = cfg
-        .initial_mods
-        .iter()
-        .map(|m| PendingOp::Add {
+
+    let loader_lower = match runtime {
+        Runtime::Fabric => "fabric",
+        Runtime::Forge => "forge",
+        Runtime::NeoForge => "neoforge",
+    };
+    let resolved_extras =
+        resolve_initial_extras(state, &cfg.initial_mods, &mc_v, loader_lower).await;
+
+    let mut pending: Vec<PendingOp> =
+        Vec::with_capacity(cfg.initial_mods.len() + resolved_extras.len());
+    for m in &cfg.initial_mods {
+        pending.push(PendingOp::Add {
             mod_entry: m.clone(),
-        })
-        .collect();
+        });
+    }
+    for dep in resolved_extras {
+        pending.push(PendingOp::Add { mod_entry: dep });
+    }
     let pending_count = pending.len();
     let loader_version = cfg.loader_version.filter(|s| !s.is_empty());
     let stored = ModdedConfig {
@@ -564,6 +583,55 @@ fn resolve_modded(
         source_config,
         initial_pending_mods: pending_count,
     })
+}
+
+/// Resolves the union of required deps for every seed in `seeds`. Each seed
+/// pre-populates the pending set so the resolver doesn't add it back. First
+/// resolution wins on conflicts.
+async fn resolve_initial_extras(
+    state: &AppState,
+    seeds: &[ModEntry],
+    mc_version: &str,
+    loader: &str,
+) -> Vec<ModEntry> {
+    if seeds.is_empty() {
+        return Vec::new();
+    }
+    let mut pending: HashSet<(String, String)> = seeds
+        .iter()
+        .map(|m| (m.provider.clone(), m.project_id.clone()))
+        .collect();
+    let http = ModpackHttp {
+        cf: state.cf_client.as_deref(),
+        mr: state.mr_client.as_ref(),
+    };
+    let mut extras: Vec<ModEntry> = Vec::new();
+    for seed in seeds {
+        let mut ctx = ResolveContext {
+            mc_version,
+            loader,
+            installed: HashSet::new(),
+            pending: pending.clone(),
+        };
+        match resolve_required(seed, &mut ctx, &http).await {
+            Ok(deps) => {
+                for dep in deps {
+                    let key = (dep.provider.clone(), dep.project_id.clone());
+                    if pending.insert(key) {
+                        extras.push(dep);
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    seed.project_id = %seed.project_id,
+                    "initial dep resolver failed for seed; continuing",
+                );
+            }
+        }
+    }
+    extras
 }
 
 /// Builds a Paper `ResolvedSource`. Paper-build pin is left to itzg's default

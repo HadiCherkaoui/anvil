@@ -28,6 +28,13 @@ import { Card } from "../../components/Card";
 import { CatalogSheet, type CatalogPick } from "../../components/CatalogSheet";
 import { useToast } from "../../components/Toast";
 
+function addedToastMessage(name: string, addedCount: number): string {
+	const depCount = addedCount - 1;
+	if (depCount <= 0) return `queued · ${name}`;
+	const word = depCount === 1 ? "dep" : "deps";
+	return `queued · ${name} + ${depCount.toString()} ${word}`;
+}
+
 export function ModsBody(): ReactElement {
 	const { detail, refresh } = useServerDetail();
 	const toast = useToast();
@@ -95,9 +102,9 @@ export function ModsBody(): ReactElement {
 		};
 		const op: ModPendingOp = { op: "add", mod_entry: entry };
 		addPendingMod(detail.id, op)
-			.then(() => {
+			.then((res) => {
 				refresh();
-				toast.push(`queued · ${entry.project_name}`, "success");
+				toast.push(addedToastMessage(entry.project_name, res.added_count), "success");
 			})
 			.catch((err: unknown) => {
 				toast.push(
@@ -121,6 +128,8 @@ export function ModsBody(): ReactElement {
 				);
 			});
 	};
+
+
 
 	const discardPending = (idx: number): void => {
 		removePendingMod(detail.id, idx)
@@ -412,8 +421,8 @@ function PaperPluginsBody({
 			sha512: pick.version.primary_sha512,
 		};
 		addServerPlugin(serverId, entry)
-			.then(() => {
-				onToast(`queued · ${entry.project_name}`, "success");
+			.then((res) => {
+				onToast(addedToastMessage(entry.project_name, res.added_count), "success");
 				refresh();
 				onMutated();
 			})

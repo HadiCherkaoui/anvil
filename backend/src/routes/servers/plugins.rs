@@ -8,11 +8,11 @@
 
 use std::time::Duration;
 
-use axum::Json;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
+use axum::Json;
 use bytes::Bytes;
 use chrono::Utc;
 use futures_util::sink::SinkExt as _;
@@ -20,18 +20,22 @@ use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{oneshot, watch};
-use tokio::time::{MissedTickBehavior, interval};
+use tokio::time::{interval, MissedTickBehavior};
 
-use crate::AppState;
+use std::collections::HashSet;
+
 use crate::error::AppError;
+use crate::modpack::dep_resolver::{resolve_required, ResolveContext};
 use crate::modpack::guard::UpdateGuard;
 use crate::modpack::modded::ModEntry;
 use crate::modpack::mods_apply::{self, SyncTarget};
 use crate::modpack::orchestrator::UpdatePhase;
 use crate::modpack::paper::Config as PaperConfig;
+use crate::modpack::ModpackHttp;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
 use crate::validation::validate_mod_filename;
+use crate::AppState;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 
@@ -59,11 +63,19 @@ pub async fn list(
     }))
 }
 
+/// Response body for `POST /api/servers/{id}/plugins`.
+#[derive(Debug, Serialize)]
+pub struct AddResponse {
+    pub added: Vec<ModEntry>,
+    pub added_count: usize,
+}
+
 /// `POST /api/servers/{id}/plugins` — stage adding a plugin to the next apply.
 ///
 /// The full [`ModEntry`] is supplied by the catalog pick; the handler
 /// initialises `pending_plugins` from `plugins` if it's the first edit
-/// since the last apply, then upserts by filename.
+/// since the last apply, then upserts by filename. Required dependencies
+/// are pulled from upstream and appended automatically.
 ///
 /// # Errors
 ///
@@ -74,27 +86,74 @@ pub async fn add_pending(
     Path(id): Path<String>,
     State(state): State<AppState>,
     Json(entry): Json<ModEntry>,
-) -> Result<StatusCode, AppError> {
+) -> Result<Json<AddResponse>, AppError> {
     validate_mod_filename(&entry.filename)?;
 
     let mut cfg = load_paper_cfg(&state, &id).await?;
     if cfg.pending_plugins.is_empty() {
         cfg.pending_plugins = cfg.plugins.clone();
     }
+
+    let extra = resolve_for_add(&state, &cfg, &entry).await;
+
     cfg.pending_plugins.retain(|p| p.filename != entry.filename);
-    cfg.pending_plugins.push(entry);
+    cfg.pending_plugins.push(entry.clone());
+    for dep in &extra {
+        cfg.pending_plugins.retain(|p| p.filename != dep.filename);
+        cfg.pending_plugins.push(dep.clone());
+    }
     save_paper_cfg(&state, &id, &cfg).await?;
 
+    let added_count = 1 + extra.len();
     let now = Utc::now().timestamp();
     let _ = insert_audit(
         &state.pool,
         &id,
         "plugins_pending_add",
-        Some(json!({"pending_count": cfg.pending_plugins.len()})),
+        Some(json!({
+            "pending_count": cfg.pending_plugins.len(),
+            "added_count": added_count,
+        })),
         now,
     )
     .await;
-    Ok(StatusCode::NO_CONTENT)
+
+    let mut added = Vec::with_capacity(added_count);
+    added.push(entry);
+    added.extend(extra);
+    Ok(Json(AddResponse { added, added_count }))
+}
+
+async fn resolve_for_add(state: &AppState, cfg: &PaperConfig, seed: &ModEntry) -> Vec<ModEntry> {
+    let installed: HashSet<(String, String)> = cfg
+        .plugins
+        .iter()
+        .map(|p| (p.provider.clone(), p.project_id.clone()))
+        .collect();
+    let mut pending: HashSet<(String, String)> = cfg
+        .pending_plugins
+        .iter()
+        .map(|p| (p.provider.clone(), p.project_id.clone()))
+        .collect();
+    pending.insert((seed.provider.clone(), seed.project_id.clone()));
+
+    let mut ctx = ResolveContext {
+        mc_version: &cfg.mc_version,
+        loader: "paper",
+        installed,
+        pending,
+    };
+    let http = ModpackHttp {
+        cf: state.cf_client.as_deref(),
+        mr: state.mr_client.as_ref(),
+    };
+    match resolve_required(seed, &mut ctx, &http).await {
+        Ok(extra) => extra,
+        Err(err) => {
+            tracing::warn!(error = %err, "plugin dep resolver failed; proceeding without extras");
+            Vec::new()
+        }
+    }
 }
 
 /// `DELETE /api/servers/{id}/plugins/{filename}` — stage removing a plugin.
