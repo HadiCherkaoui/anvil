@@ -11,6 +11,8 @@ import { useServerDetailCtx } from "../../lib/server-detail-context";
 import { usePlayers } from "../../lib/use-players";
 
 import { Card } from "../../components/Card";
+import { CopyIcon } from "../../components/icons/Copy";
+import { useToast } from "../../components/Toast";
 
 const METRICS_POLL_MS = 5_000;
 
@@ -29,10 +31,24 @@ function formatLiveMemory(memMi: number | null, limitMi: number): string {
 
 export function OverviewBody(): ReactElement {
 	const detail = useServerDetailCtx();
+	const toast = useToast();
 	const isRunning = detail.status === "running";
 	const players = usePlayers(detail.id, { enabled: isRunning });
 	const [metrics, setMetrics] = useState<ServerMetrics | null>(null);
 	const [metricsError, setMetricsError] = useState<string | null>(null);
+
+	const onCopyAddr = (): void => {
+		if (detail.endpoint === null) return;
+		const addr = `${detail.endpoint.host}:${detail.endpoint.port.toString()}`;
+		navigator.clipboard.writeText(addr).then(
+			() => {
+				toast.push("copied", "success");
+			},
+			() => {
+				toast.push("clipboard unavailable", "error");
+			},
+		);
+	};
 
 	useEffect(() => {
 		// Render-time guards already gate display on `isRunning`; the effect
@@ -77,11 +93,23 @@ export function OverviewBody(): ReactElement {
 	return (
 		<div className="grid gap-4 lg:grid-cols-2">
 			<Card header="connection">
-				<pre className="font-mono text-[12px] text-text-body">
-					{detail.endpoint
-						? `${detail.endpoint.host}:${detail.endpoint.port.toString()}`
-						: "address pending…"}
-				</pre>
+				<div className="flex items-center gap-2">
+					<pre className="font-mono text-[12px] text-text-body">
+						{detail.endpoint
+							? `${detail.endpoint.host}:${detail.endpoint.port.toString()}`
+							: "address pending…"}
+					</pre>
+					{detail.endpoint !== null && (
+						<button
+							type="button"
+							onClick={onCopyAddr}
+							aria-label="copy address"
+							className="rounded p-1 text-text-faint hover:text-text-body focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+						>
+							<CopyIcon />
+						</button>
+					)}
+				</div>
 				<dl className="mt-4 grid grid-cols-[8rem_1fr] gap-y-1 font-mono text-[11px]">
 					<dt className="text-text-muted">exposure</dt>
 					<dd className="text-text-body">{detail.exposure_mode}</dd>
