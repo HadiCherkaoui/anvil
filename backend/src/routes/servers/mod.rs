@@ -23,6 +23,7 @@ pub mod stop;
 pub mod storage;
 pub mod update;
 pub mod update_stream;
+pub mod version;
 
 use std::collections::HashMap;
 

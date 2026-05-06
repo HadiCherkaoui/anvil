@@ -91,6 +91,10 @@ fn api_routes(state: AppState) -> Router<AppState> {
             get(servers::update_stream::handle),
         )
         .route(
+            "/api/servers/{id}/version",
+            axum::routing::patch(servers::version::handle),
+        )
+        .route(
             "/api/servers/{id}/settings",
             axum::routing::patch(servers::settings::handle),
         )
