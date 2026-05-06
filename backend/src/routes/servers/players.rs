@@ -379,8 +379,12 @@ pub async fn handle_get(
 async fn scrape_history(state: &AppState, id: &str) -> Vec<PlayerEventDto> {
     let pod_name = format!("mc-{id}-0");
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
+    // `timestamps: true` makes kube prepend an RFC3339 timestamp to
+    // each line — we use that as the event time, so "Xs ago" reflects
+    // when the join/leave actually happened, not when we scraped.
     let params = LogParams {
         tail_lines: Some(HISTORY_TAIL_LINES),
+        timestamps: true,
         ..LogParams::default()
     };
     let Ok(text) = pods.logs(&pod_name, &params).await else {
@@ -389,7 +393,10 @@ async fn scrape_history(state: &AppState, id: &str) -> Vec<PlayerEventDto> {
     let now = players::now_ms();
     let mut evs: Vec<PlayerEvent> = text
         .lines()
-        .filter_map(|line| players::parse_log_join_leave(line, now))
+        .filter_map(|line| {
+            let (ts_ms, rest) = players::split_kube_ts_prefix(line).unwrap_or((now, line));
+            players::parse_log_join_leave(rest, ts_ms)
+        })
         .collect();
     // Latest first, capped.
     evs.reverse();

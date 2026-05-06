@@ -3,7 +3,7 @@
 //! All functions are I/O-free and `kube`-free. The route handlers feed
 //! them strings; tests cover real-world MC output samples.
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 /// Online-player snapshot derived from `RCON list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +202,19 @@ pub fn parse_log_join_leave(line: &str, ts_ms: i64) -> Option<PlayerEvent> {
     None
 }
 
+/// Splits a kube `--timestamps` log line into `(ts_ms, rest)`.
+///
+/// When `LogParams::timestamps` is set, kube prepends an
+/// `RFC3339Nano` timestamp + space to every output line. Returns
+/// `None` if the prefix is missing or unparseable so the caller can
+/// fall back to a scrape-time stamp.
+#[must_use]
+pub fn split_kube_ts_prefix(line: &str) -> Option<(i64, &str)> {
+    let (ts_str, rest) = line.split_once(' ')?;
+    let dt = DateTime::parse_from_rfc3339(ts_str).ok()?;
+    Some((dt.timestamp_millis(), rest))
+}
+
 /// Strips the `[HH:MM:SS] [thread/LEVEL]:` (vanilla) or
 /// `[HH:MM:SS LEVEL]:` (Forge/Paper) prefix and returns the body, or
 /// `None` if the line doesn't have a recognized prefix.
@@ -376,6 +389,32 @@ mod tests {
         let line = "[01:23:45 INFO]: alice joined the game";
         let ev = parse_log_join_leave(line, 0).expect("expected join");
         assert_eq!(ev.player, "alice");
+    }
+
+    #[test]
+    fn split_kube_ts_prefix_extracts_rfc3339_and_rest() {
+        let line =
+            "2026-05-05T20:56:02.123456789Z [20:56:02] [Server thread/INFO]: alice joined the game";
+        let (ts_ms, rest) = split_kube_ts_prefix(line).expect("expected split");
+        let expected = DateTime::parse_from_rfc3339("2026-05-05T20:56:02.123456789Z")
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(ts_ms, expected);
+        assert!(rest.starts_with("[20:56:02]"));
+    }
+
+    #[test]
+    fn split_kube_ts_prefix_returns_none_without_prefix() {
+        for line in [
+            "[20:56:02] [Server thread/INFO]: alice joined the game",
+            "not-a-timestamp message",
+            "",
+        ] {
+            assert!(
+                split_kube_ts_prefix(line).is_none(),
+                "expected None for {line:?}"
+            );
+        }
     }
 
     #[test]
