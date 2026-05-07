@@ -111,34 +111,19 @@ pub async fn handle(
     }
 
     let mut audit = if touches_modpack {
-        let mut cfg: Value = serde_json::from_str(&source_config)
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("source_config not JSON: {e}")))?;
-        let obj = cfg.as_object_mut().ok_or(AppError::BadRequest {
-            code: "source_config_invalid",
-            message: "source_config is not a JSON object".to_owned(),
-        })?;
-        if let Some(m) = req.auto_update_mode {
-            obj.insert(
-                "auto_update_mode".into(),
-                serde_json::to_value(m).unwrap_or(Value::Null),
-            );
-        }
-        if let Some(skips) = req.version_skip {
-            obj.insert("version_skip".into(), serde_json::json!(skips));
-        }
-        if let Some(force) = req.force_version {
-            obj.insert(
-                "force_version".into(),
-                force.map_or(Value::Null, Value::String),
-            );
-        }
-        let new_raw = serde_json::to_string(&cfg).map_err(|e| AppError::Internal(e.into()))?;
-        sqlx::query("UPDATE servers SET source_config = ? WHERE id = ?")
-            .bind(&new_raw)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
-        cfg
+        // Optimistic-locking CAS on source_config: read raw → mutate →
+        // `UPDATE … WHERE source_config = ?`. 0 rows-affected means a
+        // concurrent writer landed; retry once on a fresh read.
+        let cfg_after = apply_modpack_patch_cas(
+            &state.pool,
+            &id,
+            source_config,
+            req.auto_update_mode,
+            req.version_skip.clone(),
+            req.force_version.clone(),
+        )
+        .await?;
+        cfg_after
     } else {
         Value::Object(serde_json::Map::new())
     };
@@ -158,6 +143,70 @@ pub async fn handle(
     insert_audit(&state.pool, &id, "settings_updated", Some(audit), now).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Applies the modpack-specific patch to `source_config` with optimistic
+/// locking. Reads the row's `source_config` (initial caller-supplied value
+/// `initial_raw` is the first attempt's CAS key), mutates the JSON, then
+/// `UPDATE … WHERE source_config = ?`. On 0 rows-affected, re-reads and
+/// retries once before surfacing a conflict.
+async fn apply_modpack_patch_cas(
+    pool: &sqlx::SqlitePool,
+    id: &str,
+    initial_raw: String,
+    auto_update_mode: Option<AutoUpdateMode>,
+    version_skip: Option<Vec<String>>,
+    force_version: Option<Option<String>>,
+) -> Result<Value, AppError> {
+    let mut raw_before = initial_raw;
+    for attempt in 0..2 {
+        let mut cfg: Value = serde_json::from_str(&raw_before)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("source_config not JSON: {e}")))?;
+        let obj = cfg.as_object_mut().ok_or(AppError::BadRequest {
+            code: "source_config_invalid",
+            message: "source_config is not a JSON object".to_owned(),
+        })?;
+        if let Some(m) = auto_update_mode {
+            obj.insert(
+                "auto_update_mode".into(),
+                serde_json::to_value(m).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(ref skips) = version_skip {
+            obj.insert("version_skip".into(), serde_json::json!(skips));
+        }
+        if let Some(ref force) = force_version {
+            obj.insert(
+                "force_version".into(),
+                force.clone().map_or(Value::Null, Value::String),
+            );
+        }
+        let new_raw = serde_json::to_string(&cfg).map_err(|e| AppError::Internal(e.into()))?;
+        let res =
+            sqlx::query("UPDATE servers SET source_config = ? WHERE id = ? AND source_config = ?")
+                .bind(&new_raw)
+                .bind(id)
+                .bind(&raw_before)
+                .execute(pool)
+                .await?;
+        if res.rows_affected() > 0 {
+            return Ok(cfg);
+        }
+        if attempt == 1 {
+            return Err(AppError::Conflict {
+                code: "source_config_conflict",
+                message: "concurrent settings write; retry".to_owned(),
+            });
+        }
+        // Re-read for the retry.
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT source_config FROM servers WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
+        raw_before = row.ok_or(AppError::NotFound)?.0;
+    }
+    unreachable!("loop returns or errors")
 }
 
 /// Rebuilds the full container env for a server's persisted runtime.

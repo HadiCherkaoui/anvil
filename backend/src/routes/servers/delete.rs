@@ -130,18 +130,22 @@ pub async fn handle(
         tracing::warn!(?e, server.id = %id, "backup dir cleanup Job failed to spawn");
     }
 
-    // 8. SQLite row + audit. The DELETE goes first so a failure of the
-    //    audit insert does not leave an orphan log entry referencing a
-    //    server whose metadata still exists. Both happen after the k8s
-    //    teardown — a retry of a half-failed teardown replays the k8s
-    //    steps (each is 404-tolerant) and lands here cleanly.
+    // 8. Audit + SQLite row. Audit goes first: if it fails we return 500
+    //    without deleting the row, so a retry replays the k8s steps
+    //    (each 404-tolerant) and lands here again. The schema's
+    //    `audit_log` row references the server_id by string — the row
+    //    is allowed to outlive the server.
     let now = Utc::now().timestamp();
+    insert_audit(&state.pool, &id, "deleted", None, now).await?;
+    if let Err(e) =
+        insert_audit(&state.pool, &id, "backup_dir_cleanup_scheduled", None, now).await
+    {
+        tracing::error!(error = ?e, "audit insert failed");
+    }
     sqlx::query("DELETE FROM servers WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)
         .await?;
-    insert_audit(&state.pool, &id, "deleted", None, now).await?;
-    let _ = insert_audit(&state.pool, &id, "backup_dir_cleanup_scheduled", None, now).await;
 
     Ok(StatusCode::NO_CONTENT)
 }

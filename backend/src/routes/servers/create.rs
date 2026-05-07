@@ -244,12 +244,6 @@ pub async fn handle(
         });
     }
 
-    let nodeport = if exposure_mode == "nodeport" {
-        Some(allocate_nodeport(&state.pool).await?)
-    } else {
-        None
-    };
-
     let id = Uuid::new_v4().to_string();
     let rcon_pwd = rcon_password();
     let now = Utc::now().timestamp();
@@ -281,7 +275,9 @@ pub async fn handle(
 
     // Persist metadata + audit entry. If k8s create fails after this, the
     // SQLite row remains; DELETE handler tolerates missing k8s resources.
-    insert_server(
+    // NodePort allocation + insert happen inside a single transaction so
+    // two concurrent creates can't pick the same port.
+    let nodeport = insert_server_with_nodeport(
         &state.pool,
         &id,
         &name,
@@ -293,7 +289,6 @@ pub async fn handle(
         storage_size_gi,
         &resolved.source_config,
         &properties_json,
-        nodeport,
         now,
     )
     .await?;
@@ -346,20 +341,73 @@ pub async fn handle(
     let services: Api<Service> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
 
-    secrets
-        .create(&pp, &build_rcon_secret(&id, &state.mc_namespace, &rcon_pwd))
-        .await?;
-    services
-        .create(&pp, &build_headless_service(&build_params))
-        .await?;
-    stsets
-        .create(&pp, &build_statefulset(&build_params))
-        .await?;
-    // Pre-create the data PVC so create-time Jobs (mod/plugin sync) can
-    // mount /data before the StatefulSet has ever scaled to 1. The
-    // StatefulSet adopts the matching name on first scale-up.
-    pvcs.create(&pp, &build_data_pvc(&build_params)).await?;
-    services.create(&pp, &build_service(&build_params)).await?;
+    // Track which k8s resources we successfully created so we can roll
+    // them back if a later step fails. Without rollback, a half-failed
+    // create leaves orphans the user can only clean up via DELETE (which
+    // succeeds because the SQLite row exists). Order: secret → headless
+    // svc → STS → PVC → public svc. Rollback walks in reverse and is
+    // 404-tolerant — a resource that never landed is fine to "delete".
+    #[derive(Default)]
+    struct Created {
+        secret: bool,
+        headless: bool,
+        sts: bool,
+        pvc: bool,
+        public_svc: bool,
+    }
+    let mut created = Created::default();
+    let resource_name = format!("mc-{id}");
+    let pvc_name = format!("data-{resource_name}-0");
+    let headless_name = format!("{resource_name}-headless");
+    let secret_name = format!("{resource_name}-rcon");
+
+    let create_result: Result<(), AppError> = async {
+        secrets
+            .create(&pp, &build_rcon_secret(&id, &state.mc_namespace, &rcon_pwd))
+            .await?;
+        created.secret = true;
+        services
+            .create(&pp, &build_headless_service(&build_params))
+            .await?;
+        created.headless = true;
+        stsets
+            .create(&pp, &build_statefulset(&build_params))
+            .await?;
+        created.sts = true;
+        // Pre-create the data PVC so create-time Jobs (mod/plugin sync) can
+        // mount /data before the StatefulSet has ever scaled to 1. The
+        // StatefulSet adopts the matching name on first scale-up.
+        pvcs.create(&pp, &build_data_pvc(&build_params)).await?;
+        created.pvc = true;
+        let public_svc = build_service(&build_params)?;
+        services.create(&pp, &public_svc).await?;
+        created.public_svc = true;
+        Ok(())
+    }
+    .await;
+
+    if let Err(err) = create_result {
+        // Reverse-order best-effort cleanup. 404s are tolerated: the
+        // resource we tried to create may have failed before the API
+        // accepted it, in which case the delete also legitimately 404s.
+        let dp = kube::api::DeleteParams::default();
+        if created.public_svc {
+            tolerate_404(services.delete(&resource_name, &dp).await, "public_svc", &id);
+        }
+        if created.pvc {
+            tolerate_404(pvcs.delete(&pvc_name, &dp).await, "pvc", &id);
+        }
+        if created.sts {
+            tolerate_404(stsets.delete(&resource_name, &dp).await, "sts", &id);
+        }
+        if created.headless {
+            tolerate_404(services.delete(&headless_name, &dp).await, "headless", &id);
+        }
+        if created.secret {
+            tolerate_404(secrets.delete(&secret_name, &dp).await, "secret", &id);
+        }
+        return Err(err);
+    }
 
     // C#10: when the user pre-picked mods at create time, kick the same
     // apply task the manual `POST /:id/mods/apply` endpoint spawns. This
@@ -751,6 +799,11 @@ async fn name_exists(pool: &SqlitePool, name: &str) -> Result<bool, AppError> {
 }
 
 /// Returns the lowest unused `NodePort` in the configured range.
+///
+/// Kept for the unit tests that exercise the picker against an in-memory
+/// pool; the production path uses [`allocate_nodeport_tx`] inside the
+/// create transaction so SELECT + INSERT are atomic.
+#[cfg(test)]
 async fn allocate_nodeport(pool: &SqlitePool) -> Result<i32, AppError> {
     let rows: Vec<i64> = sqlx::query_scalar(
         "SELECT nodeport FROM servers WHERE nodeport IS NOT NULL ORDER BY nodeport ASC",
@@ -772,13 +825,121 @@ async fn allocate_nodeport(pool: &SqlitePool) -> Result<i32, AppError> {
     })
 }
 
+/// Persists a new server row, allocating a `NodePort` inside the same
+/// transaction when `exposure_mode == "nodeport"`. Bundling the SELECT
+/// + INSERT prevents two concurrent creates from picking the same port.
+///
+/// Returns the allocated port (or `None` when not in nodeport mode).
+#[allow(clippy::too_many_arguments)]
+async fn insert_server_with_nodeport(
+    pool: &SqlitePool,
+    id: &str,
+    name: &str,
+    mc_version: &str,
+    memory_mi: i64,
+    source_kind: &str,
+    exposure_mode: &str,
+    storage_class: Option<&str>,
+    storage_size_gi: i64,
+    source_config: &str,
+    properties_json: &str,
+    created_at: i64,
+) -> Result<Option<i32>, AppError> {
+    // One retry: a UNIQUE-violation on a future `nodeport` index, or any
+    // other transient conflict, gives us a chance to re-allocate.
+    for attempt in 0..2 {
+        let mut tx = pool.begin().await?;
+
+        let nodeport = if exposure_mode == "nodeport" {
+            Some(allocate_nodeport_tx(&mut tx).await?)
+        } else {
+            None
+        };
+
+        let result = sqlx::query(
+            "INSERT INTO servers (
+                id, name, mc_version, memory_mi,
+                exposure_mode, storage_class, storage_size_gi, source_config,
+                source_kind, properties, nodeport, created_at, last_started_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(mc_version)
+        .bind(memory_mi)
+        .bind(exposure_mode)
+        .bind(storage_class)
+        .bind(storage_size_gi)
+        .bind(source_config)
+        .bind(source_kind)
+        .bind(properties_json)
+        .bind(nodeport.map(i64::from))
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await;
+
+        match result {
+            Ok(_) => {
+                tx.commit().await?;
+                return Ok(nodeport);
+            }
+            Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
+                drop(tx);
+                let msg = err.message().to_ascii_lowercase();
+                if msg.contains("nodeport") && attempt == 0 {
+                    continue;
+                }
+                if msg.contains("nodeport") {
+                    return Err(AppError::Conflict {
+                        code: "port_conflict",
+                        message: "NodePort already allocated; retry".to_owned(),
+                    });
+                }
+                return Err(AppError::Conflict {
+                    code: "name_taken",
+                    message: format!("a server named {name:?} already exists"),
+                });
+            }
+            Err(other) => {
+                drop(tx);
+                return Err(AppError::DbUnavailable(other));
+            }
+        }
+    }
+    unreachable!("loop returns or errors")
+}
+
+/// Transactional variant of [`allocate_nodeport`]. Same semantics; the
+/// SELECT runs against the open transaction so a concurrent insert can't
+/// race past it before our INSERT lands.
+async fn allocate_nodeport_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<i32, AppError> {
+    let rows: Vec<i64> = sqlx::query_scalar(
+        "SELECT nodeport FROM servers WHERE nodeport IS NOT NULL ORDER BY nodeport ASC",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    let used: std::collections::BTreeSet<i32> = rows
+        .into_iter()
+        .filter_map(|n| i32::try_from(n).ok())
+        .collect();
+    for candidate in NODEPORT_MIN..=NODEPORT_MAX {
+        if !used.contains(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::Conflict {
+        code: "nodeport_range_exhausted",
+        message: format!("all NodePorts in [{NODEPORT_MIN}..={NODEPORT_MAX}] are allocated"),
+    })
+}
+
 /// Persists a new row in `servers`.
 ///
-/// The `name_exists` pre-check is racy with concurrent creates; the
-/// `UNIQUE NOT NULL` constraint on `servers.name` is the durable
-/// guarantee. A UNIQUE violation here is mapped back to
-/// [`AppError::Conflict`] so the client still sees `409 name_taken`
-/// rather than a misleading 500.
+/// Kept for the unit tests that pre-seed rows with explicit ports; the
+/// production path goes through [`insert_server_with_nodeport`].
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn insert_server(
     pool: &SqlitePool,
@@ -824,6 +985,25 @@ async fn insert_server(
             message: format!("a server named {name:?} already exists"),
         }),
         Err(other) => Err(AppError::DbUnavailable(other)),
+    }
+}
+
+/// Logs a kube delete result issued during create-rollback. 404s mean the
+/// resource was never durably created and we silently move on; transport
+/// errors are logged so the operator can clean them up if needed (the
+/// SQLite row remains and a follow-up DELETE will retry the steps).
+fn tolerate_404<T>(result: Result<T, kube::Error>, kind: &'static str, server_id: &str) {
+    match result {
+        Ok(_) => {}
+        Err(kube::Error::Api(err)) if err.code == 404 => {}
+        Err(other) => {
+            tracing::warn!(
+                server.id = %server_id,
+                resource_kind = kind,
+                error = %other,
+                "rollback delete failed",
+            );
+        }
     }
 }
 

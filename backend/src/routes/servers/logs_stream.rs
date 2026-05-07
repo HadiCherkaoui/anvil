@@ -157,9 +157,19 @@ async fn write_loop(
             ..LogParams::default()
         };
         // Pod can die between the status check above and the log open;
-        // any failure means "go back to waiting."
-        let Ok(log_stream) = pods.log_stream(&pod_name, &log_params).await else {
-            continue 'outer;
+        // any failure means "go back to waiting." Bound the open with a
+        // 60s timeout + close-watch so a stalled kube API doesn't freeze
+        // the WS task without heartbeats.
+        let log_stream = tokio::select! {
+            biased;
+            _ = &mut close_rx => return,
+            res = tokio::time::timeout(Duration::from_secs(60), pods.log_stream(&pod_name, &log_params)) => {
+                match res {
+                    Ok(Ok(s)) => s,
+                    Ok(Err(_)) => continue 'outer,
+                    Err(_) => continue 'outer,
+                }
+            }
         };
         let mut lines = log_stream.lines();
 

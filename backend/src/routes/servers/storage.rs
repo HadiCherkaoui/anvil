@@ -17,6 +17,7 @@ use serde_json::json;
 use crate::AppState;
 use crate::error::AppError;
 use crate::routes::cluster::current_caps;
+use crate::validation::validate_storage_size_gi;
 
 /// Request body for `PATCH /api/servers/:id/storage`.
 #[derive(Debug, Deserialize)]
@@ -48,6 +49,8 @@ pub async fn handle(
     State(state): State<AppState>,
     Json(req): Json<ResizeRequest>,
 ) -> Result<(StatusCode, Json<ResizeResponse>), AppError> {
+    validate_storage_size_gi(i64::from(req.size_gi))?;
+
     let row: Option<(i64, Option<String>)> =
         sqlx::query_as("SELECT storage_size_gi, storage_class FROM servers WHERE id = ?")
             .bind(&id)

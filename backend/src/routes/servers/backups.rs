@@ -216,6 +216,12 @@ async fn server_must_exist(state: &AppState, id: &str) -> Result<(), AppError> {
 }
 
 async fn backup_must_exist(state: &AppState, id: &str, backup_id: &str) -> Result<(), AppError> {
+    if !is_uuid(backup_id) {
+        return Err(AppError::BadRequest {
+            code: "validation_failed",
+            message: "backup_id must be a UUID".to_owned(),
+        });
+    }
     let opt: Option<(String,)> =
         sqlx::query_as("SELECT id FROM backups WHERE id = ? AND server_id = ?")
             .bind(backup_id)
@@ -226,4 +232,26 @@ async fn backup_must_exist(state: &AppState, id: &str, backup_id: &str) -> Resul
         return Err(AppError::NotFound);
     }
     Ok(())
+}
+
+/// Returns `true` when `s` matches the canonical 8-4-4-4-12 hex UUID shape
+/// (case-insensitive). We don't pull in the `uuid` crate just to validate;
+/// the shape guard is enough to reject path traversal and SQL wildcard
+/// noise before any DB lookup.
+fn is_uuid(s: &str) -> bool {
+    if s.len() != 36 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        let want_dash = matches!(i, 8 | 13 | 18 | 23);
+        if want_dash {
+            if *b != b'-' {
+                return false;
+            }
+        } else if !b.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
 }

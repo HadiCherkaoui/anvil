@@ -27,7 +27,7 @@ use crate::files_helper::{
     tear_down_helper,
 };
 use crate::routes::servers::create::insert_audit;
-use crate::validation::validate_data_path;
+use crate::validation::validate_data_path_argv_only;
 
 /// 100 MiB upload cap (sub-project D scope) as bytes.
 pub const UPLOAD_CAP_BYTES: u64 = 100 * 1024 * 1024;
@@ -51,6 +51,27 @@ fn data_path(path: &str) -> String {
     }
 }
 
+/// Classifies a non-zero exec result from a file operation. Maps known
+/// stderr substrings to user-facing errors; logs unknown failures and
+/// returns a generic `Internal` so we never echo raw stderr to clients.
+fn classify_exec_failure(op: &'static str, stderr: &str) -> AppError {
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("no such file or directory") || lower.contains("enoent") {
+        AppError::NotFound
+    } else if lower.contains("is a directory") {
+        AppError::BadRequest {
+            code: "invalid_target",
+            message: "target is a directory".to_owned(),
+        }
+    } else if lower.contains("permission denied") {
+        tracing::error!(op, stderr = %stderr.trim(), "file op permission denied");
+        AppError::Internal(anyhow::anyhow!("file operation failed"))
+    } else {
+        tracing::error!(op, stderr = %stderr.trim(), "file op failed");
+        AppError::Internal(anyhow::anyhow!("file operation failed"))
+    }
+}
+
 /// `GET /api/servers/{id}/files?path=/`.
 ///
 /// # Errors
@@ -64,7 +85,7 @@ pub async fn list(
     Query(q): Query<PathQuery>,
 ) -> Result<Json<FileListResponse>, AppError> {
     let raw_path = q.path.unwrap_or_else(|| "/".to_owned());
-    let path = validate_data_path(&raw_path)?.to_owned();
+    let path = validate_data_path_argv_only(&raw_path)?.to_owned();
     let target = data_path(&path);
 
     let pod_name = target_pod_for_files(&state, &server_id).await?;
@@ -81,10 +102,7 @@ pub async fn list(
         return Err(AppError::NotFound);
     }
     if result.exit_code != Some(0) {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "list exec failed: stderr={}",
-            result.stderr.trim()
-        )));
+        return Err(classify_exec_failure("list", &result.stderr));
     }
 
     let entries = parse_list_output(&result.stdout);
@@ -102,7 +120,7 @@ pub async fn list(
 ///
 /// Panics if the file basename contains bytes that cannot live in an
 /// HTTP header value. This is impossible for paths that pass
-/// [`validate_data_path`], which restricts segments to printable ASCII
+/// [`validate_data_path_argv_only`], which restricts segments to printable ASCII
 /// minus single-quote and backslash.
 pub async fn download(
     State(state): State<AppState>,
@@ -113,7 +131,7 @@ pub async fn download(
         code: "path_required",
         message: "path query parameter required".to_owned(),
     })?;
-    let path = validate_data_path(&raw_path)?.to_owned();
+    let path = validate_data_path_argv_only(&raw_path)?.to_owned();
     if path == "/" {
         return Err(AppError::BadRequest {
             code: "path_is_root",
@@ -123,7 +141,11 @@ pub async fn download(
     let target = data_path(&path);
     let pod_name = target_pod_for_files(&state, &server_id).await?;
 
-    // Pre-flight: stat for size + existence. Missing file → 404.
+    // Pre-flight: stat for existence. Missing file → 404. We deliberately
+    // don't set Content-Length from the stat size — the file may be
+    // mutated between stat and the cat stream finishing, and a wrong
+    // length aborts the transfer. axum/hyper falls back to chunked
+    // transfer-encoding when the header is absent.
     let stat = pod_exec_capture(
         &state,
         &state.mc_namespace,
@@ -134,12 +156,12 @@ pub async fn download(
     if stat.exit_code != Some(0) {
         return Err(AppError::NotFound);
     }
-    let size = parse_stat_size(&stat.stdout).ok_or_else(|| {
-        AppError::Internal(anyhow::anyhow!(
+    if parse_stat_size(&stat.stdout).is_none() {
+        return Err(AppError::Internal(anyhow::anyhow!(
             "stat returned non-numeric output: {}",
             stat.stdout
-        ))
-    })?;
+        )));
+    }
 
     let basename = path.rsplit('/').next().unwrap_or("file").to_owned();
     let stream =
@@ -150,7 +172,6 @@ pub async fn download(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),
     );
-    headers.insert(header::CONTENT_LENGTH, size.into());
     headers.insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!("attachment; filename=\"{basename}\""))
@@ -178,7 +199,7 @@ pub async fn upload(
         code: "path_required",
         message: "path query parameter required".to_owned(),
     })?;
-    let path = validate_data_path(&raw_path)?.to_owned();
+    let path = validate_data_path_argv_only(&raw_path)?.to_owned();
     if path == "/" {
         return Err(AppError::BadRequest {
             code: "path_is_root",
@@ -278,7 +299,7 @@ async fn action_mkdir(
     path: &str,
     now: i64,
 ) -> Result<StatusCode, AppError> {
-    let p = validate_data_path(path)?.to_owned();
+    let p = validate_data_path_argv_only(path)?.to_owned();
     if p == "/" {
         return Err(AppError::BadRequest {
             code: "path_is_root",
@@ -294,10 +315,7 @@ async fn action_mkdir(
     )
     .await?;
     if r.exit_code != Some(0) {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "mkdir failed: {}",
-            r.stderr.trim()
-        )));
+        return Err(classify_exec_failure("mkdir", &r.stderr));
     }
     insert_audit(
         &state.pool,
@@ -318,8 +336,8 @@ async fn action_rename(
     to: &str,
     now: i64,
 ) -> Result<StatusCode, AppError> {
-    let from_p = validate_data_path(from)?.to_owned();
-    let to_p = validate_data_path(to)?.to_owned();
+    let from_p = validate_data_path_argv_only(from)?.to_owned();
+    let to_p = validate_data_path_argv_only(to)?.to_owned();
     if from_p == "/" || to_p == "/" {
         return Err(AppError::BadRequest {
             code: "path_is_root",
@@ -336,10 +354,7 @@ async fn action_rename(
     )
     .await?;
     if r.exit_code != Some(0) {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "rename failed: {}",
-            r.stderr.trim()
-        )));
+        return Err(classify_exec_failure("rename", &r.stderr));
     }
     insert_audit(
         &state.pool,
@@ -360,7 +375,7 @@ async fn action_delete(
     recursive: bool,
     now: i64,
 ) -> Result<StatusCode, AppError> {
-    let p = validate_data_path(path)?.to_owned();
+    let p = validate_data_path_argv_only(path)?.to_owned();
     if p == "/" {
         return Err(AppError::BadRequest {
             code: "path_is_root",
@@ -375,17 +390,14 @@ async fn action_delete(
     };
     let r = pod_exec_capture(state, &state.mc_namespace, pod_name, &cmd).await?;
     if r.exit_code != Some(0) {
-        let stderr = r.stderr.to_ascii_lowercase();
-        if !recursive && stderr.contains("is a directory") {
+        let stderr_lower = r.stderr.to_ascii_lowercase();
+        if !recursive && stderr_lower.contains("is a directory") {
             return Err(AppError::BadRequest {
                 code: "recursive_required",
                 message: "target is a directory; pass recursive=true".to_owned(),
             });
         }
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "delete failed: {}",
-            r.stderr.trim()
-        )));
+        return Err(classify_exec_failure("delete", &r.stderr));
     }
     insert_audit(
         &state.pool,

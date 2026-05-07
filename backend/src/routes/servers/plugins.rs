@@ -106,7 +106,7 @@ pub async fn add_pending(
 
     let added_count = 1 + extra.len();
     let now = Utc::now().timestamp();
-    let _ = insert_audit(
+    if let Err(e) = insert_audit(
         &state.pool,
         &id,
         "plugins_pending_add",
@@ -116,7 +116,10 @@ pub async fn add_pending(
         })),
         now,
     )
-    .await;
+    .await
+    {
+        tracing::error!(error = ?e, "audit insert failed");
+    }
 
     let mut added = Vec::with_capacity(added_count);
     added.push(entry);
@@ -184,14 +187,17 @@ pub async fn remove_pending(
     save_paper_cfg(&state, &id, &cfg).await?;
 
     let now = Utc::now().timestamp();
-    let _ = insert_audit(
+    if let Err(e) = insert_audit(
         &state.pool,
         &id,
         "plugins_pending_remove",
         Some(json!({"filename": filename, "pending_count": cfg.pending_plugins.len()})),
         now,
     )
-    .await;
+    .await
+    {
+        tracing::error!(error = ?e, "audit insert failed");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -354,7 +360,7 @@ async fn write_loop(
     let rx_opt: Option<watch::Receiver<UpdatePhase>> = state
         .update_phase_buses
         .lock()
-        .expect("update_phase_buses poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .get(&id)
         .cloned();
 

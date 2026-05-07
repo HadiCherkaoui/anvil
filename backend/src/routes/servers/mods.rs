@@ -119,32 +119,35 @@ pub async fn add_pending(
         }
     }
 
-    let mut cfg = load_modded_cfg(&state, &id).await?;
-
-    let (new_ops, added_entries): (Vec<PendingOp>, Vec<ModEntry>) = match &req {
-        PendingOpRequest::Add { mod_entry } => {
-            let extra = resolve_for_add(&state, &cfg, mod_entry, "modrinth_or_seed_provider").await;
-            let mut ops: Vec<PendingOp> = Vec::with_capacity(1 + extra.len());
-            ops.push(PendingOp::Add {
-                mod_entry: mod_entry.clone(),
-            });
-            for dep in &extra {
-                ops.push(PendingOp::Add {
-                    mod_entry: dep.clone(),
+    // Optimistic-locking retry: read source_config, mutate, conditional
+    // UPDATE keyed on the original raw JSON. A concurrent writer that
+    // landed between read and write changes source_config and our UPDATE
+    // affects 0 rows; we re-read once and try again.
+    let (cfg_after, added_entries) = {
+        let (mut cfg, raw_before) = load_modded_cfg_raw(&state, &id).await?;
+        let (new_ops, added) = build_new_ops(&state, &cfg, &req).await;
+        cfg.pending.extend(new_ops);
+        let rows = save_modded_cfg_cas(&state, &id, &cfg, &raw_before).await?;
+        if rows == 0 {
+            // One retry on conflict.
+            let (mut cfg2, raw2) = load_modded_cfg_raw(&state, &id).await?;
+            let (new_ops2, added2) = build_new_ops(&state, &cfg2, &req).await;
+            cfg2.pending.extend(new_ops2);
+            let rows2 = save_modded_cfg_cas(&state, &id, &cfg2, &raw2).await?;
+            if rows2 == 0 {
+                return Err(AppError::Conflict {
+                    code: "source_config_conflict",
+                    message: "concurrent modlist write; retry".to_owned(),
                 });
             }
-            let mut added = Vec::with_capacity(1 + extra.len());
-            added.push(mod_entry.clone());
-            added.extend(extra);
-            (ops, added)
+            (cfg2, added2)
+        } else {
+            (cfg, added)
         }
-        _ => (vec![req.into()], Vec::new()),
     };
-
-    cfg.pending.extend(new_ops);
-    save_modded_cfg(&state, &id, &cfg).await?;
+    let cfg = cfg_after;
     let now = Utc::now().timestamp();
-    let _ = insert_audit(
+    if let Err(e) = insert_audit(
         &state.pool,
         &id,
         "mods_pending_add",
@@ -154,7 +157,10 @@ pub async fn add_pending(
         })),
         now,
     )
-    .await;
+    .await
+    {
+        tracing::error!(error = ?e, "audit insert failed");
+    }
 
     let added_count = added_entries.len();
     Ok(Json(AddResponse {
@@ -216,12 +222,25 @@ pub async fn remove_pending(
     Path((id, idx)): Path<(String, usize)>,
     State(state): State<AppState>,
 ) -> Result<StatusCode, AppError> {
-    let mut cfg = load_modded_cfg(&state, &id).await?;
-    if idx >= cfg.pending.len() {
-        return Err(AppError::NotFound);
+    // CAS retry: lost-update on source_config would silently clobber a
+    // concurrent add. One retry covers the common race window.
+    for attempt in 0..2 {
+        let (mut cfg, raw_before) = load_modded_cfg_raw(&state, &id).await?;
+        if idx >= cfg.pending.len() {
+            return Err(AppError::NotFound);
+        }
+        cfg.pending.remove(idx);
+        let rows = save_modded_cfg_cas(&state, &id, &cfg, &raw_before).await?;
+        if rows > 0 {
+            return Ok(StatusCode::NO_CONTENT);
+        }
+        if attempt == 1 {
+            return Err(AppError::Conflict {
+                code: "source_config_conflict",
+                message: "concurrent modlist write; retry".to_owned(),
+            });
+        }
     }
-    cfg.pending.remove(idx);
-    save_modded_cfg(&state, &id, &cfg).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -300,6 +319,16 @@ pub async fn apply_stream(
 }
 
 async fn load_modded_cfg(state: &AppState, id: &str) -> Result<ModdedConfig, AppError> {
+    Ok(load_modded_cfg_raw(state, id).await?.0)
+}
+
+/// Like [`load_modded_cfg`] but also returns the raw JSON so callers can
+/// use it as the optimistic-lock key on a follow-up `UPDATE … WHERE
+/// source_config = ?`.
+async fn load_modded_cfg_raw(
+    state: &AppState,
+    id: &str,
+) -> Result<(ModdedConfig, String), AppError> {
     let row: Option<(String, String)> =
         sqlx::query_as("SELECT source_kind, source_config FROM servers WHERE id = ?")
             .bind(id)
@@ -312,18 +341,79 @@ async fn load_modded_cfg(state: &AppState, id: &str) -> Result<ModdedConfig, App
             message: "modlist endpoints only apply to modded servers".to_owned(),
         });
     }
-    serde_json::from_str(&raw)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("source_config not modded JSON: {e}")))
+    let cfg = serde_json::from_str(&raw)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("source_config not modded JSON: {e}")))?;
+    Ok((cfg, raw))
 }
 
-async fn save_modded_cfg(state: &AppState, id: &str, cfg: &ModdedConfig) -> Result<(), AppError> {
+/// Conditional save: returns rows-affected. 0 means a concurrent writer
+/// changed `source_config` between our read and write — caller retries.
+async fn save_modded_cfg_cas(
+    state: &AppState,
+    id: &str,
+    cfg: &ModdedConfig,
+    expected_raw: &str,
+) -> Result<u64, AppError> {
     let raw = serde_json::to_string(cfg).map_err(|e| AppError::Internal(e.into()))?;
-    sqlx::query("UPDATE servers SET source_config = ? WHERE id = ?")
+    let res = sqlx::query("UPDATE servers SET source_config = ? WHERE id = ? AND source_config = ?")
         .bind(&raw)
         .bind(id)
+        .bind(expected_raw)
         .execute(&state.pool)
         .await?;
-    Ok(())
+    Ok(res.rows_affected())
+}
+
+/// Builds `(new_ops, added_entries)` from the request against the latest
+/// `cfg` snapshot. Pulled out so the optimistic-locking retry can rebuild
+/// the ops against a re-read row.
+async fn build_new_ops(
+    state: &AppState,
+    cfg: &ModdedConfig,
+    req: &PendingOpRequest,
+) -> (Vec<PendingOp>, Vec<ModEntry>) {
+    match req {
+        PendingOpRequest::Add { mod_entry } => {
+            let extra = resolve_for_add(state, cfg, mod_entry, "modrinth_or_seed_provider").await;
+            let mut ops: Vec<PendingOp> = Vec::with_capacity(1 + extra.len());
+            ops.push(PendingOp::Add {
+                mod_entry: mod_entry.clone(),
+            });
+            for dep in &extra {
+                ops.push(PendingOp::Add {
+                    mod_entry: dep.clone(),
+                });
+            }
+            let mut added = Vec::with_capacity(1 + extra.len());
+            added.push(mod_entry.clone());
+            added.extend(extra);
+            (ops, added)
+        }
+        PendingOpRequest::Remove { filename } => (
+            vec![PendingOp::Remove {
+                filename: filename.clone(),
+            }],
+            Vec::new(),
+        ),
+        PendingOpRequest::Bump {
+            filename,
+            to_version_id,
+            to_version_name,
+            to_filename,
+            to_download_url,
+            to_sha512,
+        } => (
+            vec![PendingOp::Bump {
+                filename: filename.clone(),
+                to_version_id: to_version_id.clone(),
+                to_version_name: to_version_name.clone(),
+                to_filename: to_filename.clone(),
+                to_download_url: to_download_url.clone(),
+                to_sha512: to_sha512.clone(),
+            }],
+            Vec::new(),
+        ),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -384,7 +474,7 @@ async fn write_loop(
     let rx_opt: Option<watch::Receiver<UpdatePhase>> = state
         .update_phase_buses
         .lock()
-        .expect("update_phase_buses poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .get(&id)
         .cloned();
 
