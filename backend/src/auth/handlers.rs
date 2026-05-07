@@ -8,7 +8,8 @@
 use axum::Extension;
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::response::Redirect;
+use axum::http::header;
+use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::{Cookie, CookieJar, PrivateCookieJar, SameSite};
 use serde::Deserialize;
 use serde_json::json;
@@ -78,6 +79,10 @@ pub struct CallbackParams {
 
 /// `GET /api/auth/callback` — exchange code, mint session JWT, set cookie.
 ///
+/// On every error path we attach a removal `Set-Cookie` for
+/// [`OIDC_STATE_COOKIE`] so the short-lived state doesn't sit for the full
+/// 10-minute TTL after a failed exchange.
+///
 /// # Errors
 ///
 /// - [`AppError::Unauthorized`] for missing/invalid state, code, or ID token.
@@ -88,6 +93,18 @@ pub async fn callback(
     private_jar: PrivateCookieJar,
     public_jar: CookieJar,
     Query(params): Query<CallbackParams>,
+) -> Response {
+    match callback_inner(state, private_jar, public_jar, params).await {
+        Ok(ok) => ok.into_response(),
+        Err(err) => attach_state_removal(err.into_response()),
+    }
+}
+
+async fn callback_inner(
+    state: AppState,
+    private_jar: PrivateCookieJar,
+    public_jar: CookieJar,
+    params: CallbackParams,
 ) -> Result<(PrivateCookieJar, CookieJar, Redirect), AppError> {
     if let Some(err) = params.error {
         return Err(AppError::Forbidden {
@@ -129,6 +146,18 @@ pub async fn callback(
     let private_jar = private_jar.remove(removal(OIDC_STATE_COOKIE, "/api/auth"));
     let public_jar = public_jar.add(session_cookie(token));
     Ok((private_jar, public_jar, Redirect::to("/")))
+}
+
+/// Appends a removal `Set-Cookie` for [`OIDC_STATE_COOKIE`] (path
+/// `/api/auth`, http-only, secure, `SameSite=Lax`) so a callback failure
+/// doesn't leave the encrypted state cookie sitting client-side for its
+/// full 10-minute TTL.
+fn attach_state_removal(mut resp: Response) -> Response {
+    let cookie = removal(OIDC_STATE_COOKIE, "/api/auth");
+    if let Ok(value) = cookie.to_string().parse() {
+        resp.headers_mut().append(header::SET_COOKIE, value);
+    }
+    resp
 }
 
 /// `GET /api/auth/me` — current user from the request extension.

@@ -37,8 +37,17 @@ pub fn mint(key: &[u8], claims: &SessionClaims) -> Result<String, AppError> {
 pub fn verify(key: &[u8], token: &str) -> Result<SessionClaims, AppError> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_required_spec_claims(&["exp"]);
+    validation.validate_nbf = true;
     let data = decode::<SessionClaims>(token, &DecodingKey::from_secret(key), &validation)
         .map_err(|_| AppError::Unauthorized)?;
+    // Reject tokens issued in the future (clock-skew tolerance: 60s). A
+    // token with a far-future `iat` would otherwise sit valid until its
+    // `exp` — an attacker who minted one once could reuse it indefinitely
+    // even after key rotation if they replay before exp.
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    if data.claims.iat > now + 60 {
+        return Err(AppError::Unauthorized);
+    }
     Ok(data.claims)
 }
 

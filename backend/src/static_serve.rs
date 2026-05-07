@@ -22,9 +22,36 @@
 #[cfg(all(feature = "serve-dir", feature = "embed"))]
 compile_error!("features `serve-dir` and `embed` are mutually exclusive — pick exactly one");
 
+/// True when `path` should be handled as an unknown API route rather than
+/// the SPA's `index.html` fallback. Matches `/api` exactly and any path
+/// starting with `/api/` so a stray `/api/typo` doesn't 200 with the SPA.
+#[cfg(any(feature = "serve-dir", feature = "embed"))]
+fn is_api_path(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
+}
+
+/// Builds a JSON 404 for an unknown `/api/*` path. Body shape matches what
+/// the frontend's fetch wrapper expects from the regular error pipeline.
+#[cfg(any(feature = "serve-dir", feature = "embed"))]
+fn api_not_found(path: &str) -> axum::response::Response {
+    use axum::http::{StatusCode, header};
+    use axum::response::IntoResponse as _;
+    let body = serde_json::json!({ "error": "not_found", "path": path });
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, "application/json")],
+        body.to_string(),
+    )
+        .into_response()
+}
+
 #[cfg(feature = "serve-dir")]
 mod serve_dir_impl {
     use axum::Router;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::response::{IntoResponse, Response};
+    use tower::util::ServiceExt as _;
     use tower_http::services::{ServeDir, ServeFile};
 
     /// Filesystem path used in the dev `serve-dir` mode.
@@ -40,10 +67,22 @@ mod serve_dir_impl {
     /// `ServeDir::fallback` (rather than `not_found_service`) preserves the
     /// inner service's `200 OK` status — the SPA can't render correctly if
     /// every deep-link reaches the page with a `404` (browser dev tools and
-    /// some kube probes treat it as a real failure).
+    /// some kube probes treat it as a real failure). Unknown `/api/*` paths
+    /// short-circuit to a JSON 404 instead of being shadowed by `index.html`.
     pub fn router() -> Router {
+        Router::new().fallback(api_or_static)
+    }
+
+    async fn api_or_static(req: Request<Body>) -> Response {
+        if super::is_api_path(req.uri().path()) {
+            return super::api_not_found(req.uri().path());
+        }
         let index = format!("{FRONTEND_OUT}/index.html");
-        Router::new().fallback_service(ServeDir::new(FRONTEND_OUT).fallback(ServeFile::new(index)))
+        let svc = ServeDir::new(FRONTEND_OUT).fallback(ServeFile::new(index));
+        match svc.oneshot(req).await {
+            Ok(r) => r.into_response(),
+            Err(e) => match e {},
+        }
     }
 }
 
@@ -66,7 +105,8 @@ mod embed_impl {
     struct Assets;
 
     /// Returns a router whose fallback resolves any non-API GET to either
-    /// the matching embedded asset or `index.html` (SPA fallback).
+    /// the matching embedded asset or `index.html` (SPA fallback). Unknown
+    /// `/api/*` paths short-circuit to a JSON 404.
     pub fn router() -> Router {
         Router::new().fallback(serve_embedded)
     }
@@ -74,9 +114,14 @@ mod embed_impl {
     /// Maps the request URI to an embedded asset, or to `index.html` when
     /// no asset matches (so client-side routing handles deep-links).
     async fn serve_embedded(uri: Uri) -> Response {
+        let raw_path = uri.path();
+        if super::is_api_path(raw_path) {
+            return super::api_not_found(raw_path);
+        }
+
         // Strip the leading slash; rust-embed keys are repository-relative
         // paths without a leading separator.
-        let path = uri.path().trim_start_matches('/');
+        let path = raw_path.trim_start_matches('/');
 
         if path.is_empty() {
             return file_response("index.html");

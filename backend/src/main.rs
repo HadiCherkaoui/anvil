@@ -124,31 +124,54 @@ async fn main() -> Result<()> {
 }
 
 /// Sets up `tracing` with the supplied filter (defaults to `info` if unset
-/// or unparseable).
+/// or unparseable). When `RUST_LOG` is set but malformed, falls back to
+/// `default_filter` AND logs a warning so the misconfiguration is visible
+/// instead of silently ignored.
 fn init_tracing(default_filter: &str) {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let env_value = std::env::var("RUST_LOG").ok();
+    let (filter, parse_warning) = match env_value.as_deref() {
+        Some(raw) => match EnvFilter::try_new(raw) {
+            Ok(f) => (f, None),
+            Err(e) => (
+                EnvFilter::new(default_filter),
+                Some(format!("RUST_LOG={raw:?} is invalid ({e}); using default filter")),
+            ),
+        },
+        None => (EnvFilter::new(default_filter), None),
+    };
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer())
         .init();
+    if let Some(msg) = parse_warning {
+        tracing::warn!("{msg}");
+    }
 }
 
 /// Resolves once SIGTERM or Ctrl-C arrives. Used to drive
-/// `axum::serve::with_graceful_shutdown`.
+/// `axum::serve::with_graceful_shutdown`. If a signal handler can't be
+/// installed we log the error and fall back to `pending::<()>` so the
+/// server keeps running without graceful shutdown rather than crashing on
+/// startup.
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = signal::ctrl_c().await {
+            tracing::error!(error=?e, "failed to install Ctrl+C handler");
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::error!(error=?e, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();

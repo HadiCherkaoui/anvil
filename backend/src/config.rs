@@ -235,12 +235,20 @@ impl Config {
     }
 }
 
+/// Strips a UTF-8 BOM (if present) and trims surrounding whitespace.
+/// Mounted-secret files often arrive with a trailing newline and
+/// occasionally a BOM from text-editor round-trips — both are bytes the
+/// secret wasn't intended to carry.
+fn clean_secret(raw: &str) -> String {
+    raw.trim_start_matches('\u{feff}').trim().to_owned()
+}
+
 /// Like [`read_secret`] but returns `None` (not an error) when both vars are unset.
 fn optional_secret(file_var: &str, value_var: &str) -> Result<Option<String>> {
     if let Ok(path) = env::var(file_var) {
         return std::fs::read_to_string(&path)
             .with_context(|| format!("{file_var}={path:?} could not be read"))
-            .map(|s| Some(s.trim_end_matches(['\n', '\r']).to_owned()));
+            .map(|s| Some(clean_secret(&s)));
     }
     Ok(env::var(value_var).ok().filter(|s| !s.is_empty()))
 }
@@ -250,7 +258,7 @@ fn read_secret(file_var: &str, value_var: &str) -> Result<String> {
     if let Ok(path) = env::var(file_var) {
         return std::fs::read_to_string(&path)
             .with_context(|| format!("{file_var}={path:?} could not be read"))
-            .map(|s| s.trim_end_matches(['\n', '\r']).to_owned());
+            .map(|s| clean_secret(&s));
     }
     env::var(value_var).with_context(|| format!("{value_var} (or {file_var}) must be set"))
 }

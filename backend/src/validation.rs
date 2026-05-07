@@ -289,9 +289,7 @@ pub fn validate_catalog_provider(p: &str) -> Result<(), AppError> {
 /// uses characters outside `[A-Za-z0-9._+-]`.
 pub fn validate_mod_filename(name: &str) -> Result<(), AppError> {
     let len = name.len();
-    let ends_jar = std::path::Path::new(name)
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("jar"));
+    let ends_jar = name.to_ascii_lowercase().ends_with(".jar");
     if !(1..=MOD_FILENAME_MAX_LEN).contains(&len)
         || name.contains('/')
         || !ends_jar
@@ -427,6 +425,12 @@ const DATA_PATH_MAX_LEN: usize = 4096;
 /// Maximum length of a single path segment (bytes).
 const DATA_PATH_SEGMENT_MAX_LEN: usize = 255;
 
+/// Validates a path component intended to be passed as an argv element to
+/// `kubectl exec` / `pod_exec_*` helpers. The byte set is permissive (printable
+/// ASCII minus `'` and `\`) on the assumption that the value is interpolated as
+/// `/data{path}` directly into argv. **Do NOT pass results into a shell
+/// (`sh -c`, eval, backticks, etc.) — shell metacharacters are accepted.**
+///
 /// Validates a path under the managed server's `/data` PVC. Empty input
 /// is normalised to `"/"`. The validated string is the input as-is so
 /// callers can interpolate it into argv as `/data{path}`.
@@ -436,7 +440,7 @@ const DATA_PATH_SEGMENT_MAX_LEN: usize = 255;
 /// Returns [`AppError::BadRequest`] with one of: `path_too_long`,
 /// `segment_empty`, `segment_traversal`, `segment_dot`,
 /// `segment_leading_dash`, `segment_too_long`, `segment_invalid_char`.
-pub fn validate_data_path(s: &str) -> Result<&str, AppError> {
+pub fn validate_data_path_argv_only(s: &str) -> Result<&str, AppError> {
     if s.is_empty() {
         return Ok("/");
     }
@@ -719,61 +723,61 @@ mod tests {
             "/World 2.zip",
             "/mods/sodium.jar",
         ] {
-            assert!(validate_data_path(p).is_ok(), "expected {p:?} to pass");
+            assert!(validate_data_path_argv_only(p).is_ok(), "expected {p:?} to pass");
         }
     }
 
     #[test]
     fn data_path_treats_empty_as_root() {
-        assert_eq!(validate_data_path("").unwrap(), "/");
+        assert_eq!(validate_data_path_argv_only("").unwrap(), "/");
     }
 
     #[test]
     fn data_path_rejects_relative_paths() {
         for p in ["world", "./world", "world/level.dat", "  "] {
-            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
         }
     }
 
     #[test]
     fn data_path_rejects_traversal_segments() {
         for p in ["/..", "/world/..", "/foo/../bar", "/../etc/passwd"] {
-            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
         }
     }
 
     #[test]
     fn data_path_rejects_dot_segments() {
         for p in ["/.", "/world/.", "/./bar"] {
-            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
         }
     }
 
     #[test]
     fn data_path_rejects_double_slash() {
         for p in ["//", "/foo//bar", "/foo/"] {
-            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
         }
     }
 
     #[test]
     fn data_path_rejects_leading_dash() {
         for p in ["/-rf", "/foo/-bar"] {
-            assert!(validate_data_path(p).is_err(), "expected {p:?} to fail");
+            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
         }
     }
 
     #[test]
     fn data_path_rejects_control_chars() {
         for bad in ["/foo\nbar", "/foo\tbar", "/foo\0bar", "/foo\x7fbar"] {
-            assert!(validate_data_path(bad).is_err(), "expected {bad:?} to fail");
+            assert!(validate_data_path_argv_only(bad).is_err(), "expected {bad:?} to fail");
         }
     }
 
     #[test]
     fn data_path_rejects_quote_and_backslash() {
         for bad in ["/foo'bar", "/foo\\bar"] {
-            assert!(validate_data_path(bad).is_err(), "expected {bad:?} to fail");
+            assert!(validate_data_path_argv_only(bad).is_err(), "expected {bad:?} to fail");
         }
     }
 
@@ -781,12 +785,12 @@ mod tests {
     fn data_path_rejects_oversize_segment() {
         let long = "a".repeat(256);
         let p = format!("/{long}");
-        assert!(validate_data_path(&p).is_err());
+        assert!(validate_data_path_argv_only(&p).is_err());
     }
 
     #[test]
     fn data_path_rejects_oversize_total() {
         let big = format!("/{}", "a/".repeat(2050)); // > 4096 chars total
-        assert!(validate_data_path(&big).is_err());
+        assert!(validate_data_path_argv_only(&big).is_err());
     }
 }

@@ -7,8 +7,9 @@
 use anyhow::{Context as _, Result};
 use sqlx::SqlitePool;
 use sqlx::migrate::Migrator;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+};
 use std::str::FromStr as _;
 use tracing::Level;
 use tracing::event;
@@ -29,7 +30,11 @@ pub async fn init(database_url: &str) -> Result<SqlitePool> {
     // inside the mounted PVC.
     let options = SqliteConnectOptions::from_str(database_url)
         .with_context(|| format!("invalid ANVIL_DATABASE_URL={database_url:?}"))?
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .foreign_keys(true);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(8)
