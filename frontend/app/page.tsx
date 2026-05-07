@@ -44,15 +44,25 @@ export default function HomePage(): ReactElement {
 	}, []);
 
 	useEffect(() => {
-		const ctrl = new AbortController();
+		let cancelled = false;
 		let timer: number | undefined;
-		triggerReload.current = (): void => {
+		// Each tick gets its own AbortController so a slow reply from the
+		// previous tick can't leak into the next one's setState.
+		let currentCtrl: AbortController | null = null;
+
+		const fire = (): void => {
+			if (cancelled) return;
+			currentCtrl?.abort();
+			const ctrl = new AbortController();
+			currentCtrl = ctrl;
 			void reload(ctrl.signal);
 		};
 
+		triggerReload.current = fire;
+
 		const tick = (): void => {
 			if (document.visibilityState === "visible") {
-				triggerReload.current();
+				fire();
 			}
 			timer = window.setTimeout(tick, POLL_INTERVAL_MS);
 		};
@@ -60,15 +70,16 @@ export default function HomePage(): ReactElement {
 
 		const onVisibility = (): void => {
 			if (document.visibilityState === "visible") {
-				triggerReload.current();
+				fire();
 			}
 		};
 		document.addEventListener("visibilitychange", onVisibility);
 
 		return () => {
+			cancelled = true;
 			if (timer !== undefined) window.clearTimeout(timer);
 			document.removeEventListener("visibilitychange", onVisibility);
-			ctrl.abort();
+			currentCtrl?.abort();
 		};
 	}, [reload]);
 

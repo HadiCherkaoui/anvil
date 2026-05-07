@@ -90,7 +90,6 @@ export function ServerDetailView(): ReactElement {
 	);
 	const [sheetOpen, setSheetOpen] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
-	const ctrlRef = useRef<AbortController | null>(null);
 
 	const reload = useCallback(
 		async (n: string, signal: AbortSignal): Promise<void> => {
@@ -115,35 +114,46 @@ export function ServerDetailView(): ReactElement {
 		[],
 	);
 
+	const fireRef = useRef<(() => void) | null>(null);
+
 	const refresh = useCallback((): void => {
-		if (name === null) return;
-		const ctrl = ctrlRef.current;
-		if (ctrl === null) return;
-		void reload(name, ctrl.signal);
-	}, [name, reload]);
+		fireRef.current?.();
+	}, []);
 
 	useEffect(() => {
 		if (name === null) return undefined;
-		const ctrl = new AbortController();
-		ctrlRef.current = ctrl;
+		let cancelled = false;
 		let timer: number | undefined;
+		// Per-tick AbortController: the previous in-flight reload is cancelled
+		// before we start the next one, so a slow response can't clobber state.
+		let currentCtrl: AbortController | null = null;
+
+		const fire = (): void => {
+			if (cancelled) return;
+			currentCtrl?.abort();
+			const ctrl = new AbortController();
+			currentCtrl = ctrl;
+			void reload(name, ctrl.signal);
+		};
+		fireRef.current = fire;
+
 		const tick = (): void => {
 			if (document.visibilityState === "visible") {
-				void reload(name, ctrl.signal);
+				fire();
 			}
 			timer = window.setTimeout(tick, POLL_INTERVAL_MS);
 		};
 		tick();
 		const onVis = (): void => {
-			if (document.visibilityState === "visible")
-				void reload(name, ctrl.signal);
+			if (document.visibilityState === "visible") fire();
 		};
 		document.addEventListener("visibilitychange", onVis);
 		return () => {
+			cancelled = true;
+			fireRef.current = null;
 			if (timer !== undefined) window.clearTimeout(timer);
 			document.removeEventListener("visibilitychange", onVis);
-			ctrl.abort();
-			if (ctrlRef.current === ctrl) ctrlRef.current = null;
+			currentCtrl?.abort();
 		};
 	}, [name, reload]);
 
@@ -216,6 +226,9 @@ export function ServerDetailView(): ReactElement {
 		fn()
 			.then(() => {
 				toast.push(`${detail.name} · ${label} ok`, "success");
+				// Refetch immediately so the badge flips to starting/stopping
+				// rather than waiting up to 5 s for the next poll tick.
+				refresh();
 			})
 			.catch((err: unknown) => {
 				const msg =

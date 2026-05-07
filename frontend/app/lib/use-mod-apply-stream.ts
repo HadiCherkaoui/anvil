@@ -1,13 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { z } from "zod";
 
-import type { UpdatePhase } from "./update-stream";
+import { phaseSchema, type UpdatePhase } from "./update-stream";
 
 export type ApplyTarget = "mods" | "plugins";
 
+export type ModApplyStatus =
+	| "connecting"
+	| "live"
+	| "reconnecting"
+	| "ended"
+	| "closed";
+
 export interface ModApplyStream {
-	status: "connecting" | "open" | "reconnecting" | "closed";
+	status: ModApplyStatus;
 	phase: UpdatePhase | null;
 	result: "succeeded" | "failed" | null;
 	endedReason: string | null;
@@ -20,11 +28,32 @@ const INITIAL: ModApplyStream = {
 	endedReason: null,
 };
 
-interface ApplyFrame {
-	type: string;
-	phase?: UpdatePhase;
-	result?: "succeeded" | "failed";
-	reason?: string;
+const resultSchema = z.enum(["succeeded", "failed"]);
+
+const frameSchema = z.discriminatedUnion("type", [
+	z.object({ type: z.literal("hello"), phase: phaseSchema.optional() }),
+	z.object({ type: z.literal("progress"), phase: phaseSchema }),
+	z.object({ type: z.literal("done"), result: resultSchema }),
+	z.object({ type: z.literal("end"), reason: z.string() }),
+]);
+
+const BACKOFF_INITIAL_MS = 1_000;
+const BACKOFF_MAX_MS = 30_000;
+const NORMAL_CLOSE_CODE = 1000;
+
+function parseFrame(raw: string): z.infer<typeof frameSchema> | null {
+	try {
+		const json: unknown = JSON.parse(raw);
+		const parsed = frameSchema.safeParse(json);
+		if (!parsed.success) {
+			console.warn("use-mod-apply-stream: invalid frame", parsed.error);
+			return null;
+		}
+		return parsed.data;
+	} catch (err: unknown) {
+		console.warn("use-mod-apply-stream: malformed JSON frame", err);
+		return null;
+	}
 }
 
 export function useModApplyStream(
@@ -32,56 +61,102 @@ export function useModApplyStream(
 	target: ApplyTarget = "mods",
 ): ModApplyStream {
 	const [state, setState] = useState<ModApplyStream>(INITIAL);
-	const cancelled = useRef(false);
+	// Tracks whether the FSM has emitted a terminal frame (`done` or `end`).
+	// The WS server closes the socket right after, and we must NOT reconnect
+	// in that case — otherwise the stream re-attaches and replays forever.
+	const terminalRef = useRef(false);
 
 	useEffect(() => {
 		if (serverId === null) return undefined;
-		cancelled.current = false;
-		const url = `${
-			window.location.protocol === "https:" ? "wss:" : "ws:"
-		}//${window.location.host}/api/servers/${encodeURIComponent(
-			serverId,
-		)}/${target}/apply/stream`;
-		let socket: WebSocket | null = null;
-		let backoff = 1_000;
+		terminalRef.current = false;
+
+		let cancelled = false;
+		let ws: WebSocket | null = null;
+		let backoff = BACKOFF_INITIAL_MS;
+		let reconnectTimer: number | null = null;
+
+		const url = new URL(
+			`/api/servers/${encodeURIComponent(serverId)}/${target}/apply/stream`,
+			window.location.href,
+		);
+		url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+
+		const scheduleReconnect = (): void => {
+			if (cancelled || terminalRef.current) return;
+			setState((s) => ({ ...s, status: "reconnecting" }));
+			const delay = backoff;
+			backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
+			reconnectTimer = window.setTimeout(connect, delay);
+		};
+
 		const connect = (): void => {
-			if (cancelled.current) return;
-			socket = new WebSocket(url);
-			socket.onopen = (): void => {
-				setState((s) => ({ ...s, status: "open" }));
+			if (cancelled || terminalRef.current) return;
+			setState((s) => ({ ...s, status: "connecting" }));
+			ws = new WebSocket(url);
+
+			ws.onopen = (): void => {
+				backoff = BACKOFF_INITIAL_MS;
+				setState((s) => ({ ...s, status: "live" }));
 			};
-			socket.onmessage = (ev): void => {
-				try {
-					const raw: unknown = JSON.parse(String(ev.data));
-					if (typeof raw === "object" && raw !== null && "type" in raw) {
-						const f = raw as ApplyFrame;
-						if (f.type === "hello" || f.type === "progress") {
-							setState((s) => ({ ...s, phase: f.phase ?? s.phase }));
-						} else if (f.type === "done") {
-							setState((s) => ({ ...s, result: f.result ?? null }));
-						} else if (f.type === "end") {
-							setState((s) => ({ ...s, endedReason: f.reason ?? null }));
-						}
+
+			ws.onmessage = (ev: MessageEvent<unknown>): void => {
+				if (typeof ev.data !== "string") return;
+				const frame = parseFrame(ev.data);
+				if (frame === null) return;
+				switch (frame.type) {
+					case "hello": {
+						setState((s) => ({
+							...s,
+							status: "live",
+							phase: frame.phase ?? s.phase,
+						}));
+						break;
 					}
-				} catch {
-					// ignore malformed frames
+					case "progress": {
+						setState((s) => ({ ...s, phase: frame.phase }));
+						break;
+					}
+					case "done": {
+						terminalRef.current = true;
+						setState((s) => ({
+							...s,
+							result: frame.result,
+							status: "ended",
+						}));
+						break;
+					}
+					case "end": {
+						terminalRef.current = true;
+						setState((s) => ({
+							...s,
+							endedReason: frame.reason,
+							status: "ended",
+						}));
+						break;
+					}
 				}
 			};
-			socket.onerror = (): void => {
-				if (cancelled.current) return;
-				setState((s) => ({ ...s, status: "reconnecting" }));
-			};
-			socket.onclose = (): void => {
-				if (cancelled.current) return;
-				setState((s) => ({ ...s, status: "reconnecting" }));
-				window.setTimeout(connect, backoff);
-				backoff = Math.min(backoff * 2, 30_000);
+
+			ws.onclose = (): void => {
+				ws = null;
+				if (cancelled || terminalRef.current) return;
+				scheduleReconnect();
 			};
 		};
+
 		connect();
-		return () => {
-			cancelled.current = true;
-			socket?.close();
+
+		return (): void => {
+			cancelled = true;
+			if (reconnectTimer !== null) {
+				window.clearTimeout(reconnectTimer);
+			}
+			if (ws !== null) {
+				ws.onopen = null;
+				ws.onmessage = null;
+				ws.onclose = null;
+				ws.close(NORMAL_CLOSE_CODE);
+			}
 		};
 	}, [serverId, target]);
 

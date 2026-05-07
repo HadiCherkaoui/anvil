@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import { z } from "zod";
 
-const phaseSchema = z.enum([
+export const phaseSchema = z.enum([
 	"queued",
 	"announcing",
 	"stopping",
@@ -84,6 +84,9 @@ export function useUpdateStream(serverId: string | null): UpdateStreamState {
 		let ws: WebSocket | null = null;
 		let backoff = BACKOFF_INITIAL_MS;
 		let reconnectTimer: number | null = null;
+		// Mirrors `state.status === "ended"` but read synchronously inside
+		// onclose so we never call setState as a side effect of a state updater.
+		let terminal = false;
 
 		const url = new URL(
 			`/api/servers/${encodeURIComponent(serverId)}/update/stream`,
@@ -124,6 +127,7 @@ export function useUpdateStream(serverId: string | null): UpdateStreamState {
 						break;
 					}
 					case "done": {
+						terminal = true;
 						setState((s) => ({
 							...s,
 							result: frame.result,
@@ -133,6 +137,7 @@ export function useUpdateStream(serverId: string | null): UpdateStreamState {
 						break;
 					}
 					case "end": {
+						terminal = true;
 						setState((s) => ({
 							...s,
 							endedReason: frame.reason,
@@ -147,12 +152,11 @@ export function useUpdateStream(serverId: string | null): UpdateStreamState {
 				ws = null;
 				if (cancelled) return;
 				// If the FSM ended cleanly we don't reconnect — `done`/`end`
-				// is the terminal event for an update.
-				setState((s) => {
-					if (s.status === "ended") return s;
-					scheduleReconnect();
-					return s;
-				});
+				// is the terminal event for an update. Decide outside the
+				// state updater so StrictMode's double-invocation can't fire
+				// `scheduleReconnect` twice.
+				if (terminal) return;
+				scheduleReconnect();
 			};
 		};
 

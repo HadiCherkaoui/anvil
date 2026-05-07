@@ -56,6 +56,20 @@ export function UploadFileDialog({
 
 	const send = (): void => {
 		if (file === null) return;
+		// Reject path-traversal characters and dotfiles outright. Stripping
+		// would silently rename the user's file; rejection is honest.
+		if (
+			file.name.includes("/") ||
+			file.name.includes("\\") ||
+			file.name.includes("\0") ||
+			file.name.startsWith(".")
+		) {
+			const message =
+				"invalid filename · cannot contain '/', '\\', NUL, or start with '.'";
+			setError(message);
+			toast.push(message, "error");
+			return;
+		}
 		if (file.size > UPLOAD_CAP_BYTES) {
 			setError(
 				`file too large (max ${(UPLOAD_CAP_BYTES / 1024 / 1024).toString()} MiB)`,

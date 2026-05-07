@@ -3,6 +3,7 @@
 import {
 	useCallback,
 	useEffect,
+	useRef,
 	useMemo,
 	useState,
 	type ReactElement,
@@ -60,13 +61,20 @@ export function BackupsBody(): ReactElement {
 	const [progressFlow, setProgressFlow] = useState<"backup" | "restore">(
 		"backup",
 	);
+	const [busy, setBusy] = useState(false);
+	const loadCtrlRef = useRef<AbortController | null>(null);
 
 	const loadList = useCallback((): void => {
-		fetchBackups(detail.id)
+		loadCtrlRef.current?.abort();
+		const ctrl = new AbortController();
+		loadCtrlRef.current = ctrl;
+		fetchBackups(detail.id, ctrl.signal)
 			.then((backups) => {
+				if (ctrl.signal.aborted) return;
 				setState({ kind: "ready", backups });
 			})
 			.catch((err: unknown) => {
+				if (err instanceof DOMException && err.name === "AbortError") return;
 				const message =
 					err instanceof ApiError
 						? `${err.code}: ${err.message}`
@@ -79,6 +87,9 @@ export function BackupsBody(): ReactElement {
 
 	useEffect(() => {
 		loadList();
+		return () => {
+			loadCtrlRef.current?.abort();
+		};
 	}, [loadList]);
 
 	const backups = state.kind === "ready" ? state.backups : [];
@@ -92,6 +103,7 @@ export function BackupsBody(): ReactElement {
 
 	const onCreate = (): void => {
 		const trimmed = createName.trim();
+		setBusy(true);
 		void createBackup(detail.id, trimmed === "" ? undefined : trimmed)
 			.then(() => {
 				setCreateOpen(false);
@@ -107,10 +119,14 @@ export function BackupsBody(): ReactElement {
 							? err.message
 							: "unknown error";
 				toast.push(`backup failed · ${msg}`, "error");
+			})
+			.finally(() => {
+				setBusy(false);
 			});
 	};
 
 	const onRestore = (b: Backup): void => {
+		setBusy(true);
 		void restoreBackup(detail.id, b.id)
 			.then(() => {
 				setConfirm(null);
@@ -125,10 +141,14 @@ export function BackupsBody(): ReactElement {
 							? err.message
 							: "unknown error";
 				toast.push(`restore failed · ${msg}`, "error");
+			})
+			.finally(() => {
+				setBusy(false);
 			});
 	};
 
 	const onDelete = (b: Backup): void => {
+		setBusy(true);
 		void deleteBackup(detail.id, b.id)
 			.then(() => {
 				setConfirm(null);
@@ -143,6 +163,9 @@ export function BackupsBody(): ReactElement {
 							? err.message
 							: "unknown error";
 				toast.push(`delete failed · ${msg}`, "error");
+			})
+			.finally(() => {
+				setBusy(false);
 			});
 	};
 
@@ -162,6 +185,7 @@ export function BackupsBody(): ReactElement {
 					</span>
 					<Button
 						variant="primary"
+						disabled={busy}
 						onClick={() => {
 							setCreateOpen(true);
 						}}
@@ -230,6 +254,7 @@ export function BackupsBody(): ReactElement {
 									<span className="flex gap-2">
 										<Button
 											variant="ghost"
+											disabled={busy}
 											onClick={() => {
 												setConfirm({ kind: "restore", b });
 											}}
@@ -238,6 +263,7 @@ export function BackupsBody(): ReactElement {
 										</Button>
 										<Button
 											variant="danger"
+											disabled={busy}
 											onClick={() => {
 												setConfirm({ kind: "delete", b });
 											}}
@@ -281,7 +307,7 @@ export function BackupsBody(): ReactElement {
 					>
 						cancel
 					</Button>
-					<Button variant="primary" onClick={onCreate}>
+					<Button variant="primary" onClick={onCreate} disabled={busy}>
 						create backup
 					</Button>
 				</div>
@@ -312,6 +338,7 @@ export function BackupsBody(): ReactElement {
 						</Button>
 						<Button
 							variant={confirm.kind === "delete" ? "danger" : "primary"}
+							disabled={busy}
 							onClick={() => {
 								if (confirm.kind === "restore") onRestore(confirm.b);
 								else onDelete(confirm.b);

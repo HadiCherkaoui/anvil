@@ -44,6 +44,9 @@ export function useFiles(
 			abortRef.current?.abort();
 			const ctrl = new AbortController();
 			abortRef.current = ctrl;
+			// If the controller is already aborted (effect torn down between
+			// scheduling and running), don't dirty React state.
+			if (ctrl.signal.aborted) return;
 			setStatus(warming ? "warming" : "loading");
 			tickRef.current += 1;
 			const myTick = tickRef.current;
