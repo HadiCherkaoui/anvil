@@ -10,9 +10,77 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
-use reqwest::header::{ACCEPT, HeaderMap, HeaderValue};
+use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, RETRY_AFTER};
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
+use tracing::{Level, event};
+
+/// Maximum retries for transient upstream errors (429 / 5xx).
+const MAX_RETRIES: u32 = 3;
+const BACKOFF_INITIAL: Duration = Duration::from_secs(2);
+const BACKOFF_CAP: Duration = Duration::from_mins(1);
+const RETRY_AFTER_HTTP_DATE_FALLBACK: Duration = Duration::from_secs(30);
+
+async fn with_retry(
+    http: &reqwest::Client,
+    build: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response> {
+    let mut backoff = BACKOFF_INITIAL;
+    let mut last_status: Option<reqwest::StatusCode> = None;
+    for attempt in 0..=MAX_RETRIES {
+        let req = build()
+            .build()
+            .context("building CurseForge request")?;
+        match http.execute(req).await {
+            Ok(resp) => {
+                let status = resp.status();
+                let retryable = status.as_u16() == 429 || status.is_server_error();
+                if !retryable || attempt == MAX_RETRIES {
+                    return Ok(resp);
+                }
+                let wait = parse_retry_after(resp.headers().get(RETRY_AFTER)).unwrap_or(backoff);
+                event!(
+                    name: "anvil.modpack.cf.retry",
+                    Level::WARN,
+                    status = %status,
+                    attempt,
+                    wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+                    "CurseForge transient error; retrying",
+                );
+                last_status = Some(status);
+                sleep(wait).await;
+                backoff = (backoff * 2).min(BACKOFF_CAP);
+            }
+            Err(err) => {
+                if attempt == MAX_RETRIES {
+                    return Err(anyhow::Error::from(err));
+                }
+                event!(
+                    name: "anvil.modpack.cf.retry",
+                    Level::WARN,
+                    err = %err,
+                    attempt,
+                    "CurseForge network error; retrying",
+                );
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(BACKOFF_CAP);
+            }
+        }
+    }
+    if let Some(status) = last_status {
+        bail!("CurseForge retry exhausted at HTTP {status}");
+    }
+    bail!("CurseForge retry exhausted")
+}
+
+fn parse_retry_after(hv: Option<&HeaderValue>) -> Option<Duration> {
+    let raw = hv?.to_str().ok()?.trim();
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(secs).min(BACKOFF_CAP));
+    }
+    Some(RETRY_AFTER_HTTP_DATE_FALLBACK)
+}
 
 /// `CurseForge` API base URL.
 const CF_API: &str = "https://api.curseforge.com/v1";
@@ -26,6 +94,8 @@ const MODPACK_CLASS_ID: u32 = 4471;
 
 /// File-list cache TTL.
 const CACHE_TTL: Duration = Duration::from_hours(1);
+/// Soft cap on cache entries before TTL-based eviction kicks in.
+const CACHE_MAX_ENTRIES: usize = 256;
 
 /// Upstream `CurseForge` file (one entry of `/mods/{id}/files.data`).
 ///
@@ -202,7 +272,11 @@ impl CurseForgeClient {
             files: Arc::new(files),
         };
         let cloned = Arc::clone(&entry.files);
-        self.inner.cache.lock().await.insert(project_id, entry);
+        let mut cache = self.inner.cache.lock().await;
+        if cache.len() >= CACHE_MAX_ENTRIES {
+            evict(&mut cache);
+        }
+        cache.insert(project_id, entry);
         Ok(cloned)
     }
 
@@ -216,7 +290,7 @@ impl CurseForgeClient {
     /// Returns an error if the file does not exist or the upstream call fails.
     pub async fn file(&self, project_id: u32, file_id: u32) -> Result<CfFile> {
         let url = format!("{CF_API}/mods/{project_id}/files/{file_id}");
-        let resp = self.inner.http.get(&url).send().await?;
+        let resp = with_retry(&self.inner.http, || self.inner.http.get(&url)).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             bail!("CurseForge file {file_id} not found in project {project_id}");
@@ -239,7 +313,7 @@ impl CurseForgeClient {
     /// Returns an error if the project does not exist or the upstream call fails.
     pub async fn project(&self, project_id: u32) -> Result<CfProject> {
         let url = format!("{CF_API}/mods/{project_id}");
-        let resp = self.inner.http.get(&url).send().await?;
+        let resp = with_retry(&self.inner.http, || self.inner.http.get(&url)).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             bail!("CurseForge project {project_id} not found");
@@ -261,19 +335,23 @@ impl CurseForgeClient {
     /// is not what we expect.
     pub async fn search(&self, query: &str, page_size: u32, index: u32) -> Result<Vec<CfProject>> {
         let url = format!("{CF_API}/mods/search");
-        let resp = self
-            .inner
-            .http
-            .get(&url)
-            .query(&[
-                ("gameId", MINECRAFT_GAME_ID.to_string().as_str()),
-                ("classId", MODPACK_CLASS_ID.to_string().as_str()),
-                ("searchFilter", query),
-                ("pageSize", page_size.to_string().as_str()),
-                ("index", index.to_string().as_str()),
-            ])
-            .send()
-            .await?;
+        let game_id_s = MINECRAFT_GAME_ID.to_string();
+        let class_id_s = MODPACK_CLASS_ID.to_string();
+        let page_size_s = page_size.to_string();
+        let index_s = index.to_string();
+        let resp = with_retry(&self.inner.http, || {
+            self.inner
+                .http
+                .get(&url)
+                .query(&[
+                    ("gameId", game_id_s.as_str()),
+                    ("classId", class_id_s.as_str()),
+                    ("searchFilter", query),
+                    ("pageSize", page_size_s.as_str()),
+                    ("index", index_s.as_str()),
+                ])
+        })
+        .await?;
         if !resp.status().is_success() {
             bail!("CurseForge search failed: HTTP {}", resp.status());
         }
@@ -293,22 +371,27 @@ impl CurseForgeClient {
 
     async fn fetch_files(&self, project_id: u32) -> Result<Vec<CfFile>> {
         const PAGE_SIZE: u32 = 50;
-        const MAX_FILES: usize = 500;
+        // Bumped from 500 — long-lived modpacks (ATM, FTB) easily exceed
+        // ten pages of historical builds, and `target file not in first
+        // 500` was silently truncating selectable versions.
+        const MAX_FILES: usize = 2000;
 
         let url = format!("{CF_API}/mods/{project_id}/files");
         let mut all: Vec<CfFile> = Vec::new();
         let mut index: u32 = 0;
         loop {
-            let resp = self
-                .inner
-                .http
-                .get(&url)
-                .query(&[
-                    ("pageSize", PAGE_SIZE.to_string().as_str()),
-                    ("index", index.to_string().as_str()),
-                ])
-                .send()
-                .await?;
+            let page_size_s = PAGE_SIZE.to_string();
+            let index_s = index.to_string();
+            let resp = with_retry(&self.inner.http, || {
+                self.inner
+                    .http
+                    .get(&url)
+                    .query(&[
+                        ("pageSize", page_size_s.as_str()),
+                        ("index", index_s.as_str()),
+                    ])
+            })
+            .await?;
             let status = resp.status();
             if status.as_u16() == 404 {
                 bail!("CurseForge project {project_id} not found");
@@ -327,6 +410,22 @@ impl CurseForgeClient {
         }
         all.truncate(MAX_FILES);
         Ok(all)
+    }
+}
+
+/// Evicts expired entries first; if still over capacity, drops the oldest
+/// half by `fetched_at`. Caller holds the cache lock.
+fn evict(cache: &mut HashMap<u32, CacheEntry>) {
+    cache.retain(|_, e| e.fetched_at.elapsed() < CACHE_TTL);
+    if cache.len() < CACHE_MAX_ENTRIES {
+        return;
+    }
+    let mut by_age: Vec<(u32, Instant)> =
+        cache.iter().map(|(k, v)| (*k, v.fetched_at)).collect();
+    by_age.sort_by_key(|(_, t)| *t);
+    let drop_n = cache.len() - (CACHE_MAX_ENTRIES / 2);
+    for (k, _) in by_age.into_iter().take(drop_n) {
+        cache.remove(&k);
     }
 }
 

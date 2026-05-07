@@ -9,9 +9,86 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
-use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, RETRY_AFTER, USER_AGENT};
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
+use tracing::{Level, event};
+
+/// Maximum retries for transient upstream errors (429 / 5xx).
+const MAX_RETRIES: u32 = 3;
+/// Initial backoff between retries; doubles each attempt up to [`BACKOFF_CAP`].
+const BACKOFF_INITIAL: Duration = Duration::from_secs(2);
+/// Hard cap on a single backoff sleep. Modrinth occasionally returns
+/// `Retry-After` values minutes long; we honour them but ceil here.
+const BACKOFF_CAP: Duration = Duration::from_mins(1);
+/// Fallback when `Retry-After` is an HTTP-date we don't bother parsing.
+const RETRY_AFTER_HTTP_DATE_FALLBACK: Duration = Duration::from_secs(30);
+
+/// Send `req` with retry on 429 + 5xx. Honours `Retry-After` (seconds form)
+/// and falls back to capped exponential backoff. Returns the first
+/// successful response or the last error.
+async fn with_retry(
+    http: &reqwest::Client,
+    build: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response> {
+    let mut backoff = BACKOFF_INITIAL;
+    let mut last_status: Option<reqwest::StatusCode> = None;
+    for attempt in 0..=MAX_RETRIES {
+        let req = build()
+            .build()
+            .context("building Modrinth request")?;
+        match http.execute(req).await {
+            Ok(resp) => {
+                let status = resp.status();
+                let retryable = status.as_u16() == 429 || status.is_server_error();
+                if !retryable || attempt == MAX_RETRIES {
+                    return Ok(resp);
+                }
+                let wait = parse_retry_after(resp.headers().get(RETRY_AFTER)).unwrap_or(backoff);
+                event!(
+                    name: "anvil.modpack.mr.retry",
+                    Level::WARN,
+                    status = %status,
+                    attempt,
+                    wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+                    "Modrinth transient error; retrying",
+                );
+                last_status = Some(status);
+                sleep(wait).await;
+                backoff = (backoff * 2).min(BACKOFF_CAP);
+            }
+            Err(err) => {
+                if attempt == MAX_RETRIES {
+                    return Err(anyhow::Error::from(err));
+                }
+                event!(
+                    name: "anvil.modpack.mr.retry",
+                    Level::WARN,
+                    err = %err,
+                    attempt,
+                    "Modrinth network error; retrying",
+                );
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(BACKOFF_CAP);
+            }
+        }
+    }
+    // Unreachable: the loop always returns on the final iteration.
+    if let Some(status) = last_status {
+        bail!("Modrinth retry exhausted at HTTP {status}");
+    }
+    bail!("Modrinth retry exhausted")
+}
+
+fn parse_retry_after(hv: Option<&HeaderValue>) -> Option<Duration> {
+    let raw = hv?.to_str().ok()?.trim();
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(secs).min(BACKOFF_CAP));
+    }
+    // HTTP-date form (RFC 7231); we don't parse it — fall back to a sane default.
+    Some(RETRY_AFTER_HTTP_DATE_FALLBACK)
+}
 
 /// Modrinth API base URL.
 const MR_API: &str = "https://api.modrinth.com/v2";
@@ -23,6 +100,8 @@ const MR_USER_AGENT: &str = concat!(
 );
 /// Version-list cache TTL.
 const CACHE_TTL: Duration = Duration::from_hours(1);
+/// Soft cap on cache entries before TTL-based eviction kicks in.
+const CACHE_MAX_ENTRIES: usize = 256;
 
 /// Project metadata from `/project/{id_or_slug}`.
 #[derive(Debug, Clone, Deserialize)]
@@ -178,7 +257,7 @@ impl ModrinthClient {
     /// Returns an error if the project does not exist or the request fails.
     pub async fn project(&self, id_or_slug: &str) -> Result<MrProject> {
         let url = format!("{MR_API}/project/{id_or_slug}");
-        let resp = self.inner.http.get(&url).send().await?;
+        let resp = with_retry(&self.inner.http, || self.inner.http.get(&url)).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             bail!("Modrinth project {id_or_slug:?} not found");
@@ -199,7 +278,7 @@ impl ModrinthClient {
             return Ok(cached);
         }
         let url = format!("{MR_API}/project/{project_id}/version");
-        let resp = self.inner.http.get(&url).send().await?;
+        let resp = with_retry(&self.inner.http, || self.inner.http.get(&url)).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             bail!("Modrinth project {project_id:?} not found");
@@ -213,11 +292,11 @@ impl ModrinthClient {
             versions: Arc::new(versions),
         };
         let cloned = Arc::clone(&entry.versions);
-        self.inner
-            .cache
-            .lock()
-            .await
-            .insert(project_id.to_owned(), entry);
+        let mut cache = self.inner.cache.lock().await;
+        if cache.len() >= CACHE_MAX_ENTRIES {
+            evict(&mut cache);
+        }
+        cache.insert(project_id.to_owned(), entry);
         Ok(cloned)
     }
 
@@ -236,19 +315,21 @@ impl ModrinthClient {
         }
         let facets_json = serde_json::to_string(&facets).context("serializing search facets")?;
         let limit = if q.limit == 0 { 20 } else { q.limit };
-        let resp = self
-            .inner
-            .http
-            .get(format!("{MR_API}/search"))
-            .query(&[
-                ("query", q.query),
-                ("facets", facets_json.as_str()),
-                ("limit", &limit.to_string()),
-                ("offset", &q.offset.to_string()),
-                ("index", "relevance"),
-            ])
-            .send()
-            .await?;
+        let limit_s = limit.to_string();
+        let offset_s = q.offset.to_string();
+        let resp = with_retry(&self.inner.http, || {
+            self.inner
+                .http
+                .get(format!("{MR_API}/search"))
+                .query(&[
+                    ("query", q.query),
+                    ("facets", facets_json.as_str()),
+                    ("limit", limit_s.as_str()),
+                    ("offset", offset_s.as_str()),
+                    ("index", "relevance"),
+                ])
+        })
+        .await?;
         if !resp.status().is_success() {
             bail!("Modrinth /search failed: HTTP {}", resp.status());
         }
@@ -263,7 +344,7 @@ impl ModrinthClient {
     /// Returns an error if the version does not exist or the call fails.
     pub async fn version(&self, version_id: &str) -> Result<MrVersion> {
         let url = format!("{MR_API}/version/{version_id}");
-        let resp = self.inner.http.get(&url).send().await?;
+        let resp = with_retry(&self.inner.http, || self.inner.http.get(&url)).await?;
         if resp.status().as_u16() == 404 {
             bail!("Modrinth version {version_id:?} not found");
         }
@@ -283,6 +364,24 @@ impl ModrinthClient {
         } else {
             None
         }
+    }
+}
+
+/// Evicts expired entries first; if still over capacity, drops the oldest
+/// half by `fetched_at`. Caller holds the cache lock.
+fn evict(cache: &mut HashMap<String, CacheEntry>) {
+    cache.retain(|_, e| e.fetched_at.elapsed() < CACHE_TTL);
+    if cache.len() < CACHE_MAX_ENTRIES {
+        return;
+    }
+    let mut by_age: Vec<(String, Instant)> = cache
+        .iter()
+        .map(|(k, v)| (k.clone(), v.fetched_at))
+        .collect();
+    by_age.sort_by_key(|(_, t)| *t);
+    let drop_n = cache.len() - (CACHE_MAX_ENTRIES / 2);
+    for (k, _) in by_age.into_iter().take(drop_n) {
+        cache.remove(&k);
     }
 }
 

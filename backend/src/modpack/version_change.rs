@@ -213,6 +213,24 @@ async fn run_inner(
     // ─── Phase 3: backup ─────────────────────────────────────────────────
     guard.emit(UpdatePhase::BackingUp);
     let backup_ts = Utc::now().timestamp();
+    // Insert the backup row as `pending` BEFORE the tar Job — see the
+    // analogous comment in `orchestrator::run_inner`.
+    let reason = format!("mc-version-change:{old_mc}->{new_mc}");
+    let backup_row_id = match crate::modpack::backups::insert_auto_backup_row_with_status(
+        state, server_id, backup_ts, &reason, "pending",
+    )
+    .await
+    {
+        Ok(id) => Some(id),
+        Err(e) => {
+            tracing::error!(
+                server.id = %server_id,
+                err = %e,
+                "could not pre-insert auto-backup row; continuing with tar Job"
+            );
+            None
+        }
+    };
     let backup_job = build_backup_job(
         server_id,
         &backup_ts.to_string(),
@@ -229,18 +247,31 @@ async fn run_inner(
     spawn_job(&state.kube, &state.mc_namespace, &backup_job)
         .await
         .map_err(FsmError::Pre)?;
-    wait_job(
+    let backup_outcome = wait_job(
         &state.kube,
         &state.mc_namespace,
         &backup_name,
         BACKUP_JOB_TIMEOUT,
     )
-    .await
-    .map_err(FsmError::Pre)?;
+    .await;
+    if let Some(id) = backup_row_id.as_deref() {
+        let new_status = if backup_outcome.is_ok() {
+            "complete"
+        } else {
+            "failed"
+        };
+        if let Err(e) =
+            crate::modpack::backups::mark_auto_backup_status(state, id, new_status).await
+        {
+            tracing::error!(
+                server.id = %server_id,
+                err = %e,
+                "could not update backup row status"
+            );
+        }
+    }
+    backup_outcome.map_err(FsmError::Pre)?;
     // Mirror the file-side keep-N GC the tar Job did into the DB.
-    let reason = format!("mc-version-change:{old_mc}->{new_mc}");
-    let _ =
-        crate::modpack::backups::insert_auto_backup_row(state, server_id, backup_ts, &reason).await;
     let _ = crate::modpack::backups::gc_auto_backup_rows(state, server_id, BACKUP_KEEP_COUNT).await;
     insert_audit(
         &state.pool,
@@ -306,22 +337,35 @@ async fn run_inner(
     }
 
     // ─── Phase 7: persist + audit ────────────────────────────────────────
+    // last_started_at + audit row commit together so a stale audit_log
+    // entry can't outlive a failed last_started_at write (or vice versa).
     let now_end = Utc::now().timestamp();
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| FsmError::Pre(e.into()))?;
     sqlx::query("UPDATE servers SET last_started_at = ? WHERE id = ?")
         .bind(now_end)
         .bind(server_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| FsmError::Pre(e.into()))?;
-    insert_audit(
-        &state.pool,
-        server_id,
-        "version_change_succeeded",
-        Some(json!({"new_mc": new_mc, "new_loader": new_loader})),
-        now_end,
+    let details_text =
+        json!({"new_mc": new_mc, "new_loader": new_loader}).to_string();
+    sqlx::query(
+        "INSERT INTO audit_log (ts, server_id, action, details, actor)
+         VALUES (?, ?, 'version_change_succeeded', ?, NULL)",
     )
+    .bind(now_end)
+    .bind(server_id)
+    .bind(details_text)
+    .execute(&mut *tx)
     .await
     .map_err(|e| FsmError::Pre(e.into()))?;
+    tx.commit()
+        .await
+        .map_err(|e| FsmError::Pre(e.into()))?;
     Ok(())
 }
 

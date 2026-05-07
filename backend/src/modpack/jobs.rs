@@ -239,17 +239,57 @@ for jar in "$DEST"/*.jar; do
   fi
 done
 
-# 3. Download every DESIRED_URLS line whose filename isn't yet present.
+# Pick a hash tool once: prefer sha512, fall back to sha1, else verify-skip.
+HASH_LEN=0
+HASH_BIN=""
+if command -v sha512sum >/dev/null 2>&1; then
+  HASH_BIN="sha512sum"; HASH_LEN=128
+elif command -v sha1sum >/dev/null 2>&1; then
+  HASH_BIN="sha1sum"; HASH_LEN=40
+else
+  echo "warning: no sha512sum/sha1sum found; skipping hash verification"
+fi
+
+verify_hash() {
+  # $1 path, $2 expected hex
+  expected="$2"
+  [ -z "$HASH_BIN" ] && return 0
+  # Refuse to verify when the digest length doesn't match the picked tool
+  # (e.g. sha512 expected but only sha1sum available).
+  exp_len=$(printf %s "$expected" | wc -c)
+  if [ "$exp_len" -ne "$HASH_LEN" ]; then
+    echo "warning: digest length $exp_len does not match $HASH_BIN ($HASH_LEN); skipping verify for $1"
+    return 0
+  fi
+  actual=$("$HASH_BIN" "$1" | awk '{print $1}')
+  [ "$actual" = "$expected" ]
+}
+
+# 3. Download/refresh every DESIRED_URLS line. Existing files are
+# re-hashed and re-downloaded on mismatch (catches partial / corrupted
+# previous syncs); curl uses retries so transient network blips don't
+# fail the whole Job.
 echo "$DESIRED_URLS" | while IFS="$(printf '\t')" read -r filename url sha; do
   [ -z "$filename" ] && continue
   target="$DEST/$filename"
-  if [ -e "$target" ]; then
+  if [ -e "$target" ] && [ -n "$sha" ]; then
+    if verify_hash "$target" "$sha"; then
+      continue
+    fi
+    echo "hash mismatch on existing $filename; re-downloading"
+    rm -f "$target"
+  elif [ -e "$target" ] && [ -z "$sha" ]; then
+    # No expected hash, trust the filename and skip the re-download.
     continue
   fi
   echo "fetching $filename"
-  curl -fL "$url" -o "$target.tmp"
-  if [ -n "$sha" ]; then
-    echo "$sha  $target.tmp" | sha512sum -c -
+  curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 600 "$url" -o "$target.tmp"
+  if [ -n "$sha" ] && [ -n "$HASH_BIN" ]; then
+    if ! verify_hash "$target.tmp" "$sha"; then
+      echo "ERROR: hash verification failed for $filename"
+      rm -f "$target.tmp"
+      exit 1
+    fi
   fi
   mv "$target.tmp" "$target"
 done

@@ -177,7 +177,16 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             ) else {
                 continue;
             };
-            orchestrator::run(state.clone(), id.clone(), latest.id.clone(), guard).await;
+            // Spawn detached: the orchestrator can run for many minutes
+            // (PVC tar Job, mod sync Job, STS rollout). Awaiting here would
+            // stall the entire poll tick — and we hold no per-server lock
+            // beyond `guard`, which moves into the task.
+            let task_state = state.clone();
+            let task_id = id.clone();
+            let task_version = latest.id.clone();
+            tokio::spawn(async move {
+                orchestrator::run(task_state, task_id, task_version, guard).await;
+            });
         }
     }
 
@@ -339,14 +348,27 @@ async fn poll_individual_mods(state: &AppState, http: &ModpackHttp<'_>) -> anyho
             Ok(v) => v,
             Err(_) => continue,
         };
-        let (loader, mods_field): (&str, &str) = if source_kind == "paper" {
-            ("paper", "plugins")
+        // Paper plugins ship as Bukkit/Spigot jars too — Modrinth tags
+        // `paper`-only entries on a minority of plugins, so we widen the
+        // accept-set rather than missing valid updates.
+        let (loaders, mods_field): (&[&str], &str) = if source_kind == "paper" {
+            (&["paper", "bukkit", "spigot"], "plugins")
         } else {
             let runtime = cfg
                 .get("runtime")
                 .and_then(Value::as_str)
                 .unwrap_or("fabric");
-            (runtime, "mods")
+            // Tied to the lifetime of cfg; map the owned String to a static
+            // accept-list via the runtime label captured below.
+            match runtime {
+                "forge" => (&["forge"][..], "mods"),
+                "neoforge" => (&["neoforge"][..], "mods"),
+                "quilt" => (&["quilt"][..], "mods"),
+                // Default to fabric — it's the most common and safe to
+                // probe; an actual mismatch returns no upstream hits and
+                // the row is left alone.
+                _ => (&["fabric"][..], "mods"),
+            }
         };
         let auto_mode = cfg
             .get("auto_update_mode")
@@ -384,7 +406,7 @@ async fn poll_individual_mods(state: &AppState, http: &ModpackHttp<'_>) -> anyho
                 project_id,
                 cur_ver,
                 &mc_version,
-                loader,
+                loaders,
                 http,
             )
             .await
@@ -548,11 +570,23 @@ async fn auto_apply_pending(
         // pending; the next poll tick (or a manual click) picks them up.
         return Ok(());
     };
+    // Fire-and-forget: AppState has no TaskTracker, so the JoinHandle is
+    // intentionally dropped. If the panel restarts mid-apply, the spawned
+    // task is killed with the runtime; the per-server lock (released by
+    // the dropped UpdateGuard) and pending bumps in source_config let the
+    // next poll tick or manual click resume. Log so operators notice.
     let task_state = state.clone();
     let task_id = server_id.to_owned();
+    let task_id_log = task_id.clone();
     tokio::spawn(async move {
         mods_apply::run(task_state, task_id, guard, target).await;
     });
+    event!(
+        name: "anvil.modpack.poll.auto_apply_unmanaged",
+        Level::WARN,
+        server.id = %task_id_log,
+        "auto-apply task spawned without lifecycle management; panel restart will abort it",
+    );
     event!(
         name: "anvil.modpack.poll.auto_apply",
         Level::INFO,
@@ -618,11 +652,11 @@ async fn check_one_mod(
     project_id: &str,
     current_version_id: &str,
     mc_version: &str,
-    loader: &str,
+    loaders: &[&str],
     http: &ModpackHttp<'_>,
 ) -> anyhow::Result<()> {
     let Some(latest) =
-        fetch_latest_compatible(http, provider, project_id, mc_version, loader).await?
+        fetch_latest_compatible(http, provider, project_id, mc_version, loaders).await?
     else {
         delete_mod_update(state, server_id, provider, project_id).await;
         return Ok(());
@@ -652,19 +686,26 @@ async fn fetch_latest_compatible(
     provider: &str,
     project_id: &str,
     mc_version: &str,
-    loader: &str,
+    loaders: &[&str],
 ) -> anyhow::Result<Option<LatestPick>> {
     if provider != "modrinth" {
         return Ok(None);
     }
     let versions = http.mr.list_versions(project_id).await?;
-    let pick = versions
+    // Tier the filter so a Paper plugin with both `paper`-only and
+    // `bukkit`/`spigot` builds prefers Paper-tagged ones, falling back
+    // only when none exist. The first non-empty tier wins.
+    let pick = loaders
         .iter()
-        .filter(|v| v.loaders.iter().any(|l| l == loader))
-        .filter(|v| v.game_versions.iter().any(|g| g == mc_version))
-        .filter(|v| v.files.iter().any(|f| f.primary))
-        .max_by(|a, b| a.date_published.cmp(&b.date_published))
-        .cloned();
+        .find_map(|accept| {
+            versions
+                .iter()
+                .filter(|v| v.loaders.iter().any(|l| l == accept))
+                .filter(|v| v.game_versions.iter().any(|g| g == mc_version))
+                .filter(|v| v.files.iter().any(|f| f.primary))
+                .max_by(|a, b| a.date_published.cmp(&b.date_published))
+                .cloned()
+        });
     Ok(pick.map(|v| LatestPick {
         version_id: v.id,
         version_name: v.version_number,

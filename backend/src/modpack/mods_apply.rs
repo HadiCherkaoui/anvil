@@ -15,17 +15,15 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use chrono::Utc;
 use k8s_openapi::api::batch::v1::Job;
 use kube::Api;
-use kube::api::{DeleteParams, PostParams};
+use kube::api::PostParams;
 use serde_json::json;
 use sqlx::SqlitePool;
-use tokio::time::sleep;
-
 use crate::AppState;
 use crate::modpack::guard::{UpdateGuard, record_terminal, set_update_error};
 use crate::modpack::jobs::build_mod_sync_job;
 use crate::modpack::modded::{Config as ModdedConfig, ModEntry, ModdedRuntime};
 use crate::modpack::orchestrator::{
-    UpdatePhase, current_replicas, scale_to, wait_job, wait_pod_gone,
+    UpdatePhase, current_replicas, delete_job_and_wait, scale_to, wait_job, wait_pod_gone,
 };
 use crate::modpack::paper::Config as PaperConfig;
 use crate::routes::servers::create::insert_audit;
@@ -189,8 +187,7 @@ async fn run_inner(
         .ok_or_else(|| anyhow!("sync Job missing name"))?;
     let jobs: Api<Job> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     if jobs.get_opt(&job_name).await?.is_some() {
-        let _ = jobs.delete(&job_name, &DeleteParams::default()).await;
-        sleep(Duration::from_secs(1)).await;
+        delete_job_and_wait(&jobs, &job_name, Duration::from_secs(30)).await?;
     }
     jobs.create(&PostParams::default(), &sync_job)
         .await

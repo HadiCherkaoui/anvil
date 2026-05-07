@@ -83,7 +83,19 @@ pub async fn run(
     target_version_id: String,
     guard: UpdateGuard,
 ) {
-    let outcome = run_inner(&state, &server_id, &target_version_id, &guard).await;
+    // run_inner records the auto-backup ts here once Phase 3 starts so
+    // rollback can pinpoint the exact tarball to restore — no more
+    // `ls -t | head -n 1` race when concurrent backups land in the same
+    // directory.
+    let mut backup_ts: Option<i64> = None;
+    let outcome = run_inner(
+        &state,
+        &server_id,
+        &target_version_id,
+        &guard,
+        &mut backup_ts,
+    )
+    .await;
     match outcome {
         Ok(()) => {
             record_terminal(&state, &server_id, UpdatePhase::Succeeded);
@@ -109,7 +121,7 @@ pub async fn run(
             // it was reverted). Overwritten below if rollback also errors.
             set_update_error(&state, &server_id, err.to_string());
             guard.emit(UpdatePhase::RollingBack);
-            match rollback(&state, &server_id, &guard).await {
+            match rollback(&state, &server_id, &guard, backup_ts).await {
                 Ok(()) => {
                     record_terminal(&state, &server_id, UpdatePhase::RolledBack);
                     guard.emit(UpdatePhase::RolledBack);
@@ -163,6 +175,7 @@ async fn run_inner(
     server_id: &str,
     target_version_id: &str,
     guard: &UpdateGuard,
+    backup_ts_out: &mut Option<i64>,
 ) -> Result<()> {
     let now_start = Utc::now().timestamp();
     insert_audit(
@@ -216,6 +229,31 @@ async fn run_inner(
     // ─── Phase 3: backup ─────────────────────────────────────────────────
     guard.emit(UpdatePhase::BackingUp);
     let backup_ts = Utc::now().timestamp();
+    // Publish the ts so a subsequent rollback knows exactly which archive
+    // to restore (the orchestrator created /snap/<sid>/auto/<ts>.tgz here).
+    *backup_ts_out = Some(backup_ts);
+    // Insert the backup row as `pending` BEFORE the tar Job so the UI
+    // surfaces "backup in progress" and the row exists even if the
+    // orchestrator panics mid-Job. We flip it to `complete` after the
+    // Job succeeds, or `failed` if it doesn't.
+    let reason = format!("modpack-update:{}", version.name);
+    let backup_row_id = match crate::modpack::backups::insert_auto_backup_row_with_status(
+        state, server_id, backup_ts, &reason, "pending",
+    )
+    .await
+    {
+        Ok(id) => Some(id),
+        Err(e) => {
+            event!(
+                name: "anvil.update.backup_row_insert_failed",
+                Level::ERROR,
+                server.id = %server_id,
+                err = %e,
+                "could not pre-insert auto-backup row; continuing with tar Job",
+            );
+            None
+        }
+    };
     let backup_job = build_backup_job(
         server_id,
         &backup_ts.to_string(),
@@ -230,17 +268,33 @@ async fn run_inner(
         .clone()
         .ok_or_else(|| anyhow!("backup Job missing name"))?;
     spawn_job(&state.kube, &state.mc_namespace, &backup_job).await?;
-    wait_job(
+    let backup_outcome = wait_job(
         &state.kube,
         &state.mc_namespace,
         &backup_name,
         BACKUP_JOB_TIMEOUT,
     )
-    .await?;
+    .await;
+    if let Some(id) = backup_row_id.as_deref() {
+        let new_status = if backup_outcome.is_ok() {
+            "complete"
+        } else {
+            "failed"
+        };
+        if let Err(e) =
+            crate::modpack::backups::mark_auto_backup_status(state, id, new_status).await
+        {
+            event!(
+                name: "anvil.update.backup_row_status_update_failed",
+                Level::ERROR,
+                server.id = %server_id,
+                err = %e,
+                "could not update backup row status",
+            );
+        }
+    }
+    backup_outcome?;
     // Mirror the file-side keep-N GC the tar Job did into the DB.
-    let reason = format!("modpack-update:{}", version.name);
-    let _ =
-        crate::modpack::backups::insert_auto_backup_row(state, server_id, backup_ts, &reason).await;
     let _ = crate::modpack::backups::gc_auto_backup_rows(state, server_id, BACKUP_KEEP_COUNT).await;
     insert_audit(
         &state.pool,
@@ -288,24 +342,36 @@ async fn run_inner(
         POD_RUNNING_TIMEOUT,
     )
     .await?;
+    // Boot the new version's pack — use the *new* provider's timeout, not
+    // the pre-swap one. ATM-11 takes minutes to first-boot; vanilla
+    // doesn't. Mismatched timeouts fail the verify spuriously.
     wait_for_done_marker(
         &state.kube,
         &state.mc_namespace,
         server_id,
-        provider.boot_timeout(),
+        new_provider.boot_timeout(),
     )
     .await?;
 
     // ─── Phase 7: persist + audit ────────────────────────────────────────
+    // All four writes (source_config swap, last_started_at, audit, drop
+    // modpack_versions) commit as one transaction. If the audit insert
+    // fails the whole block rolls back so a half-applied DB never
+    // contradicts the live StatefulSet env (which is already swapped).
     let now_end = Utc::now().timestamp();
-    persist_new_version(&state.pool, server_id, &mut provider, &version).await?;
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .context("starting persist transaction")?;
+    persist_new_version_tx(&mut tx, server_id, &mut provider, &version).await?;
     sqlx::query("UPDATE servers SET last_started_at = ? WHERE id = ?")
         .bind(now_end)
         .bind(server_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
-    insert_audit(
-        &state.pool,
+    insert_audit_tx(
+        &mut tx,
         server_id,
         "update_succeeded",
         Some(json!({"version_id": version.id, "version_name": version.name})),
@@ -316,8 +382,61 @@ async fn run_inner(
     // newer upstream exists; until then, no banner.
     sqlx::query("DELETE FROM modpack_versions WHERE server_id = ?")
         .bind(server_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await.context("committing persist transaction")?;
+    Ok(())
+}
+
+/// Transaction-scoped twin of [`persist_new_version`].
+async fn persist_new_version_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    server_id: &str,
+    provider: &mut Box<dyn ModpackProvider>,
+    version: &VersionInfo,
+) -> Result<()> {
+    let raw: String = sqlx::query_scalar("SELECT source_config FROM servers WHERE id = ?")
+        .bind(server_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(&raw).context("source_config is not JSON")?;
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.insert("current_version_id".into(), json!(version.id));
+        obj.insert("current_version_name".into(), json!(version.name));
+        obj.insert("force_version".into(), json!(null));
+    }
+    let new_raw = serde_json::to_string(&cfg)?;
+    sqlx::query("UPDATE servers SET source_config = ?, mc_version = ? WHERE id = ?")
+        .bind(&new_raw)
+        .bind(&version.name)
+        .bind(server_id)
+        .execute(&mut **tx)
+        .await?;
+    let _ = provider;
+    Ok(())
+}
+
+/// Transaction-scoped twin of [`crate::routes::servers::create::insert_audit`].
+async fn insert_audit_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    server_id: &str,
+    action: &str,
+    details: Option<serde_json::Value>,
+    ts: i64,
+) -> Result<()> {
+    let details_text = details.map(|v| v.to_string());
+    sqlx::query(
+        "INSERT INTO audit_log (ts, server_id, action, details, actor)
+         VALUES (?, ?, ?, ?, NULL)",
+    )
+    .bind(ts)
+    .bind(server_id)
+    .bind(action)
+    .bind(details_text)
+    .execute(&mut **tx)
+    .await
+    .context("inserting audit row")?;
     Ok(())
 }
 
@@ -580,12 +699,40 @@ pub(crate) async fn spawn_job(client: &kube::Client, ns: &str, job: &Job) -> Res
         .ok_or_else(|| anyhow!("Job missing name"))?;
     if jobs.get_opt(name).await?.is_some() {
         // Should not normally happen — names are timestamped — but be tidy.
-        let _ = jobs.delete(name, &kube::api::DeleteParams::default()).await;
-        sleep(Duration::from_secs(1)).await;
+        // Foreground propagation so the API server reports the Job as gone
+        // only after its controlled Pods are also deleted; otherwise create
+        // can race a still-terminating pod and trip "object already exists".
+        delete_job_and_wait(&jobs, name, Duration::from_secs(30)).await?;
     }
     jobs.create(&PostParams::default(), job)
         .await
         .with_context(|| format!("creating Job {name}"))?;
+    Ok(())
+}
+
+/// Deletes `name` with Foreground propagation and polls until the API reports
+/// it absent (or `timeout` elapses, in which case we fall through and let the
+/// subsequent create surface the conflict).
+pub(crate) async fn delete_job_and_wait(
+    jobs: &Api<Job>,
+    name: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let dp = kube::api::DeleteParams {
+        propagation_policy: Some(kube::api::PropagationPolicy::Foreground),
+        ..kube::api::DeleteParams::default()
+    };
+    match jobs.delete(name, &dp).await {
+        Ok(_) | Err(kube::Error::Api(_)) => {}
+        Err(e) => return Err(anyhow!(e).context(format!("deleting Job {name}"))),
+    }
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if jobs.get_opt(name).await?.is_none() {
+            return Ok(());
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
     Ok(())
 }
 
@@ -652,43 +799,24 @@ pub(crate) async fn wait_for_done_marker(
         .map_err(|_| anyhow!("boot verification timed out after {timeout_dur:?}"))?
 }
 
-/// Updates `source_config.current_version_*` so a subsequent restart uses
-/// the new version.
-async fn persist_new_version(
-    pool: &sqlx::SqlitePool,
-    server_id: &str,
-    provider: &mut Box<dyn ModpackProvider>,
-    version: &VersionInfo,
-) -> Result<()> {
-    // Re-read source_config so we don't trample fields the orchestrator
-    // doesn't know about (version_skip, force_version, auto_update_mode).
-    let raw: String = sqlx::query_scalar("SELECT source_config FROM servers WHERE id = ?")
-        .bind(server_id)
-        .fetch_one(pool)
-        .await?;
-    let mut cfg: serde_json::Value =
-        serde_json::from_str(&raw).context("source_config is not JSON")?;
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert("current_version_id".into(), json!(version.id));
-        obj.insert("current_version_name".into(), json!(version.name));
-        // Force_version is a one-shot — clear it once we've used it.
-        obj.insert("force_version".into(), json!(null));
-    }
-    let new_raw = serde_json::to_string(&cfg)?;
-    sqlx::query("UPDATE servers SET source_config = ?, mc_version = ? WHERE id = ?")
-        .bind(&new_raw)
-        .bind(&version.name)
-        .bind(server_id)
-        .execute(pool)
-        .await?;
-    let _ = provider; // updated via the SQL above; provider is a value snapshot.
-    Ok(())
-}
+// `persist_new_version` was inlined into the Phase 7 transaction in
+// `run_inner`; see [`persist_new_version_tx`].
 
-/// Rolls back to the most recent successful backup (named in `mc-{id}/`).
+/// Rolls back to the auto-backup the orchestrator just created.
+///
+/// `backup_ts` is the timestamp recorded during Phase 3; passing it through
+/// avoids `ls -t | head -n1` racing concurrent backups in the same dir.
+/// `None` means rollback was invoked before Phase 3 ran (no backup yet),
+/// in which case there is nothing on disk to restore — we still revert env
+/// + scale back up so the server returns to its pre-update state.
 ///
 /// The orchestrator owns the snapshot lock again here for the restore Job.
-async fn rollback(state: &AppState, server_id: &str, _guard: &UpdateGuard) -> Result<()> {
+async fn rollback(
+    state: &AppState,
+    server_id: &str,
+    _guard: &UpdateGuard,
+    backup_ts: Option<i64>,
+) -> Result<()> {
     let snapshots_pvc = state.snapshots_pvc.as_ref();
     let permit = state.snapshot_pvc_lock.lock().await;
 
@@ -718,42 +846,42 @@ async fn rollback(state: &AppState, server_id: &str, _guard: &UpdateGuard) -> Re
     });
     patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &old_env).await?;
 
-    // Find the newest archive on disk via a tiny ls Job. Avoid spawning a
-    // separate ls Job: the restore Job's container script picks the newest
-    // archive itself — see the `latest archive` block in `build_restore_job`.
-    // Here we re-derive the path the orchestrator just wrote (matches the
-    // ts of the failed update's backup).
-    //
-    // For now, restore to the latest archive's filename pattern via a
-    // shell-glob-aware Job. Backup ts is unknown to the rollback path
-    // because the failure may have occurred mid-step; instead we shell out
-    // to `ls -t | head -n 1` inside the Job. The current builder takes a
-    // ts argument — pass 0 and override via a preceding `latest=$(...)` step
-    // baked into a custom command.
-    let ts = Utc::now().timestamp();
     let jobs: Api<Job> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
+    let Some(ts_value) = backup_ts else {
+        // Rollback fired before any backup landed (failure during Phase 1
+        // or 2). Env was reverted above; bring the server back up.
+        drop(permit);
+        scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
+        wait_pod_running(
+            &state.kube,
+            &state.mc_namespace,
+            &mc_pod,
+            POD_RUNNING_TIMEOUT,
+        )
+        .await?;
+        return Ok(());
+    };
     let mut restore = build_restore_job(
         server_id,
-        &ts.to_string(),
+        &ts_value.to_string(),
         &state.mc_namespace,
         snapshots_pvc.as_str(),
         "auto",
     );
-    // Override the command to find + restore the newest archive in the auto
-    // subdir. The backup ts that just ran is unknown to the rollback path
-    // when failure occurs mid-step, so the Job picks the newest tarball
-    // itself via `ls -t | head -n 1` instead of relying on the archive_id
-    // baked into the path.
+    // Pin the rollback to the exact archive Phase 3 produced. Concurrent
+    // updates of the same server can't race because the per-server lock
+    // serializes them, but `ls -t` would still pick "newest" which races
+    // against the in-progress tarball Phase 3 is *creating* on retry.
     if let Some(spec) = restore.spec.as_mut()
         && let Some(pod) = spec.template.spec.as_mut()
         && let Some(c) = pod.containers.first_mut()
     {
         let resource_name = format!("mc-{server_id}");
         let cmd = format!(
-            "set -eu; latest=$(ls -t /snap/{resource_name}/auto/ | head -n 1); \
-                     if [ -z \"$latest\" ]; then echo no backup to restore; exit 1; fi; \
-                     echo restoring $latest; find /data -mindepth 1 -delete; \
-                     tar xzf /snap/{resource_name}/auto/$latest -C /data"
+            "set -eu; archive=/snap/{resource_name}/auto/{ts_value}.tgz; \
+                     if [ ! -f \"$archive\" ]; then echo \"backup $archive missing\"; exit 1; fi; \
+                     echo restoring $archive; find /data -mindepth 1 -delete; \
+                     tar xzf \"$archive\" -C /data"
         );
         c.command = Some(vec!["sh".to_owned(), "-c".to_owned(), cmd]);
     }
@@ -763,10 +891,7 @@ async fn rollback(state: &AppState, server_id: &str, _guard: &UpdateGuard) -> Re
         .clone()
         .ok_or_else(|| anyhow!("restore Job missing name"))?;
     if jobs.get_opt(&name).await?.is_some() {
-        let _ = jobs
-            .delete(&name, &kube::api::DeleteParams::default())
-            .await;
-        sleep(Duration::from_secs(1)).await;
+        delete_job_and_wait(&jobs, &name, Duration::from_secs(30)).await?;
     }
     jobs.create(&PostParams::default(), &restore).await?;
     wait_job(&state.kube, &state.mc_namespace, &name, RESTORE_JOB_TIMEOUT).await?;

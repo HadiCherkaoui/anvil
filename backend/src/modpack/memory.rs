@@ -19,7 +19,10 @@ use super::vanilla::env_kv;
 /// also shrinks back during long idles.
 #[must_use]
 pub fn init_memory_mi(max_mi: i64) -> i64 {
-    (max_mi / 4).max(1024)
+    // Clamp lower bound to 512 MiB but never exceed the max budget; small
+    // pods (e.g. memory_mi == 256) would otherwise get init > max and refuse
+    // to start.
+    (max_mi / 4).max(512).min(max_mi)
 }
 
 /// JVM `-XX:` flags that let G1 release committed heap to the OS during
@@ -56,10 +59,9 @@ mod tests {
     }
 
     #[test]
-    fn init_memory_floor_at_1024() {
-        let env = build_memory_env(2048); // 2048/4 == 512, floor to 1024
-        let init = env.iter().find(|e| e.name == "INIT_MEMORY").unwrap();
-        assert_eq!(init.value.as_deref(), Some("1024M"));
+    fn init_memory_floor_at_512() {
+        // 1024/4 == 256, floor to 512
+        assert_eq!(init_memory_mi(1024), 512);
     }
 
     #[test]
@@ -67,5 +69,13 @@ mod tests {
         let env = build_memory_env(8192); // 8192/4 == 2048
         let init = env.iter().find(|e| e.name == "INIT_MEMORY").unwrap();
         assert_eq!(init.value.as_deref(), Some("2048M"));
+    }
+
+    #[test]
+    fn init_memory_clamped_to_max_for_tiny_budgets() {
+        // Floor (512) would otherwise exceed max (256), preventing JVM start.
+        assert_eq!(init_memory_mi(256), 256);
+        assert_eq!(init_memory_mi(400), 400);
+        assert_eq!(init_memory_mi(512), 512);
     }
 }

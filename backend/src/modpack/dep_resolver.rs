@@ -62,12 +62,14 @@ pub async fn resolve_required(
     let mut out: Vec<ModEntry> = Vec::new();
     let mut queue: VecDeque<(ModEntry, usize)> = VecDeque::new();
     let mut visited: HashSet<(String, String)> = HashSet::new();
+    let mut depth_truncations: usize = 0;
 
     queue.push_back((seed.clone(), 0));
     visited.insert((seed.provider.clone(), seed.project_id.clone()));
 
     while let Some((cur, depth)) = queue.pop_front() {
         if depth >= MAX_DEPTH {
+            depth_truncations += 1;
             event!(
                 name: "anvil.deps.depth_cap",
                 Level::WARN,
@@ -117,6 +119,21 @@ pub async fn resolve_required(
             out.push(entry.clone());
             queue.push_back((entry, depth + 1));
         }
+    }
+
+    // Surface the depth-cap aggregation once at the end so downstream
+    // (UI / log scrapers) can react to "deps were truncated" without
+    // grepping per-node WARN events.
+    if depth_truncations > 0 {
+        event!(
+            name: "anvil.deps.depth_cap_summary",
+            Level::WARN,
+            seed.project_id = %seed.project_id,
+            truncations = depth_truncations,
+            resolved = out.len(),
+            max_depth = MAX_DEPTH,
+            "dep resolver truncated subtrees at depth cap",
+        );
     }
 
     Ok(out)

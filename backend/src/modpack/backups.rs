@@ -134,6 +134,25 @@ pub async fn insert_auto_backup_row(
     ts: i64,
     reason: &str,
 ) -> Result<String> {
+    insert_auto_backup_row_with_status(state, server_id, ts, reason, "complete").await
+}
+
+/// Like [`insert_auto_backup_row`] but sets the row's `status` explicitly.
+/// FSMs call this with `"pending"` before the tar Job runs, then flip to
+/// `"complete"` / `"failed"` via [`mark_auto_backup_status`] once the Job
+/// terminates so the UI never advertises a tarball that doesn't exist.
+///
+/// # Errors
+///
+/// Returns the underlying `sqlx` error if the `servers` row is missing or
+/// the insert violates a constraint.
+pub async fn insert_auto_backup_row_with_status(
+    state: &AppState,
+    server_id: &str,
+    ts: i64,
+    reason: &str,
+    status: &str,
+) -> Result<String> {
     let backup_id = format!("bk-auto-{ts}");
     let snap = snapshot_current(state, server_id).await?;
     let snapshot_path = format!("auto/{ts}.tgz");
@@ -141,8 +160,8 @@ pub async fn insert_auto_backup_row(
         "INSERT INTO backups
             (id, server_id, name, created_at, snapshot_path, mc_version, memory_mi,
              storage_size_gi, storage_class, exposure_mode, source_kind, source_config,
-             kind, reason)
-         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?)",
+             kind, reason, status)
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?, ?)",
     )
     .bind(&backup_id)
     .bind(server_id)
@@ -156,10 +175,56 @@ pub async fn insert_auto_backup_row(
     .bind(&snap.source_kind)
     .bind(&snap.source_config)
     .bind(reason)
+    .bind(status)
     .execute(&state.pool)
     .await
     .context("inserting auto backup row")?;
     Ok(backup_id)
+}
+
+/// Updates the `status` of an auto-backup row. Callers use this to flip
+/// `pending` rows to `complete` after the tar Job lands, or `failed` if it
+/// errored.
+///
+/// # Errors
+///
+/// Returns the underlying `sqlx` error.
+pub async fn mark_auto_backup_status(
+    state: &AppState,
+    backup_id: &str,
+    status: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE backups SET status = ? WHERE id = ?")
+        .bind(status)
+        .bind(backup_id)
+        .execute(&state.pool)
+        .await
+        .context("updating backup status")?;
+    Ok(())
+}
+
+/// Marks any auto-backup rows whose `status = 'pending'` and `created_at`
+/// is older than `older_than_secs` seconds ago as `'failed'`. Run from the
+/// auto-backup GC pass so a crashed orchestrator does not leave rows
+/// claiming "in progress" indefinitely.
+///
+/// # Errors
+///
+/// Returns the underlying `sqlx` error.
+pub async fn fail_stale_pending_auto_backups(
+    state: &AppState,
+    older_than_secs: i64,
+) -> Result<()> {
+    let cutoff = Utc::now().timestamp() - older_than_secs;
+    sqlx::query(
+        "UPDATE backups SET status = 'failed'
+         WHERE kind = 'auto' AND status = 'pending' AND created_at < ?",
+    )
+    .bind(cutoff)
+    .execute(&state.pool)
+    .await
+    .context("failing stale pending auto backups")?;
+    Ok(())
 }
 
 /// Trims `auto`-kind backup rows for `server_id` to the newest `keep`,
@@ -433,6 +498,12 @@ async fn run_restore_inner(
 
     let snap = load_backup_snapshot(state, server_id, backup_id).await?;
 
+    // Capture the pre-restore row so a partial mid-swap failure can revert
+    // SQL + env to match the (now-overwritten) PVC contents. Without this,
+    // a failure between the tarball untar and env patch leaves the DB
+    // claiming version A while /data is from version B.
+    let pre = load_pre_restore_snapshot(state, server_id).await?;
+
     insert_audit(
         &state.pool,
         server_id,
@@ -472,6 +543,8 @@ async fn run_restore_inner(
         .clone()
         .ok_or_else(|| anyhow!("restore Job missing name"))?;
     spawn_job(&state.kube, &state.mc_namespace, &job).await?;
+    // Restore Job failure leaves /data possibly inconsistent, but the DB
+    // row still matches `pre` (no swap yet) so callers can retry safely.
     wait_job(
         &state.kube,
         &state.mc_namespace,
@@ -482,6 +555,9 @@ async fn run_restore_inner(
 
     // Swap: revert SQLite + env. Service / SC / size are NOT touched per spec §4.5.
     guard.emit(UpdatePhase::Swapping);
+    // SQL update failure leaves env still pointing at `pre`, which is now
+    // stale relative to /data. Bubble up — the caller surfaces the error
+    // and best-effort scales back up.
     sqlx::query(
         "UPDATE servers
          SET mc_version = ?, memory_mi = ?, source_kind = ?, source_config = ?
@@ -497,7 +573,32 @@ async fn run_restore_inner(
     .context("reverting servers row to backup snapshot")?;
 
     let env = build_runtime_env_from_snapshot(&snap, server_id)?;
-    patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &env).await?;
+    if let Err(e) =
+        patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &env).await
+    {
+        // Env patch failed but SQL already swapped to `snap`. Roll back the
+        // SQL UPDATE so DB matches the env (which is still `pre`). /data is
+        // from the backup though, so the server may still misboot — log
+        // loudly and return the original error.
+        tracing::error!(
+            server.id = %server_id,
+            err = %e,
+            "restore env patch failed after SQL swap; rolling back SQL to pre-restore"
+        );
+        let _ = sqlx::query(
+            "UPDATE servers
+             SET mc_version = ?, memory_mi = ?, source_kind = ?, source_config = ?
+             WHERE id = ?",
+        )
+        .bind(&pre.mc_version)
+        .bind(pre.memory_mi)
+        .bind(&pre.source_kind)
+        .bind(&pre.source_config)
+        .bind(server_id)
+        .execute(&state.pool)
+        .await;
+        return Err(e);
+    }
 
     guard.emit(UpdatePhase::Starting);
     scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
@@ -507,6 +608,33 @@ async fn run_restore_inner(
     let timeout = boot_timeout_for_kind(&snap.source_kind);
     wait_for_done_marker(&state.kube, &state.mc_namespace, server_id, timeout).await?;
     Ok(())
+}
+
+/// Reads the live `servers` row into a [`BackupSnapshot`]-shaped value so a
+/// failed restore can revert the SQL/env to match what /data was before.
+async fn load_pre_restore_snapshot(
+    state: &AppState,
+    server_id: &str,
+) -> Result<BackupSnapshot> {
+    use sqlx::Row as _;
+    let row = sqlx::query(
+        "SELECT mc_version, memory_mi, storage_size_gi, storage_class,
+                exposure_mode, source_kind, source_config
+         FROM servers WHERE id = ?",
+    )
+    .bind(server_id)
+    .fetch_one(&state.pool)
+    .await
+    .context("loading pre-restore servers row")?;
+    Ok(BackupSnapshot {
+        mc_version: row.try_get("mc_version")?,
+        memory_mi: row.try_get("memory_mi")?,
+        storage_size_gi: row.try_get("storage_size_gi")?,
+        storage_class: row.try_get("storage_class")?,
+        exposure_mode: row.try_get("exposure_mode")?,
+        source_kind: row.try_get("source_kind")?,
+        source_config: row.try_get("source_config")?,
+    })
 }
 
 /// Rebuilds the `mc` container env from a [`BackupSnapshot`] so a restore
