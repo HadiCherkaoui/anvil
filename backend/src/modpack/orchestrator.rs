@@ -32,7 +32,7 @@ use tracing::{Level, event};
 use crate::AppState;
 use crate::k8s_patches::patch_statefulset_env;
 use crate::k8s_status::RCON_PORT;
-use crate::modpack::guard::UpdateGuard;
+use crate::modpack::guard::{UpdateGuard, record_terminal, set_update_error};
 use crate::modpack::jobs::{BACKUP_KEEP_COUNT, build_backup_job, build_restore_job};
 use crate::modpack::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo, from_db};
 use crate::routes::servers::create::insert_audit;
@@ -86,6 +86,7 @@ pub async fn run(
     let outcome = run_inner(&state, &server_id, &target_version_id, &guard).await;
     match outcome {
         Ok(()) => {
+            record_terminal(&state, &server_id, UpdatePhase::Succeeded);
             guard.emit(UpdatePhase::Succeeded);
             event!(
                 name: "anvil.update.succeeded",
@@ -102,9 +103,15 @@ pub async fn run(
                 err = %err,
                 "update failed; attempting rollback",
             );
+            // Stash the original FSM error before rollback runs — the WS
+            // emits whichever terminal phase comes next, and on RolledBack
+            // the user wants to know why the update failed (not just that
+            // it was reverted). Overwritten below if rollback also errors.
+            set_update_error(&state, &server_id, err.to_string());
             guard.emit(UpdatePhase::RollingBack);
             match rollback(&state, &server_id, &guard).await {
                 Ok(()) => {
+                    record_terminal(&state, &server_id, UpdatePhase::RolledBack);
                     guard.emit(UpdatePhase::RolledBack);
                     let now = Utc::now().timestamp();
                     let _ = insert_audit(
@@ -117,6 +124,12 @@ pub async fn run(
                     .await;
                 }
                 Err(rb) => {
+                    set_update_error(
+                        &state,
+                        &server_id,
+                        format!("update failed: {err}\nrollback also failed: {rb}"),
+                    );
+                    record_terminal(&state, &server_id, UpdatePhase::Failed);
                     guard.emit(UpdatePhase::Failed);
                     let now = Utc::now().timestamp();
                     let _ = insert_audit(
@@ -224,6 +237,11 @@ async fn run_inner(
         BACKUP_JOB_TIMEOUT,
     )
     .await?;
+    // Mirror the file-side keep-N GC the tar Job did into the DB.
+    let reason = format!("modpack-update:{}", version.name);
+    let _ =
+        crate::modpack::backups::insert_auto_backup_row(state, server_id, backup_ts, &reason).await;
+    let _ = crate::modpack::backups::gc_auto_backup_rows(state, server_id, BACKUP_KEEP_COUNT).await;
     insert_audit(
         &state.pool,
         server_id,

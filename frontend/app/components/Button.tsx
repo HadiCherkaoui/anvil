@@ -13,9 +13,13 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 	children: ReactNode;
 }
 
+// `cursor-pointer` is on the BASE because the browser UA stylesheet sets
+// `<button>` cursor to `default`; without overriding it, hover gives the
+// arrow cursor and the user thinks the element isn't clickable.
 const BASE =
 	"inline-flex items-center gap-2 rounded-md font-mono uppercase tracking-wide " +
-	"transition-colors disabled:opacity-40 disabled:cursor-not-allowed " +
+	"cursor-pointer transition-colors " +
+	"disabled:opacity-40 disabled:cursor-not-allowed " +
 	"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 const SIZES: Record<Size, string> = {

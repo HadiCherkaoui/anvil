@@ -36,6 +36,11 @@ pub struct Config {
     /// Desired plugin list awaiting the next apply. Empty = no draft.
     #[serde(default)]
     pub pending_plugins: Vec<ModEntry>,
+    /// Per-plugin auto-update mode — mirrors the modded/modpack
+    /// equivalents. Same semantics as
+    /// [`crate::modpack::modded::AutoUpdateMode`].
+    #[serde(default)]
+    pub auto_update_mode: super::modded::AutoUpdateMode,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +118,7 @@ mod tests {
             paper_build,
             plugins: Vec::new(),
             pending_plugins: Vec::new(),
+            auto_update_mode: super::super::modded::AutoUpdateMode::default(),
         }
     }
 

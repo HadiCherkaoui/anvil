@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::k8s_patches::patch_statefulset_env;
-use crate::modpack::guard::UpdateGuard;
+use crate::modpack::guard::{UpdateGuard, record_terminal, set_update_error};
 use crate::modpack::jobs::{build_backup_job, build_restore_job};
 use crate::modpack::orchestrator::{
     BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT, RESTORE_JOB_TIMEOUT,
@@ -117,6 +117,76 @@ fn snap_from_row(row: SnapRow) -> BackupSnapshot {
     }
 }
 
+/// Inserts an `auto`-kind backup row for an FSM-driven backup.
+///
+/// `ts` is the unix timestamp the orchestrator used as the archive id;
+/// the DB row id is `bk-auto-{ts}` so rollback / list / restore can all
+/// derive paths deterministically. `reason` is a free-form context
+/// string surfaced in the Backups tab.
+///
+/// # Errors
+///
+/// Returns the underlying `sqlx` error if the `servers` row is missing
+/// or the insert violates a constraint.
+pub async fn insert_auto_backup_row(
+    state: &AppState,
+    server_id: &str,
+    ts: i64,
+    reason: &str,
+) -> Result<String> {
+    let backup_id = format!("bk-auto-{ts}");
+    let snap = snapshot_current(state, server_id).await?;
+    let snapshot_path = format!("auto/{ts}.tgz");
+    sqlx::query(
+        "INSERT INTO backups
+            (id, server_id, name, created_at, snapshot_path, mc_version, memory_mi,
+             storage_size_gi, storage_class, exposure_mode, source_kind, source_config,
+             kind, reason)
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?)",
+    )
+    .bind(&backup_id)
+    .bind(server_id)
+    .bind(ts)
+    .bind(&snapshot_path)
+    .bind(&snap.mc_version)
+    .bind(snap.memory_mi)
+    .bind(snap.storage_size_gi)
+    .bind(snap.storage_class.as_deref())
+    .bind(&snap.exposure_mode)
+    .bind(&snap.source_kind)
+    .bind(&snap.source_config)
+    .bind(reason)
+    .execute(&state.pool)
+    .await
+    .context("inserting auto backup row")?;
+    Ok(backup_id)
+}
+
+/// Trims `auto`-kind backup rows for `server_id` to the newest `keep`,
+/// matching the inline `xargs -r rm -f` GC the backup Job's tar shell
+/// runs on the snapshots PVC. Run after the backup Job reports success
+/// so DB and disk stay in agreement.
+///
+/// # Errors
+///
+/// Returns the underlying `sqlx` error.
+pub async fn gc_auto_backup_rows(state: &AppState, server_id: &str, keep: usize) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM backups WHERE id IN (
+            SELECT id FROM backups
+            WHERE server_id = ? AND kind = 'auto'
+            ORDER BY created_at DESC
+            LIMIT -1 OFFSET ?
+        )",
+    )
+    .bind(server_id)
+    .bind(i64::try_from(keep).unwrap_or(i64::MAX))
+    .execute(&state.pool)
+    .await
+    .context("gc'ing auto backup rows")?;
+    Ok(())
+}
+
 async fn snapshot_current(state: &AppState, server_id: &str) -> Result<BackupSnapshot> {
     let row: SnapRow = sqlx::query_as(
         "SELECT mc_version, memory_mi, storage_size_gi, storage_class,
@@ -182,6 +252,8 @@ pub async fn run_backup(
     let was_running = match current_replicas(&state.kube, &state.mc_namespace, &server_id).await {
         Ok(r) => r >= 1,
         Err(err) => {
+            set_update_error(&state, &server_id, err.to_string());
+            record_terminal(&state, &server_id, UpdatePhase::Failed);
             guard.emit(UpdatePhase::Failed);
             let now = Utc::now().timestamp();
             let _ = insert_audit(
@@ -207,6 +279,7 @@ pub async fn run_backup(
     let now = Utc::now().timestamp();
     match outcome {
         Ok(()) => {
+            record_terminal(&state, &server_id, UpdatePhase::Succeeded);
             guard.emit(UpdatePhase::Succeeded);
             let _ = insert_audit(
                 &state.pool,
@@ -218,6 +291,8 @@ pub async fn run_backup(
             .await;
         }
         Err(err) => {
+            set_update_error(&state, &server_id, err.to_string());
+            record_terminal(&state, &server_id, UpdatePhase::Failed);
             guard.emit(UpdatePhase::Failed);
             let _ = delete_backup_row(&state, &backup_id).await;
             let _ = insert_audit(
@@ -319,6 +394,7 @@ pub async fn run_restore(
     let now = Utc::now().timestamp();
     match outcome {
         Ok(()) => {
+            record_terminal(&state, &server_id, UpdatePhase::Succeeded);
             guard.emit(UpdatePhase::Succeeded);
             let _ = insert_audit(
                 &state.pool,
@@ -330,6 +406,8 @@ pub async fn run_restore(
             .await;
         }
         Err(err) => {
+            set_update_error(&state, &server_id, err.to_string());
+            record_terminal(&state, &server_id, UpdatePhase::Failed);
             guard.emit(UpdatePhase::Failed);
             let _ = insert_audit(
                 &state.pool,

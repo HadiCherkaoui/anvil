@@ -26,6 +26,7 @@ import {
 } from "../../lib/api";
 import { useLoaderVersions } from "../../lib/use-loader-versions";
 import { useMcVersions } from "../../lib/use-mc-versions";
+import { usePaperVersions } from "../../lib/use-paper-versions";
 
 import {
 	BuildSlip,
@@ -117,8 +118,14 @@ function buildExposureOptions(
 export default function NewServerPage(): ReactElement {
 	const router = useRouter();
 	const toast = useToast();
-	const versions = useMcVersions();
+	const mojangVersions = useMcVersions();
+	const paperVersions = usePaperVersions();
 	const [draft, setDraft] = useState<CreateDraft>(INITIAL);
+	// Paper ships builds for a subset of MC versions; itzg fails at boot
+	// otherwise. Use the paper list when the user is creating a paper
+	// server, mojang's manifest for everything else.
+	const versions =
+		draft.type === "paper" ? paperVersions : mojangVersions;
 	const [submitting, setSubmitting] = useState(false);
 	const [caps, setCaps] = useState<ClusterCapabilities | null>(null);
 	const [browseOpen, setBrowseOpen] = useState(false);
@@ -437,6 +444,11 @@ export default function NewServerPage(): ReactElement {
 									}
 									if (v !== "paper") {
 										set("initial_plugins", []);
+									} else {
+										// Paper ships builds for a subset of MC versions;
+										// force the user to reselect so the dropdown source
+										// switch shows up cleanly.
+										set("mc_version", null);
 									}
 								}}
 								options={TYPE_OPTIONS}

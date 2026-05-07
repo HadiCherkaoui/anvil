@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from "rea
 import {
 	ApiError,
 	applyUpdate,
+	changeServerVersion,
 	deleteServer,
 	fetchServerByName,
 	restartServer,
@@ -242,6 +243,23 @@ export function ServerDetailView(): ReactElement {
 		}
 	};
 
+	const onLoaderUpdateClick = (): void => {
+		if (detail.loader_update === null || detail.update_in_progress) return;
+		setSheetOpen(true);
+		changeServerVersion(detail.id, {
+			mc_version: detail.mc_version,
+			loader_version: detail.loader_update.latest_loader,
+		}).catch((err: unknown) => {
+			const msg =
+				err instanceof ApiError
+					? `${err.code}: ${err.message}`
+					: err instanceof Error
+						? err.message
+						: "unknown error";
+			toast.push(`loader update failed to start: ${msg}`, "error");
+		});
+	};
+
 	const ctxValue: ServerDetailValue = { detail, refresh };
 
 	return (
@@ -326,6 +344,18 @@ export function ServerDetailView(): ReactElement {
 								update
 							</Button>
 						</div>
+					</div>
+				)}
+
+				{detail.loader_update !== null && !detail.update_in_progress && (
+					<div className="mb-4 flex items-center justify-between rounded-md border border-state-warning/40 bg-state-warning/5 px-4 py-3">
+						<span className="font-mono text-[12px] text-state-warning">
+							loader update · {detail.loader_update.current_loader} →{" "}
+							{detail.loader_update.latest_loader}
+						</span>
+						<Button variant="primary" onClick={onLoaderUpdateClick}>
+							update loader
+						</Button>
 					</div>
 				)}
 

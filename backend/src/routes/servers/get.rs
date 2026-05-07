@@ -53,6 +53,11 @@ pub struct ServerDetail {
     /// Per-mod / per-plugin updates the poller has detected. Empty for
     /// vanilla and modpack-driven servers.
     pub mod_updates: Vec<ModUpdateInfo>,
+    /// Newer Forge / `NeoForge` loader version available for this
+    /// server's MC version, if any. `None` for fabric / paper / vanilla
+    /// / modpack-driven servers and for forge/neoforge servers that
+    /// already pin the latest.
+    pub loader_update: Option<LoaderUpdateInfo>,
     /// User-tunable subset of server.properties applied via env on the
     /// next pod start. Defaults match vanilla MC for legacy rows.
     pub properties: ServerProperties,
@@ -66,6 +71,14 @@ pub struct ModUpdateInfo {
     pub current_version_id: String,
     pub latest_version_id: String,
     pub latest_version_name: String,
+}
+
+/// Latest published Forge / `NeoForge` loader version for the server's
+/// MC version, surfaced when it differs from the current pin.
+#[derive(Debug, Serialize)]
+pub struct LoaderUpdateInfo {
+    pub current_loader: String,
+    pub latest_loader: String,
 }
 
 /// Handler for `GET /api/servers/:id`.
@@ -181,6 +194,7 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         .contains(id);
 
     let mod_updates = fetch_mod_updates(&state.pool, id).await;
+    let loader_update = fetch_loader_update(&state.pool, id).await;
 
     Ok(ServerDetail {
         id: row.id,
@@ -203,8 +217,31 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
         update_in_progress,
         files_helper_running,
         mod_updates,
+        loader_update,
         properties: row.properties,
     })
+}
+
+/// Returns the per-server loader-update row, if the poller flagged one.
+/// Logged-and-empty on DB failure so detail still renders.
+async fn fetch_loader_update(pool: &SqlitePool, server_id: &str) -> Option<LoaderUpdateInfo> {
+    let row: Result<Option<(String, String)>, _> = sqlx::query_as(
+        "SELECT current_loader, latest_loader FROM loader_updates WHERE server_id = ?",
+    )
+    .bind(server_id)
+    .fetch_optional(pool)
+    .await;
+    match row {
+        Ok(Some((current_loader, latest_loader))) => Some(LoaderUpdateInfo {
+            current_loader,
+            latest_loader,
+        }),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(server.id = %server_id, error = %err, "loader_updates query failed");
+            None
+        }
+    }
 }
 
 /// Per-mod update rows; on DB failure we log and return empty rather

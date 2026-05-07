@@ -18,7 +18,7 @@ use tracing::{Level, event};
 
 use crate::AppState;
 use crate::k8s_patches::patch_statefulset_env;
-use crate::modpack::guard::UpdateGuard;
+use crate::modpack::guard::{UpdateGuard, record_terminal, set_update_error};
 use crate::modpack::jobs::{BACKUP_KEEP_COUNT, build_backup_job, build_restore_job};
 use crate::modpack::orchestrator::{
     BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT, RESTORE_JOB_TIMEOUT,
@@ -64,6 +64,7 @@ pub async fn run(
     let outcome = run_inner(&state, &server_id, &new_mc, new_loader.as_deref(), &guard).await;
     match outcome {
         Ok(()) => {
+            record_terminal(&state, &server_id, UpdatePhase::Succeeded);
             guard.emit(UpdatePhase::Succeeded);
             event!(
                 name: "anvil.version_change.succeeded",
@@ -80,6 +81,8 @@ pub async fn run(
                 err = %err,
                 "version change failed before swap; no rollback required",
             );
+            set_update_error(&state, &server_id, err.to_string());
+            record_terminal(&state, &server_id, UpdatePhase::Failed);
             guard.emit(UpdatePhase::Failed);
             let now = Utc::now().timestamp();
             let _ = insert_audit(
@@ -99,9 +102,11 @@ pub async fn run(
                 err = %err,
                 "version change failed after swap; attempting rollback",
             );
+            set_update_error(&state, &server_id, err.to_string());
             guard.emit(UpdatePhase::RollingBack);
             match rollback(&state, &server_id, &ctx).await {
                 Ok(()) => {
+                    record_terminal(&state, &server_id, UpdatePhase::RolledBack);
                     guard.emit(UpdatePhase::RolledBack);
                     let now = Utc::now().timestamp();
                     let _ = insert_audit(
@@ -114,6 +119,12 @@ pub async fn run(
                     .await;
                 }
                 Err(rb) => {
+                    set_update_error(
+                        &state,
+                        &server_id,
+                        format!("version change failed: {err}\nrollback also failed: {rb}"),
+                    );
+                    record_terminal(&state, &server_id, UpdatePhase::Failed);
                     guard.emit(UpdatePhase::Failed);
                     let now = Utc::now().timestamp();
                     let _ = insert_audit(
@@ -226,6 +237,11 @@ async fn run_inner(
     )
     .await
     .map_err(FsmError::Pre)?;
+    // Mirror the file-side keep-N GC the tar Job did into the DB.
+    let reason = format!("mc-version-change:{old_mc}->{new_mc}");
+    let _ =
+        crate::modpack::backups::insert_auto_backup_row(state, server_id, backup_ts, &reason).await;
+    let _ = crate::modpack::backups::gc_auto_backup_rows(state, server_id, BACKUP_KEEP_COUNT).await;
     insert_audit(
         &state.pool,
         server_id,

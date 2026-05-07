@@ -1,15 +1,14 @@
-//! Normalised mod-dependency types shared across providers.
+//! Normalised mod-dependency types for the Modrinth-only mod path.
 //!
-//! Modrinth and `CurseForge` each describe upstream dependencies in their own
-//! shape (see [`mr_client::MrDependency`] and [`cf_client::CfDependency`]).
-//! [`DependencySpec`] is the panel-internal normalised form the dep-resolver
-//! consumes, with kinds collapsed to the two we actually act on.
+//! Individual mods are sourced exclusively from Modrinth (the catalog
+//! search restricts `type=mod` and `type=plugin` to Modrinth, and
+//! Modrinth deps can only point at other Modrinth projects). `CurseForge`
+//! is reserved for modpack-level downloads — that path bypasses this
+//! resolver entirely.
 //!
-//! [`mr_client::MrDependency`]: super::mr_client::MrDependency
-//! [`cf_client::CfDependency`]: super::cf_client::CfDependency
+//! [`MrDependency`]: super::mr_client::MrDependency
 
-use super::cf_client::CfDependency;
-use super::mr_client::MrDependency;
+use super::mr_client::{ModrinthClient, MrDependency};
 
 /// Kind of dependency the resolver acts on.
 ///
@@ -36,52 +35,68 @@ pub struct DependencySpec {
 }
 
 /// Normalises Modrinth dependency entries.
-#[must_use]
-pub fn from_modrinth(deps: &[MrDependency]) -> Vec<DependencySpec> {
-    deps.iter()
-        .filter_map(|d| {
-            let kind = match d.dependency_type.as_str() {
-                "required" => DepKind::Required,
-                "optional" => DepKind::Optional,
-                _ => return None,
-            };
-            let project_id = d.project_id.clone()?;
-            Some(DependencySpec {
-                provider: "modrinth".to_owned(),
-                project_id,
-                pinned_version_id: d.version_id.clone(),
-                kind,
-            })
-        })
-        .collect()
-}
-
-/// Normalises `CurseForge` dependency entries.
-#[must_use]
-pub fn from_curseforge(deps: &[CfDependency]) -> Vec<DependencySpec> {
-    deps.iter()
-        .filter_map(|d| {
-            let kind = match d.relation_type {
-                3 => DepKind::Required,
-                2 => DepKind::Optional,
-                _ => return None,
-            };
-            Some(DependencySpec {
-                provider: "curseforge".to_owned(),
-                project_id: d.mod_id.to_string(),
-                pinned_version_id: None,
-                kind,
-            })
-        })
-        .collect()
+///
+/// Modrinth lets a dependency carry `project_id`, `version_id`, both, or
+/// neither (Modrinth API spec). Mods that pin a *minimum* version of a dep
+/// frequently use `version_id` alone — JEI's `fabric-api ≥ 0.140.3+26.1`
+/// pin is one such case. The previous synchronous `from_modrinth`
+/// silently dropped those, leaving the resolver blind to the dep and
+/// the boot to fail with `HARD_DEP_NO_CANDIDATE`.
+///
+/// This async variant resolves the version-id-only case via
+/// `/v2/version/{id}` (one extra HTTP call per such dep) so the project
+/// id is always present. Entries with neither id are still dropped —
+/// nothing actionable to do with them.
+///
+/// # Errors
+///
+/// Returns the underlying Modrinth client error from the version lookup.
+pub async fn from_modrinth(
+    client: &ModrinthClient,
+    deps: &[MrDependency],
+) -> anyhow::Result<Vec<DependencySpec>> {
+    let mut out = Vec::with_capacity(deps.len());
+    for d in deps {
+        let kind = match d.dependency_type.as_str() {
+            "required" => DepKind::Required,
+            "optional" => DepKind::Optional,
+            _ => continue,
+        };
+        let project_id = match (d.project_id.as_deref(), d.version_id.as_deref()) {
+            (Some(p), _) => p.to_owned(),
+            (None, Some(vid)) => match client.version(vid).await {
+                Ok(v) => v.project_id,
+                Err(err) => {
+                    tracing::warn!(
+                        version_id = vid,
+                        error = %err,
+                        "failed to resolve Modrinth version-only dep; skipping",
+                    );
+                    continue;
+                }
+            },
+            (None, None) => continue,
+        };
+        out.push(DependencySpec {
+            provider: "modrinth".to_owned(),
+            project_id,
+            pinned_version_id: d.version_id.clone(),
+            kind,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn modrinth_filters_to_required_and_optional() {
+    fn test_client() -> ModrinthClient {
+        ModrinthClient::new().expect("ModrinthClient::new")
+    }
+
+    #[tokio::test]
+    async fn modrinth_filters_to_required_and_optional() {
         let raw = vec![
             MrDependency {
                 version_id: None,
@@ -108,7 +123,8 @@ mod tests {
                 dependency_type: "embedded".into(),
             },
         ];
-        let out = from_modrinth(&raw);
+        let client = test_client();
+        let out = from_modrinth(&client, &raw).await.expect("ok");
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].kind, DepKind::Required);
         assert_eq!(out[0].project_id, "a");
@@ -116,54 +132,16 @@ mod tests {
         assert_eq!(out[1].project_id, "c");
     }
 
-    #[test]
-    fn modrinth_drops_entries_without_project_id() {
-        let raw = vec![MrDependency {
-            version_id: Some("v".into()),
-            project_id: None,
-            file_name: None,
-            dependency_type: "required".into(),
-        }];
-        assert!(from_modrinth(&raw).is_empty());
-    }
-
-    #[test]
-    fn modrinth_pinned_version_is_kept() {
+    #[tokio::test]
+    async fn modrinth_pinned_version_is_kept() {
         let raw = vec![MrDependency {
             version_id: Some("ver-x".into()),
             project_id: Some("p".into()),
             file_name: None,
             dependency_type: "required".into(),
         }];
-        let out = from_modrinth(&raw);
+        let client = test_client();
+        let out = from_modrinth(&client, &raw).await.expect("ok");
         assert_eq!(out[0].pinned_version_id.as_deref(), Some("ver-x"));
-    }
-
-    #[test]
-    fn cf_relation_3_required_2_optional() {
-        let raw = vec![
-            CfDependency {
-                mod_id: 1,
-                relation_type: 3,
-            },
-            CfDependency {
-                mod_id: 2,
-                relation_type: 2,
-            },
-            CfDependency {
-                mod_id: 3,
-                relation_type: 5,
-            },
-            CfDependency {
-                mod_id: 4,
-                relation_type: 6,
-            },
-        ];
-        let out = from_curseforge(&raw);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].kind, DepKind::Required);
-        assert_eq!(out[0].project_id, "1");
-        assert_eq!(out[1].kind, DepKind::Optional);
-        assert_eq!(out[1].project_id, "2");
     }
 }

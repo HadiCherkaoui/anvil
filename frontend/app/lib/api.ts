@@ -126,6 +126,13 @@ export const modUpdateInfoSchema = z.object({
 
 export type ModUpdateInfo = z.infer<typeof modUpdateInfoSchema>;
 
+export const loaderUpdateInfoSchema = z.object({
+	current_loader: z.string(),
+	latest_loader: z.string(),
+});
+
+export type LoaderUpdateInfo = z.infer<typeof loaderUpdateInfoSchema>;
+
 export const serverDetailSchema = serverSummarySchema.extend({
 	storage_class: z.string().nullable(),
 	storage_size_gi: z.number().int().nonnegative(),
@@ -141,6 +148,10 @@ export const serverDetailSchema = serverSummarySchema.extend({
 	files_helper_running: z.boolean().default(false),
 	// Per-mod / per-plugin updates the poller has detected.
 	mod_updates: z.array(modUpdateInfoSchema).default([]),
+	// Newer Forge / NeoForge loader version available for this server's
+	// MC version. `null` for fabric / paper / vanilla / modpack-driven
+	// servers and for forge/neoforge servers already on the latest.
+	loader_update: loaderUpdateInfoSchema.nullable().default(null),
 	// User-tunable subset of server.properties. Defaults applied when the
 	// backend hasn't been redeployed with the column yet.
 	properties: serverPropertiesSchema.default(DEFAULT_PROPERTIES),
@@ -166,6 +177,13 @@ export const mcVersionsResponseSchema = z.object({
 	versions: z.array(z.string()).min(1),
 	source: z.enum(["mojang", "fallback"]),
 });
+
+export const paperVersionsResponseSchema = z.object({
+	versions: z.array(z.string()).min(1),
+	source: z.enum(["papermc", "fallback"]),
+});
+
+export type PaperVersionsResponse = z.infer<typeof paperVersionsResponseSchema>;
 
 // --- logs -----------------------------------------------------------------
 
@@ -443,6 +461,17 @@ export async function fetchMcVersions(
 	const init: RequestInit = signal ? { signal } : {};
 	const res = await fetch("/api/cluster/mc-versions", init);
 	return jsonOrThrow(res, mcVersionsResponseSchema);
+}
+
+/// Fetches the Paper-supported MC version list (PaperMC API). Used by
+/// the Paper create flow so the dropdown only offers versions itzg
+/// won't reject at boot.
+export async function fetchPaperVersions(
+	signal?: AbortSignal,
+): Promise<PaperVersionsResponse> {
+	const init: RequestInit = signal ? { signal } : {};
+	const res = await fetch("/api/papermc/versions", init);
+	return jsonOrThrow(res, paperVersionsResponseSchema);
 }
 
 export async function fetchLoaderVersions(
@@ -981,13 +1010,22 @@ export async function broadcastMessage(
 
 // --- backups (Spec 5) ----------------------------------------------------
 
+export const backupKindSchema = z.enum(["manual", "auto"]);
+
 export const backupSchema = z.object({
 	id: z.string(),
 	name: z.string().nullable(),
 	created_at: z.number().int(),
 	mc_version: z.string(),
 	size_bytes: z.number().int().nullable(),
+	// Migration 0010 rows: `manual` for user-triggered, `auto` for the
+	// modpack-update / mc-version-change orchestrators. Default keeps the
+	// schema tolerant if the backend predates the migration.
+	kind: backupKindSchema.default("manual"),
+	reason: z.string().nullable().default(null),
 });
+
+export type BackupKind = z.infer<typeof backupKindSchema>;
 
 export type Backup = z.infer<typeof backupSchema>;
 

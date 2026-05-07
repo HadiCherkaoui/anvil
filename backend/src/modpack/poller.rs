@@ -173,6 +173,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                 &id,
                 state.update_locks.clone(),
                 state.update_phase_buses.clone(),
+                state.update_errors.clone(),
             ) else {
                 continue;
             };
@@ -187,6 +188,131 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             err = %err,
             "per-mod update poll failed; continuing",
         );
+    }
+    if let Err(err) = poll_loader_versions(state).await {
+        event!(
+            name: "anvil.modpack.poll.loader_error",
+            Level::WARN,
+            err = %err,
+            "loader-version poll failed; continuing",
+        );
+    }
+    Ok(())
+}
+
+/// Walks every modded forge/neoforge server, pulls the latest published
+/// loader for the server's MC version from maven, and upserts/deletes
+/// the `loader_updates` row. Fabric is skipped — itzg pulls LATEST every
+/// boot. Paper is out of scope (`paper_build` is rarely pinned).
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear per-server fan-out; splitting it loses sequence context"
+)]
+async fn poll_loader_versions(state: &AppState) -> anyhow::Result<()> {
+    let rows = sqlx::query("SELECT id, source_config FROM servers WHERE source_kind = 'modded'")
+        .fetch_all(&state.pool)
+        .await?;
+
+    for row in rows {
+        let id: String = row.try_get("id")?;
+        let cfg_raw: String = row.try_get("source_config")?;
+        let cfg: Value = match serde_json::from_str(&cfg_raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let runtime = cfg
+            .get("runtime")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let runtime: &'static str = match runtime {
+            "forge" => "forge",
+            "neoforge" => "neoforge",
+            // Fabric / unknown — itzg LATEST or unsupported. Drop any
+            // stale row left from a previous runtime.
+            _ => {
+                let _ = sqlx::query("DELETE FROM loader_updates WHERE server_id = ?")
+                    .bind(&id)
+                    .execute(&state.pool)
+                    .await;
+                continue;
+            }
+        };
+        let auto_mode = cfg
+            .get("auto_update_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("notify");
+        if auto_mode == "never" {
+            let _ = sqlx::query("DELETE FROM loader_updates WHERE server_id = ?")
+                .bind(&id)
+                .execute(&state.pool)
+                .await;
+            continue;
+        }
+        let mc_version = cfg
+            .get("mc_version")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let current_loader = cfg
+            .get("loader_version")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if mc_version.is_empty() || current_loader.is_empty() {
+            continue;
+        }
+
+        let listing =
+            match crate::routes::runtimes::cached_or_fetch(&state.loader_version_cache, runtime)
+                .await
+            {
+                Ok(v) => v,
+                Err(err) => {
+                    event!(
+                        name: "anvil.modpack.poll.loader_upstream_error",
+                        Level::WARN,
+                        server.id = %id,
+                        runtime,
+                        err = %err,
+                        "skipping server",
+                    );
+                    continue;
+                }
+            };
+        // `by_mc[mc_version]` is sorted newest-first by the parsers.
+        let Some(latest) = listing
+            .by_mc
+            .get(&mc_version)
+            .and_then(|v| v.first())
+            .cloned()
+        else {
+            // No published loader for this MC; clear any stale row.
+            let _ = sqlx::query("DELETE FROM loader_updates WHERE server_id = ?")
+                .bind(&id)
+                .execute(&state.pool)
+                .await;
+            continue;
+        };
+        if latest == current_loader {
+            let _ = sqlx::query("DELETE FROM loader_updates WHERE server_id = ?")
+                .bind(&id)
+                .execute(&state.pool)
+                .await;
+            continue;
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let _ = sqlx::query(
+            "INSERT OR REPLACE INTO loader_updates
+                 (server_id, current_loader, latest_loader, checked_at)
+                 VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(&current_loader)
+        .bind(&latest)
+        .bind(now)
+        .execute(&state.pool)
+        .await;
     }
     Ok(())
 }
@@ -222,6 +348,21 @@ async fn poll_individual_mods(state: &AppState, http: &ModpackHttp<'_>) -> anyho
                 .unwrap_or("fabric");
             (runtime, "mods")
         };
+        let auto_mode = cfg
+            .get("auto_update_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("notify");
+
+        // Never: skip the per-mod fan-out and drop any leftover rows the
+        // last poll wrote so the UI stops surfacing stale updates.
+        if auto_mode == "never" {
+            let _ = sqlx::query("DELETE FROM mod_updates WHERE server_id = ?")
+                .bind(&id)
+                .execute(&state.pool)
+                .await;
+            continue;
+        }
+
         let mods = cfg
             .get(mods_field)
             .and_then(Value::as_array)
@@ -260,8 +401,203 @@ async fn poll_individual_mods(state: &AppState, http: &ModpackHttp<'_>) -> anyho
             }
             sleep(PER_MOD_RATE_LIMIT_GAP).await;
         }
+
+        // Apply: enqueue Bump pending ops for everything the per-mod
+        // pass just flagged, then run the sync FSM. Done after the
+        // notify pass so notify+apply share the same detection path.
+        if auto_mode == "apply"
+            && let Err(err) = auto_apply_pending(state, &id, &source_kind, http).await
+        {
+            event!(
+                name: "anvil.modpack.poll.auto_apply_error",
+                Level::WARN,
+                server.id = %id,
+                err = %err,
+                "auto-apply pass failed",
+            );
+        }
     }
     Ok(())
+}
+
+/// Reads every `mod_updates` row for `server_id`, fetches the new
+/// version's primary file metadata (filename/url/sha), appends a `Bump`
+/// pending op for each, and — if any were queued — runs the sync FSM.
+/// Errors per-mod are logged-and-skipped; the function only returns Err
+/// for unrecoverable failures (DB / lock acquisition).
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear per-mod fan-out; splitting loses sequence context"
+)]
+async fn auto_apply_pending(
+    state: &AppState,
+    server_id: &str,
+    source_kind: &str,
+    http: &ModpackHttp<'_>,
+) -> anyhow::Result<()> {
+    use crate::modpack::mods_apply::{self, SyncTarget};
+
+    let updates: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT provider, project_id, latest_version_id
+         FROM mod_updates WHERE server_id = ?",
+    )
+    .bind(server_id)
+    .fetch_all(&state.pool)
+    .await?;
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    // Load the live source_config and append Bump ops in one shot. We
+    // mutate the JSON Value to avoid round-tripping through the
+    // strongly-typed Config (which differs between modded and paper).
+    let raw: String = sqlx::query_scalar("SELECT source_config FROM servers WHERE id = ?")
+        .bind(server_id)
+        .fetch_one(&state.pool)
+        .await?;
+    let mut cfg: Value = serde_json::from_str(&raw)?;
+    let installed_field = if source_kind == "paper" {
+        "plugins"
+    } else {
+        "mods"
+    };
+    let pending_field = if source_kind == "paper" {
+        "pending_plugins"
+    } else {
+        "pending"
+    };
+    let installed: Vec<Value> = cfg
+        .get(installed_field)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut bumps_added = 0_usize;
+
+    for (provider, project_id, latest_version_id) in updates {
+        let Some(installed_entry) = installed.iter().find(|m| {
+            m.get("provider").and_then(Value::as_str) == Some(provider.as_str())
+                && m.get("project_id").and_then(Value::as_str) == Some(project_id.as_str())
+        }) else {
+            continue;
+        };
+        let cur_filename = installed_entry
+            .get("filename")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if cur_filename.is_empty() {
+            continue;
+        }
+
+        let pick = match fetch_version_with_file(http, &provider, &latest_version_id).await {
+            Ok(p) => p,
+            Err(err) => {
+                event!(
+                    name: "anvil.modpack.poll.auto_apply_lookup_error",
+                    Level::WARN,
+                    server.id = %server_id,
+                    provider = provider.as_str(),
+                    project_id = project_id.as_str(),
+                    err = %err,
+                    "auto-apply: latest version lookup failed; skipping",
+                );
+                continue;
+            }
+        };
+
+        let bump = serde_json::json!({
+            "op": "bump",
+            "filename": cur_filename,
+            "to_version_id": pick.version_id,
+            "to_version_name": pick.version_name,
+            "to_filename": pick.filename,
+            "to_download_url": pick.download_url,
+            "to_sha512": pick.sha512,
+        });
+        let pending_arr = cfg
+            .get_mut(pending_field)
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| anyhow::anyhow!("source_config missing {pending_field} array"))?;
+        pending_arr.push(bump);
+        bumps_added += 1;
+    }
+
+    if bumps_added == 0 {
+        return Ok(());
+    }
+
+    let new_raw = serde_json::to_string(&cfg)?;
+    sqlx::query("UPDATE servers SET source_config = ? WHERE id = ?")
+        .bind(&new_raw)
+        .bind(server_id)
+        .execute(&state.pool)
+        .await?;
+
+    let target = if source_kind == "paper" {
+        SyncTarget::Plugins
+    } else {
+        SyncTarget::Mods
+    };
+    let Some(guard) = UpdateGuard::try_acquire(
+        server_id,
+        state.update_locks.clone(),
+        state.update_phase_buses.clone(),
+        state.update_errors.clone(),
+    ) else {
+        // Another apply / update holds the lock — leave the bumps in
+        // pending; the next poll tick (or a manual click) picks them up.
+        return Ok(());
+    };
+    let task_state = state.clone();
+    let task_id = server_id.to_owned();
+    tokio::spawn(async move {
+        mods_apply::run(task_state, task_id, guard, target).await;
+    });
+    event!(
+        name: "anvil.modpack.poll.auto_apply",
+        Level::INFO,
+        server.id = %server_id,
+        bumps = bumps_added,
+        "queued auto-apply for per-mod updates",
+    );
+    Ok(())
+}
+
+/// Like [`fetch_latest_compatible`] but returns the file metadata
+/// (filename / download URL / sha) the sync Job needs. Used by the
+/// `auto_update_mode = "apply"` path. Modrinth-only — individual mods
+/// never come from `CurseForge` in the current catalog flow.
+async fn fetch_version_with_file(
+    http: &ModpackHttp<'_>,
+    provider: &str,
+    version_id: &str,
+) -> anyhow::Result<FilePick> {
+    if provider != "modrinth" {
+        anyhow::bail!("auto-apply only supports modrinth (got {provider:?})");
+    }
+    let v = http.mr.version(version_id).await?;
+    let f = v
+        .files
+        .iter()
+        .find(|f| f.primary)
+        .or_else(|| v.files.first())
+        .ok_or_else(|| anyhow::anyhow!("modrinth version has no files"))?;
+    Ok(FilePick {
+        version_id: v.id.clone(),
+        version_name: v.version_number.clone(),
+        filename: f.filename.clone(),
+        download_url: f.url.clone(),
+        sha512: f.hashes.sha512.clone(),
+    })
+}
+
+/// Subset of [`super::modded::ModEntry`] needed to construct a Bump op.
+struct FilePick {
+    version_id: String,
+    version_name: String,
+    filename: String,
+    download_url: String,
+    sha512: Option<String>,
 }
 
 #[derive(Debug)]
@@ -307,6 +643,10 @@ async fn check_one_mod(
     Ok(())
 }
 
+/// Picks the newest Modrinth version compatible with `(mc_version, loader)`.
+/// Returns `None` when nothing matches or `provider` isn't `"modrinth"`
+/// (every individual mod in our catalog flow is Modrinth-sourced — see
+/// `routes::catalog::search`).
 async fn fetch_latest_compatible(
     http: &ModpackHttp<'_>,
     provider: &str,
@@ -314,48 +654,22 @@ async fn fetch_latest_compatible(
     mc_version: &str,
     loader: &str,
 ) -> anyhow::Result<Option<LatestPick>> {
-    match provider {
-        "modrinth" => {
-            let versions = http.mr.list_versions(project_id).await?;
-            let pick = versions
-                .iter()
-                .filter(|v| v.loaders.iter().any(|l| l == loader))
-                .filter(|v| v.game_versions.iter().any(|g| g == mc_version))
-                .filter(|v| v.files.iter().any(|f| f.primary))
-                .max_by(|a, b| a.date_published.cmp(&b.date_published))
-                .cloned();
-            Ok(pick.map(|v| LatestPick {
-                version_id: v.id,
-                version_name: v.version_number,
-                published_at: Some(v.date_published),
-            }))
-        }
-        "curseforge" => {
-            let Some(cf) = http.cf else { return Ok(None) };
-            let project_id_u32: u32 = project_id.parse()?;
-            let files = cf.list_files(project_id_u32).await?;
-            let pick = files
-                .iter()
-                .filter(|f| {
-                    f.game_versions
-                        .iter()
-                        .any(|v| v.eq_ignore_ascii_case(mc_version))
-                })
-                .filter(|f| {
-                    f.game_versions
-                        .iter()
-                        .any(|v| v.eq_ignore_ascii_case(loader))
-                })
-                .max_by(|a, b| a.file_date.cmp(&b.file_date))
-                .cloned();
-            Ok(pick.map(|f| LatestPick {
-                version_id: f.id.to_string(),
-                version_name: f.display_name,
-                published_at: Some(f.file_date),
-            }))
-        }
-        _ => Ok(None),
+    if provider != "modrinth" {
+        return Ok(None);
     }
+    let versions = http.mr.list_versions(project_id).await?;
+    let pick = versions
+        .iter()
+        .filter(|v| v.loaders.iter().any(|l| l == loader))
+        .filter(|v| v.game_versions.iter().any(|g| g == mc_version))
+        .filter(|v| v.files.iter().any(|f| f.primary))
+        .max_by(|a, b| a.date_published.cmp(&b.date_published))
+        .cloned();
+    Ok(pick.map(|v| LatestPick {
+        version_id: v.id,
+        version_name: v.version_number,
+        published_at: Some(v.date_published),
+    }))
 }
 
 async fn delete_mod_update(state: &AppState, server_id: &str, provider: &str, project_id: &str) {

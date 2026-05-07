@@ -449,6 +449,25 @@ function PaperPluginsBody({
 		cfgParse.success ? cfgParse.data.mc_version : "",
 	);
 
+	// Re-sync local state when the parent's polling refreshes
+	// `sourceConfig`. Without this, an initial-create + auto-apply
+	// commits an empty `pending_plugins` in the DB but the UI keeps
+	// showing the original pending list because the local state was
+	// only initialised on mount. Done via the "store + compare in
+	// render" pattern (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes)
+	// so we don't trip `react-hooks/set-state-in-effect`.
+	const sourceConfigKey = cfgParse.success
+		? `${JSON.stringify(cfgParse.data.plugins)}|${JSON.stringify(cfgParse.data.pending_plugins)}`
+		: "";
+	const [lastKey, setLastKey] = useState(sourceConfigKey);
+	if (sourceConfigKey !== lastKey) {
+		setLastKey(sourceConfigKey);
+		if (cfgParse.success) {
+			setPlugins(cfgParse.data.plugins);
+			setPending(cfgParse.data.pending_plugins);
+		}
+	}
+
 	useEffect(() => {
 		const ctrl = new AbortController();
 		listServerPlugins(serverId, ctrl.signal)

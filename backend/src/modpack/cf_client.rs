@@ -63,25 +63,10 @@ pub struct CfFile {
     #[serde(rename = "fileName", default)]
     pub file_name: String,
     /// CF interleaves MC versions and loader labels in this single array
-    /// (e.g. `["1.21.4", "Forge", "Fabric"]`). Used for dep-resolver
-    /// compatibility filtering.
+    /// (e.g. `["1.21.4", "Forge", "Fabric"]`). Kept for the modpack
+    /// version listing; individual mods don't go through this client.
     #[serde(rename = "gameVersions", default)]
     pub game_versions: Vec<String>,
-    /// Required / optional / incompatible / etc. relations to other projects.
-    #[serde(default)]
-    pub dependencies: Vec<CfDependency>,
-}
-
-/// One entry in [`CfFile::dependencies`].
-///
-/// `relation_type` mapping per `CurseForge`: `1` embedded, `2` optional,
-/// `3` required, `4` tool, `5` incompatible, `6` include.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CfDependency {
-    #[serde(rename = "modId")]
-    pub mod_id: u32,
-    #[serde(rename = "relationType")]
-    pub relation_type: u8,
 }
 
 /// Project metadata returned by `/mods/search` and `/mods/{id}`.
@@ -350,33 +335,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_cf_file_with_dependencies() {
+    fn cf_file_ignores_dependencies_field() {
+        // The dependencies field used to be parsed for the per-mod CF
+        // dep resolver; that path is gone (mods are Modrinth-only).
+        // CF still emits the field — serde must keep tolerating it.
         let body = r#"{
-            "id": 1,
-            "displayName": "X",
-            "releaseType": 1,
-            "downloadUrl": "https://example.com/x.jar",
-            "dependencies": [
-                { "modId": 200, "relationType": 3 },
-                { "modId": 201, "relationType": 2 },
-                { "modId": 202, "relationType": 5 },
-                { "modId": 203, "relationType": 6 }
-            ]
+            "id": 1, "displayName": "X", "releaseType": 1,
+            "dependencies": [{ "modId": 200, "relationType": 3 }]
         }"#;
         let f: CfFile = serde_json::from_str(body).expect("parses");
-        assert_eq!(f.dependencies.len(), 4);
-        assert_eq!(f.dependencies[0].mod_id, 200);
-        assert_eq!(f.dependencies[0].relation_type, 3);
-        assert_eq!(f.dependencies[1].relation_type, 2);
-        assert_eq!(f.dependencies[3].relation_type, 6);
-    }
-
-    #[test]
-    fn missing_dependencies_array_is_empty() {
-        let body = r#"{
-            "id": 1, "displayName": "X", "releaseType": 1
-        }"#;
-        let f: CfFile = serde_json::from_str(body).expect("parses");
-        assert!(f.dependencies.is_empty());
+        assert_eq!(f.id, 1);
     }
 }

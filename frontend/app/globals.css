@@ -59,3 +59,13 @@ body {
   color: var(--color-text-body);
   font-family: var(--font-sans);
 }
+
+/* The browser UA stylesheet sets `<button>` cursor to `default`; without
+ * overriding, hover doesn't show a pointer and clicks on the edge of the
+ * hit area can feel unresponsive. Apply pointer to every interactive
+ * button (and links) panel-wide; `disabled` keeps the not-allowed cursor.
+ */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}

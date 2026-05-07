@@ -22,6 +22,7 @@ use tokio::time::{MissedTickBehavior, interval};
 
 use crate::AppState;
 use crate::error::AppError;
+use crate::modpack::guard::{recent_terminal, take_update_error};
 use crate::modpack::orchestrator::UpdatePhase;
 use crate::routes::servers::get::fetch_server_row;
 
@@ -32,10 +33,20 @@ const HEARTBEAT: Duration = Duration::from_secs(30);
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum Frame {
-    Hello { phase: UpdatePhase },
-    Progress { phase: UpdatePhase },
-    Done { result: DoneResult },
-    End { reason: &'static str },
+    Hello {
+        phase: UpdatePhase,
+    },
+    Progress {
+        phase: UpdatePhase,
+    },
+    Done {
+        result: DoneResult,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    End {
+        reason: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -61,6 +72,16 @@ fn terminal(phase: UpdatePhase) -> Option<DoneResult> {
         UpdatePhase::RolledBack => Some(DoneResult::FailedRolledBack),
         UpdatePhase::Failed => Some(DoneResult::Failed),
         _ => None,
+    }
+}
+
+/// Pulls the FSM's last error string for `server_id` when the result is a
+/// failure. Always returns `None` for `Succeeded` so a clean run never
+/// surfaces stale entries left behind by a previous failed attempt.
+fn error_for(state: &AppState, server_id: &str, result: DoneResult) -> Option<String> {
+    match result {
+        DoneResult::Failed | DoneResult::FailedRolledBack => take_update_error(state, server_id),
+        DoneResult::Succeeded => None,
     }
 }
 
@@ -112,6 +133,26 @@ async fn write_loop(
         .cloned();
 
     let Some(mut rx) = rx_opt else {
+        // Bus is gone — but the FSM may have just finished. Surface the
+        // terminal phase if we recorded one in the last 30 s so the UI
+        // doesn't show "no-update-in-progress" for a fast run that
+        // completed before this WS connected.
+        if let Some(phase) = recent_terminal(&state, &id) {
+            let _ = sender.send(Frame::Hello { phase }.into_message()).await;
+            if let Some(result) = terminal(phase) {
+                let error = error_for(&state, &id, result);
+                let _ = sender
+                    .send(Frame::Done { result, error }.into_message())
+                    .await;
+            }
+            let _ = sender
+                .send(Message::Close(Some(CloseFrame {
+                    code: 1000,
+                    reason: Utf8Bytes::from(""),
+                })))
+                .await;
+            return;
+        }
         let _ = sender
             .send(
                 Frame::Hello {
@@ -146,7 +187,10 @@ async fn write_loop(
         return;
     }
     if let Some(result) = terminal(current) {
-        let _ = sender.send(Frame::Done { result }.into_message()).await;
+        let error = error_for(&state, &id, result);
+        let _ = sender
+            .send(Frame::Done { result, error }.into_message())
+            .await;
         return;
     }
 
@@ -166,8 +210,12 @@ async fn write_loop(
             changed = rx.changed() => {
                 if changed.is_err() {
                     // Sender dropped before reaching a terminal — orchestrator
-                    // task may have panicked. Surface as `failed`.
-                    let _ = sender.send(Frame::Done { result: DoneResult::Failed }.into_message()).await;
+                    // task may have panicked. Surface as `failed` and pass any
+                    // last-error string the FSM had time to write.
+                    let error = error_for(&state, &id, DoneResult::Failed);
+                    let _ = sender
+                        .send(Frame::Done { result: DoneResult::Failed, error }.into_message())
+                        .await;
                     return;
                 }
                 let phase = *rx.borrow_and_update();
@@ -175,7 +223,10 @@ async fn write_loop(
                     return;
                 }
                 if let Some(result) = terminal(phase) {
-                    let _ = sender.send(Frame::Done { result }.into_message()).await;
+                    let error = error_for(&state, &id, result);
+                    let _ = sender
+                        .send(Frame::Done { result, error }.into_message())
+                        .await;
                     return;
                 }
             }

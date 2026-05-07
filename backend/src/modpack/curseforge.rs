@@ -304,7 +304,6 @@ mod tests {
             file_date: date.to_owned(),
             file_name: format!("{id}.zip"),
             game_versions: Vec::new(),
-            dependencies: Vec::new(),
         }
     }
 

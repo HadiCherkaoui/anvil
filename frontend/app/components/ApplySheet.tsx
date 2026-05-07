@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactElement } from "react";
+import { useEffect, type ReactElement } from "react";
 
 import {
 	useModApplyStream,
@@ -11,12 +11,17 @@ import { cn } from "../lib/cn";
 
 import { Sheet } from "./Sheet";
 
+const AUTO_CLOSE_DELAY_MS = 2_000;
+const AUTO_CLOSE_DELAY_FAILED_MS = 10_000;
+
+// Sync FSM has no verify step — it doesn't boot the server. The server is
+// only restarted when it was running before the apply (was_running pattern),
+// so `starting` is shown but only lights up in that case.
 const ORDER: ReadonlyArray<UpdatePhase> = [
 	"queued",
 	"stopping",
 	"swapping",
 	"starting",
-	"verifying",
 	"succeeded",
 ];
 
@@ -54,6 +59,18 @@ export function ApplySheet({
 	const activeIdx = stream.phase ? ORDER.indexOf(stream.phase) : -1;
 	const sheetTitle = target === "plugins" ? "apply plugins" : "apply mods";
 	const labelMap = labels(target);
+
+	useEffect(() => {
+		if (!isOpen || stream.result === null) return undefined;
+		const delay =
+			stream.result === "succeeded"
+				? AUTO_CLOSE_DELAY_MS
+				: AUTO_CLOSE_DELAY_FAILED_MS;
+		const t = window.setTimeout(onClose, delay);
+		return () => {
+			window.clearTimeout(t);
+		};
+	}, [isOpen, stream.result, onClose]);
 
 	return (
 		<Sheet isOpen={isOpen} onClose={onClose} title={sheetTitle} width={640}>

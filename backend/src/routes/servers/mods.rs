@@ -28,7 +28,7 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::modpack::ModpackHttp;
 use crate::modpack::dep_resolver::{ResolveContext, resolve_required};
-use crate::modpack::guard::UpdateGuard;
+use crate::modpack::guard::{UpdateGuard, recent_terminal};
 use crate::modpack::modded::{Config as ModdedConfig, ModEntry, PendingOp};
 use crate::modpack::mods_apply::{self, SyncTarget};
 use crate::modpack::orchestrator::UpdatePhase;
@@ -258,6 +258,7 @@ pub async fn apply(
         &id,
         state.update_locks.clone(),
         state.update_phase_buses.clone(),
+        state.update_errors.clone(),
     ) else {
         return Err(AppError::Conflict {
             code: "apply_in_progress",
@@ -388,6 +389,23 @@ async fn write_loop(
         .cloned();
 
     let Some(mut rx) = rx_opt else {
+        // A fast apply (e.g. removing a single mod on a stopped server)
+        // can complete before the WS connects. Surface the recent
+        // terminal phase if it landed within the side-channel TTL so
+        // the user sees `done{succeeded}` instead of `no-apply-in-progress`.
+        if let Some(phase) = recent_terminal(&state, &id) {
+            let _ = sender.send(Frame::Hello { phase }.into_message()).await;
+            if let Some(result) = terminal(phase) {
+                let _ = sender.send(Frame::Done { result }.into_message()).await;
+            }
+            let _ = sender
+                .send(Message::Close(Some(CloseFrame {
+                    code: 1000,
+                    reason: Utf8Bytes::from(""),
+                })))
+                .await;
+            return;
+        }
         let _ = sender
             .send(
                 Frame::Hello {

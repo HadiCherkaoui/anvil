@@ -75,7 +75,18 @@ export function SettingsBody(): ReactElement {
 		};
 	}, []);
 
-	const isModpack = detail.source_kind !== "vanilla";
+	// `auto_update_mode` lives in `source_config` for every non-vanilla
+	// type. Semantics differ by kind:
+	//   • curseforge / modrinth → modpack-level auto apply (orchestrator).
+	//   • modded / paper → per-mod / per-plugin auto-update (poller +
+	//     sync FSM, see backend `poll_individual_mods`).
+	const supportsAutoUpdate = detail.source_kind !== "vanilla";
+	const autoUpdateLabel =
+		detail.source_kind === "curseforge" || detail.source_kind === "modrinth"
+			? "modpack auto-update"
+			: detail.source_kind === "paper"
+				? "plugin auto-update"
+				: "mod auto-update";
 	const isVersionChangeable =
 		detail.source_kind !== "curseforge" && detail.source_kind !== "modrinth";
 	const moddedLoader = ((): { runtime: string; version: string | null } | null => {
@@ -119,7 +130,8 @@ export function SettingsBody(): ReactElement {
 	};
 
 	const memoryDirty = memory !== detail.memory_mi;
-	const autoUpdateDirty = isModpack && autoUpdate !== readAutoUpdate(detail);
+	const autoUpdateDirty =
+		supportsAutoUpdate && autoUpdate !== readAutoUpdate(detail);
 	const dirty = memoryDirty || autoUpdateDirty;
 
 	const save = (): void => {
@@ -242,8 +254,8 @@ export function SettingsBody(): ReactElement {
 				detail={detail}
 			/>
 
-			{isModpack && (
-				<Card header="modpack auto-update">
+			{supportsAutoUpdate && (
+				<Card header={autoUpdateLabel}>
 					<SegmentedControl
 						ariaLabel="auto update mode"
 						value={autoUpdate}
@@ -251,7 +263,8 @@ export function SettingsBody(): ReactElement {
 						onChange={setAutoUpdate}
 					/>
 					<p className="mt-2 font-mono text-[11px] text-text-faint">
-						never · pin · notify · banner only · apply · auto-update on detect
+						never · skip checks · notify · banner only · apply · auto-update
+						on detect
 					</p>
 				</Card>
 			)}

@@ -57,6 +57,9 @@ export function BackupsBody(): ReactElement {
 	const [createName, setCreateName] = useState("");
 	const [confirm, setConfirm] = useState<Confirm | null>(null);
 	const [progressOpen, setProgressOpen] = useState(false);
+	const [progressFlow, setProgressFlow] = useState<"backup" | "restore">(
+		"backup",
+	);
 
 	const loadList = useCallback((): void => {
 		fetchBackups(detail.id)
@@ -93,6 +96,7 @@ export function BackupsBody(): ReactElement {
 			.then(() => {
 				setCreateOpen(false);
 				setCreateName("");
+				setProgressFlow("backup");
 				setProgressOpen(true);
 			})
 			.catch((err: unknown) => {
@@ -110,6 +114,7 @@ export function BackupsBody(): ReactElement {
 		void restoreBackup(detail.id, b.id)
 			.then(() => {
 				setConfirm(null);
+				setProgressFlow("restore");
 				setProgressOpen(true);
 			})
 			.catch((err: unknown) => {
@@ -185,43 +190,64 @@ export function BackupsBody(): ReactElement {
 
 				{state.kind === "ready" && backups.length > 0 && (
 					<ul className="divide-y divide-border-soft">
-						{backups.map((b) => (
-							<li
-								key={b.id}
-								className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-3 py-2 first:pt-3"
-							>
-								<span className="font-mono text-[12px] text-text-body">
-									{b.name ?? "(unnamed)"}
-								</span>
-								<span className="font-mono text-[11px] text-text-faint">
-									{fmtTs(b.created_at)}
-								</span>
-								<span className="font-mono text-[11px] text-text-faint">
-									{b.mc_version}
-								</span>
-								<span className="font-mono text-[11px] text-text-faint">
-									{fmtBytes(b.size_bytes)}
-								</span>
-								<span className="flex gap-2">
-									<Button
-										variant="ghost"
-										onClick={() => {
-											setConfirm({ kind: "restore", b });
-										}}
+						{backups.map((b) => {
+							const label =
+								b.name ??
+								(b.kind === "auto" ? "(auto)" : "(unnamed)");
+							const badgeClass =
+								b.kind === "auto"
+									? "border-state-warning/50 text-state-warning"
+									: "border-border text-text-muted";
+							return (
+								<li
+									key={b.id}
+									className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] items-center gap-3 py-2 first:pt-3"
+								>
+									<span className="flex flex-col">
+										<span className="font-mono text-[12px] text-text-body">
+											{label}
+										</span>
+										{b.reason !== null && (
+											<span className="font-mono text-[10px] text-text-faint">
+												{b.reason}
+											</span>
+										)}
+									</span>
+									<span
+										className={`rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${badgeClass}`}
 									>
-										restore
-									</Button>
-									<Button
-										variant="danger"
-										onClick={() => {
-											setConfirm({ kind: "delete", b });
-										}}
-									>
-										delete
-									</Button>
-								</span>
-							</li>
-						))}
+										{b.kind}
+									</span>
+									<span className="font-mono text-[11px] text-text-faint">
+										{fmtTs(b.created_at)}
+									</span>
+									<span className="font-mono text-[11px] text-text-faint">
+										{b.mc_version}
+									</span>
+									<span className="font-mono text-[11px] text-text-faint">
+										{fmtBytes(b.size_bytes)}
+									</span>
+									<span className="flex gap-2">
+										<Button
+											variant="ghost"
+											onClick={() => {
+												setConfirm({ kind: "restore", b });
+											}}
+										>
+											restore
+										</Button>
+										<Button
+											variant="danger"
+											onClick={() => {
+												setConfirm({ kind: "delete", b });
+											}}
+										>
+											delete
+										</Button>
+									</span>
+								</li>
+							);
+						})}
 					</ul>
 				)}
 			</Card>
@@ -301,6 +327,7 @@ export function BackupsBody(): ReactElement {
 				serverId={detail.id}
 				isOpen={progressOpen}
 				onClose={onProgressClose}
+				flow={progressFlow}
 			/>
 		</>
 	);

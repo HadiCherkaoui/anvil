@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod cluster;
 pub mod health;
 pub mod mc_versions;
+pub mod papermc;
 pub mod runtimes;
 pub mod servers;
 
@@ -170,6 +171,7 @@ fn api_routes(state: AppState) -> Router<AppState> {
         )
         .route("/api/cluster/capabilities", get(cluster::handle))
         .route("/api/cluster/mc-versions", get(mc_versions::handle))
+        .route("/api/papermc/versions", get(papermc::handle))
         .route(
             "/api/runtimes/{runtime}/versions",
             get(runtimes::handle_versions),

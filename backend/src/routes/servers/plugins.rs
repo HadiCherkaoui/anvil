@@ -28,7 +28,7 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::modpack::ModpackHttp;
 use crate::modpack::dep_resolver::{ResolveContext, resolve_required};
-use crate::modpack::guard::UpdateGuard;
+use crate::modpack::guard::{UpdateGuard, recent_terminal};
 use crate::modpack::modded::ModEntry;
 use crate::modpack::mods_apply::{self, SyncTarget};
 use crate::modpack::orchestrator::UpdatePhase;
@@ -91,7 +91,7 @@ pub async fn add_pending(
 
     let mut cfg = load_paper_cfg(&state, &id).await?;
     if cfg.pending_plugins.is_empty() {
-        cfg.pending_plugins = cfg.plugins.clone();
+        cfg.pending_plugins.clone_from(&cfg.plugins);
     }
 
     let extra = resolve_for_add(&state, &cfg, &entry).await;
@@ -175,7 +175,7 @@ pub async fn remove_pending(
 
     let mut cfg = load_paper_cfg(&state, &id).await?;
     if cfg.pending_plugins.is_empty() {
-        cfg.pending_plugins = cfg.plugins.clone();
+        cfg.pending_plugins.clone_from(&cfg.plugins);
     }
     cfg.pending_plugins.retain(|p| p.filename != filename);
     if cfg.pending_plugins == cfg.plugins {
@@ -228,6 +228,7 @@ pub async fn apply(
         &id,
         state.update_locks.clone(),
         state.update_phase_buses.clone(),
+        state.update_errors.clone(),
     ) else {
         return Err(AppError::Conflict {
             code: "apply_in_progress",
@@ -358,6 +359,22 @@ async fn write_loop(
         .cloned();
 
     let Some(mut rx) = rx_opt else {
+        // Same race-window guard as mods/apply: a fast plugin sync that
+        // finished before the WS connected still has its terminal phase
+        // in `update_terminals` for ~30 s.
+        if let Some(phase) = recent_terminal(&state, &id) {
+            let _ = sender.send(Frame::Hello { phase }.into_message()).await;
+            if let Some(result) = terminal(phase) {
+                let _ = sender.send(Frame::Done { result }.into_message()).await;
+            }
+            let _ = sender
+                .send(Message::Close(Some(CloseFrame {
+                    code: 1000,
+                    reason: Utf8Bytes::from(""),
+                })))
+                .await;
+            return;
+        }
         let _ = sender
             .send(
                 Frame::Hello {

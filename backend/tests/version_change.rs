@@ -43,6 +43,7 @@ fn test_state() -> AppState {
         capabilities_cache: anvil::routes::cluster::new_cache(),
         mc_versions_cache: anvil::routes::mc_versions::new_cache(),
         loader_version_cache: anvil::routes::runtimes::new_cache(),
+        papermc_cache: anvil::routes::papermc::new_cache(),
         session_key,
         cookie_key,
         allowed_subs: vec![],
@@ -55,6 +56,10 @@ fn test_state() -> AppState {
         modpack_poll_interval: std::time::Duration::from_hours(1),
         update_locks: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         update_phase_buses: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
+        update_errors: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        update_terminals: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
         snapshot_pvc_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),

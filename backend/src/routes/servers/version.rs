@@ -69,6 +69,15 @@ pub async fn handle(
 
     validate_mc_version(&state, &req.mc_version).await?;
 
+    if source_kind == "paper"
+        && !crate::routes::papermc::is_supported(&state.papermc_cache, &req.mc_version).await
+    {
+        return Err(AppError::BadRequest {
+            code: "paper_unsupported_version",
+            message: format!("paper does not ship builds for MC {}", req.mc_version),
+        });
+    }
+
     let loader_version = req.loader_version.filter(|s| !s.is_empty());
 
     if source_kind == "modded" {
@@ -110,6 +119,7 @@ pub async fn handle(
         &id,
         state.update_locks.clone(),
         state.update_phase_buses.clone(),
+        state.update_errors.clone(),
     ) else {
         return Err(AppError::Conflict {
             code: "update_in_progress",

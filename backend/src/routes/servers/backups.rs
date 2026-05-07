@@ -38,6 +38,13 @@ pub struct BackupListItem {
     pub created_at: i64,
     pub mc_version: String,
     pub size_bytes: Option<i64>,
+    /// `manual` for user-triggered, `auto` for FSM-triggered (modpack
+    /// update / MC version change). Backfilled to `manual` for any rows
+    /// that pre-date migration 0010.
+    pub kind: String,
+    /// Free-form context for `auto` rows (e.g. `modpack-update:v2.3.1`).
+    /// `None` for manual rows.
+    pub reason: Option<String>,
 }
 
 /// 202 body shared by restore.
@@ -77,6 +84,7 @@ pub async fn create(
         &id,
         state.update_locks.clone(),
         state.update_phase_buses.clone(),
+        state.update_errors.clone(),
     ) else {
         return Err(AppError::Conflict {
             code: "update_in_progress",
@@ -112,7 +120,7 @@ pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<BackupListItem>>, AppError> {
     let rows: Vec<BackupListItem> = sqlx::query_as(
-        "SELECT id, name, created_at, mc_version, size_bytes
+        "SELECT id, name, created_at, mc_version, size_bytes, kind, reason
          FROM backups WHERE server_id = ? ORDER BY created_at DESC",
     )
     .bind(&id)
@@ -137,6 +145,7 @@ pub async fn restore(
         &id,
         state.update_locks.clone(),
         state.update_phase_buses.clone(),
+        state.update_errors.clone(),
     ) else {
         return Err(AppError::Conflict {
             code: "update_in_progress",

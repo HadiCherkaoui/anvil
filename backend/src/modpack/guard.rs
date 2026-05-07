@@ -9,7 +9,76 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 
+use crate::AppState;
+
 use super::orchestrator::UpdatePhase;
+
+/// Stores `err` as the latest failure reason for `server_id`.
+///
+/// Called by FSM failure handlers immediately before
+/// `guard.emit(UpdatePhase::Failed)` so the update WS can include the
+/// reason in its `done{result: failed*}` frame. A subsequent
+/// [`UpdateGuard::try_acquire`] for the same server clears it.
+pub fn set_update_error(state: &AppState, server_id: &str, err: String) {
+    if let Ok(mut map) = state.update_errors.lock() {
+        map.insert(server_id.to_owned(), err);
+    }
+}
+
+/// Removes and returns the last error for `server_id`, if any.
+#[must_use]
+pub fn take_update_error(state: &AppState, server_id: &str) -> Option<String> {
+    state
+        .update_errors
+        .lock()
+        .ok()
+        .and_then(|mut m| m.remove(server_id))
+}
+
+/// How long a terminal phase stays readable in `update_terminals` after
+/// the FSM completes — long enough that a UI that opened a stream right
+/// after a 202 still sees the result, short enough that stale rows from
+/// an old run don't surface for a fresh subscription.
+const RECENT_TERMINAL_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Records `phase` as the latest terminal for `server_id`. Called by the
+/// FSM right before [`UpdateGuard::emit`] for a terminal phase so a
+/// late-connecting WS client can still see the result via
+/// [`recent_terminal`].
+pub fn record_terminal(state: &AppState, server_id: &str, phase: super::orchestrator::UpdatePhase) {
+    if !is_terminal(phase) {
+        return;
+    }
+    if let Ok(mut m) = state.update_terminals.lock() {
+        m.insert(server_id.to_owned(), (phase, std::time::Instant::now()));
+    }
+}
+
+/// Returns the last terminal for `server_id` if it landed within
+/// `RECENT_TERMINAL_TTL`, garbage-collecting older entries on the way.
+#[must_use]
+pub fn recent_terminal(
+    state: &AppState,
+    server_id: &str,
+) -> Option<super::orchestrator::UpdatePhase> {
+    let mut m = state.update_terminals.lock().ok()?;
+    // Drop stale entries opportunistically — keeps the map bounded
+    // without a dedicated reaper task.
+    m.retain(|_, (_, at)| at.elapsed() < RECENT_TERMINAL_TTL);
+    m.get(server_id).map(|(p, _)| *p)
+}
+
+fn is_terminal(p: super::orchestrator::UpdatePhase) -> bool {
+    matches!(
+        p,
+        super::orchestrator::UpdatePhase::Succeeded
+            | super::orchestrator::UpdatePhase::Failed
+            | super::orchestrator::UpdatePhase::RolledBack
+    )
+}
+
+/// Type alias for the panel-wide map of last-error strings keyed by server id.
+pub type UpdateErrorMap = Arc<Mutex<HashMap<String, String>>>;
 
 /// RAII handle owned by the spawned update task.
 ///
@@ -20,12 +89,16 @@ pub struct UpdateGuard {
     server_id: String,
     locks: Arc<Mutex<HashSet<String>>>,
     buses: Arc<Mutex<HashMap<String, watch::Receiver<UpdatePhase>>>>,
+    errors: Option<UpdateErrorMap>,
     sender: Option<watch::Sender<UpdatePhase>>,
 }
 
 impl UpdateGuard {
     /// Tries to acquire the lock for `server_id`. Returns `None` if another
     /// update is already running for the same server.
+    ///
+    /// Clears any stale `update_errors` entry for this server so a fresh run
+    /// starts with no leftover failure reason.
     ///
     /// # Panics
     ///
@@ -36,6 +109,7 @@ impl UpdateGuard {
         server_id: &str,
         locks: Arc<Mutex<HashSet<String>>>,
         buses: Arc<Mutex<HashMap<String, watch::Receiver<UpdatePhase>>>>,
+        errors: UpdateErrorMap,
     ) -> Option<Self> {
         {
             let mut guard = locks.lock().expect("update_locks poisoned");
@@ -49,10 +123,14 @@ impl UpdateGuard {
             .lock()
             .expect("update_phase_buses poisoned")
             .insert(server_id.to_owned(), rx);
+        if let Ok(mut errs) = errors.lock() {
+            errs.remove(server_id);
+        }
         Some(Self {
             server_id: server_id.to_owned(),
             locks,
             buses,
+            errors: Some(errors),
             sender: Some(tx),
         })
     }
@@ -87,6 +165,11 @@ impl Drop for UpdateGuard {
         if let Ok(mut locks) = self.locks.lock() {
             locks.remove(&self.server_id);
         }
+        // Errors map is best-effort: a fresh `try_acquire` will also clear
+        // it. We do NOT clear it here on Drop because the WS handler reads
+        // the value AFTER the FSM emits Failed and drops the guard; clearing
+        // here would race the WS read.
+        let _ = self.errors.take();
     }
 }
 
@@ -94,11 +177,16 @@ impl Drop for UpdateGuard {
 mod tests {
     use super::*;
 
+    fn fresh_errors() -> UpdateErrorMap {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
     #[test]
     fn try_acquire_succeeds_first_time() {
         let locks = Arc::new(Mutex::new(HashSet::new()));
         let buses = Arc::new(Mutex::new(HashMap::new()));
-        let g = UpdateGuard::try_acquire("a", locks.clone(), buses.clone());
+        let errors = fresh_errors();
+        let g = UpdateGuard::try_acquire("a", locks.clone(), buses.clone(), errors);
         assert!(g.is_some());
         assert!(locks.lock().unwrap().contains("a"));
         assert!(buses.lock().unwrap().contains_key("a"));
@@ -108,8 +196,10 @@ mod tests {
     fn try_acquire_blocks_concurrent_for_same_id() {
         let locks = Arc::new(Mutex::new(HashSet::new()));
         let buses = Arc::new(Mutex::new(HashMap::new()));
-        let _first = UpdateGuard::try_acquire("a", locks.clone(), buses.clone()).unwrap();
-        let second = UpdateGuard::try_acquire("a", locks, buses);
+        let errors = fresh_errors();
+        let _first =
+            UpdateGuard::try_acquire("a", locks.clone(), buses.clone(), errors.clone()).unwrap();
+        let second = UpdateGuard::try_acquire("a", locks, buses, errors);
         assert!(second.is_none());
     }
 
@@ -117,8 +207,10 @@ mod tests {
     fn drop_removes_lock_and_bus_entries() {
         let locks = Arc::new(Mutex::new(HashSet::new()));
         let buses = Arc::new(Mutex::new(HashMap::new()));
+        let errors = fresh_errors();
         {
-            let _g = UpdateGuard::try_acquire("a", locks.clone(), buses.clone()).unwrap();
+            let _g = UpdateGuard::try_acquire("a", locks.clone(), buses.clone(), errors.clone())
+                .unwrap();
         }
         assert!(!locks.lock().unwrap().contains("a"));
         assert!(!buses.lock().unwrap().contains_key("a"));
@@ -128,9 +220,23 @@ mod tests {
     fn emit_lands_on_subscriber() {
         let locks = Arc::new(Mutex::new(HashSet::new()));
         let buses = Arc::new(Mutex::new(HashMap::new()));
-        let g = UpdateGuard::try_acquire("a", locks, buses.clone()).unwrap();
+        let errors = fresh_errors();
+        let g = UpdateGuard::try_acquire("a", locks, buses.clone(), errors).unwrap();
         let mut rx = buses.lock().unwrap().get("a").cloned().unwrap();
         g.emit(UpdatePhase::BackingUp);
         assert_eq!(*rx.borrow_and_update(), UpdatePhase::BackingUp);
+    }
+
+    #[test]
+    fn try_acquire_clears_stale_error_for_same_server() {
+        let locks = Arc::new(Mutex::new(HashSet::new()));
+        let buses = Arc::new(Mutex::new(HashMap::new()));
+        let errors = fresh_errors();
+        errors
+            .lock()
+            .unwrap()
+            .insert("a".to_owned(), "stale".to_owned());
+        let _g = UpdateGuard::try_acquire("a", locks, buses, errors.clone()).unwrap();
+        assert!(!errors.lock().unwrap().contains_key("a"));
     }
 }

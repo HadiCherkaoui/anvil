@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
         capabilities_cache: anvil::routes::cluster::new_cache(),
         mc_versions_cache: anvil::routes::mc_versions::new_cache(),
         loader_version_cache: anvil::routes::runtimes::new_cache(),
+        papermc_cache: anvil::routes::papermc::new_cache(),
         session_key: config.session_key.clone(),
         cookie_key,
         allowed_subs: config.allowed_subs.clone(),
@@ -81,6 +82,8 @@ async fn main() -> Result<()> {
         modpack_poll_interval: Duration::from_secs(config.modpack_poll_interval_minutes * 60),
         update_locks: Arc::new(Mutex::new(HashSet::new())),
         update_phase_buses: Arc::new(Mutex::new(HashMap::new())),
+        update_errors: Arc::new(Mutex::new(HashMap::new())),
+        update_terminals: Arc::new(Mutex::new(HashMap::new())),
         snapshot_pvc_lock: Arc::new(AsyncMutex::new(())),
         files_helper_image: config.files_helper_image.clone(),
     };

@@ -379,6 +379,7 @@ pub async fn handle(
             &id,
             state.update_locks.clone(),
             state.update_phase_buses.clone(),
+            state.update_errors.clone(),
         ) {
             let task_state = state.clone();
             let task_id = id.clone();
@@ -619,6 +620,7 @@ async fn resolve_modded(
         loader_version,
         mods: Vec::new(),
         pending,
+        auto_update_mode: crate::modpack::modded::AutoUpdateMode::default(),
     };
     let source_config = serde_json::to_string(&stored).map_err(|e| AppError::Internal(e.into()))?;
     Ok(ResolvedSource {
@@ -692,6 +694,16 @@ async fn resolve_paper(
     })?;
     validate_mc_version(state, &mc_v).await?;
 
+    // PaperMC ships builds for a subset of MC versions. itzg's TYPE=PAPER
+    // bombs out at boot when the version is unsupported (`Requested version
+    // 26.1 is not available`); reject up front instead.
+    if !crate::routes::papermc::is_supported(&state.papermc_cache, &mc_v).await {
+        return Err(AppError::BadRequest {
+            code: "paper_unsupported_version",
+            message: format!("paper does not ship builds for MC {mc_v}"),
+        });
+    }
+
     let initial_plugins = paper_cfg.map(|p| p.initial_plugins).unwrap_or_default();
     for p in &initial_plugins {
         validate_mod_filename(&p.filename)?;
@@ -717,6 +729,7 @@ async fn resolve_paper(
         paper_build: None,
         plugins: Vec::new(),
         pending_plugins,
+        auto_update_mode: crate::modpack::modded::AutoUpdateMode::default(),
     };
     let source_config = serde_json::to_string(&stored).map_err(|e| AppError::Internal(e.into()))?;
     Ok(ResolvedSource {

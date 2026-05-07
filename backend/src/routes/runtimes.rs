@@ -56,6 +56,41 @@ pub fn prime_cache(cache: &LoaderVersionCache, runtime: &'static str, parsed: Lo
     }
 }
 
+/// Fetches `runtime`'s loader listing through the cache; returns a clone
+/// of the parsed value. Used by the poller to detect newer loader
+/// versions. `runtime` must be `"forge"` or `"neoforge"`.
+///
+/// # Errors
+///
+/// Returns the upstream HTTP / parse error if the cache is empty AND
+/// the maven fetch fails. Stale-cache fallback mirrors the route handler.
+pub async fn cached_or_fetch(
+    cache: &LoaderVersionCache,
+    runtime: &'static str,
+) -> Result<LoaderVersions> {
+    if let Some(v) = read_cache(cache, runtime) {
+        return Ok(v);
+    }
+    let url = if runtime == "neoforge" {
+        NEOFORGE_URL
+    } else {
+        FORGE_URL
+    };
+    match fetch_and_parse(url, runtime).await {
+        Ok(parsed) => {
+            write_cache(cache, runtime, &parsed);
+            Ok(parsed)
+        }
+        Err(e) => {
+            if let Some(stale) = stale_cache(cache, runtime) {
+                tracing::warn!(runtime, error = %e, "loader cache fetch failed; using stale");
+                return Ok(stale);
+            }
+            Err(e)
+        }
+    }
+}
+
 fn read_cache(cache: &LoaderVersionCache, key: &str) -> Option<LoaderVersions> {
     let g = cache.lock().ok()?;
     let (v, ts) = g.get(key)?;

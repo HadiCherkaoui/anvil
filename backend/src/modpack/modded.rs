@@ -91,6 +91,28 @@ pub struct Config {
     pub mods: Vec<ModEntry>,
     #[serde(default)]
     pub pending: Vec<PendingOp>,
+    /// Per-mod auto-update mode. Mirrors the modpack-level setting, but
+    /// scoped to the per-mod update poller. `notify` (default) writes to
+    /// `mod_updates` so the UI can show a banner; `apply` additionally
+    /// queues bumps and runs the sync FSM; `never` skips the poll
+    /// entirely. Existing rows decode with the default via `#[serde(default)]`.
+    #[serde(default)]
+    pub auto_update_mode: AutoUpdateMode,
+}
+
+/// Per-server policy for what the poller does when it spots a newer
+/// version of an installed mod or plugin.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoUpdateMode {
+    /// Skip the per-mod check entirely.
+    Never,
+    /// Default — record the available update so the UI banners; user
+    /// triggers the bump.
+    #[default]
+    Notify,
+    /// Auto-bump every newer version detected and trigger the sync FSM.
+    Apply,
 }
 
 #[derive(Debug, Clone)]
@@ -228,6 +250,7 @@ mod tests {
             loader_version: None,
             mods,
             pending,
+            auto_update_mode: AutoUpdateMode::default(),
         }
     }
 
@@ -238,6 +261,7 @@ mod tests {
             loader_version: loader.map(String::from),
             mods: vec![],
             pending: vec![],
+            auto_update_mode: AutoUpdateMode::default(),
         }
     }
 

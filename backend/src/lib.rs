@@ -19,6 +19,7 @@ use crate::auth::OidcState;
 use crate::modpack::{CurseForgeClient, ModrinthClient, orchestrator::UpdatePhase};
 use crate::routes::cluster::CapabilitiesCache;
 use crate::routes::mc_versions::McVersionsCache;
+use crate::routes::papermc::PaperVersionsCache;
 use crate::routes::runtimes::LoaderVersionCache;
 
 pub mod auth;
@@ -69,6 +70,8 @@ pub struct AppState {
     pub mc_versions_cache: McVersionsCache,
     /// 1-hour cache for `GET /api/runtimes/{runtime}/versions` (Forge / `NeoForge`).
     pub loader_version_cache: LoaderVersionCache,
+    /// 1-hour cache for `GET /api/papermc/versions` (Paper MC versions).
+    pub papermc_cache: PaperVersionsCache,
     /// HMAC secret for the session JWT.
     pub session_key: Vec<u8>,
     /// AES-GCM key (derived from `session_key`) for the encrypted OIDC-state cookie.
@@ -90,6 +93,19 @@ pub struct AppState {
     pub update_locks: Arc<std::sync::Mutex<HashSet<String>>>,
     /// Live `watch::Receiver` per running update — fed to the update WS.
     pub update_phase_buses: Arc<std::sync::Mutex<HashMap<String, watch::Receiver<UpdatePhase>>>>,
+    /// Last error string captured by a failed update / backup / restore /
+    /// version-change FSM, keyed by `server_id`. Cleared on the next
+    /// `UpdateGuard::try_acquire` for that server. Read by the update WS
+    /// when emitting a `done{result: failed*}` frame so the UI can show
+    /// the operator a real failure reason.
+    pub update_errors: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    /// Last terminal phase for each server, kept for ~`RECENT_TERMINAL_TTL`
+    /// after the FSM completes. Lets the update / apply WS surface a
+    /// done-frame even when a fast FSM finished before the client
+    /// connected (the "remove + apply on a stopped server completes in
+    /// 200ms" case). Without this the client sees `no-apply-in-progress`
+    /// and is left wondering whether anything happened.
+    pub update_terminals: Arc<std::sync::Mutex<HashMap<String, (UpdatePhase, std::time::Instant)>>>,
     /// Serializes backup + swap + restore Jobs panel-wide so one Job at a
     /// time mounts the shared snapshots PVC (RWO on single-node ZFS).
     pub snapshot_pvc_lock: Arc<AsyncMutex<()>>,
@@ -113,6 +129,7 @@ impl fmt::Debug for AppState {
             .field("capabilities_cache", &"<Mutex<...>>")
             .field("mc_versions_cache", &"<Mutex<...>>")
             .field("loader_version_cache", &"<Mutex<...>>")
+            .field("papermc_cache", &"<Mutex<...>>")
             .field("session_key", &"<redacted>")
             .field("cookie_key", &"<redacted>")
             .field("allowed_subs", &self.allowed_subs)
@@ -123,6 +140,8 @@ impl fmt::Debug for AppState {
             .field("modpack_poll_interval", &self.modpack_poll_interval)
             .field("update_locks", &"<lock>")
             .field("update_phase_buses", &"<map>")
+            .field("update_errors", &"<map>")
+            .field("update_terminals", &"<map>")
             .field("snapshot_pvc_lock", &"<lock>")
             .field("files_helper_image", &self.files_helper_image)
             .finish()

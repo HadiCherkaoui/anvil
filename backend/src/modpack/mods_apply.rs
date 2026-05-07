@@ -21,19 +21,17 @@ use sqlx::SqlitePool;
 use tokio::time::sleep;
 
 use crate::AppState;
-use crate::modpack::guard::UpdateGuard;
+use crate::modpack::guard::{UpdateGuard, record_terminal, set_update_error};
 use crate::modpack::jobs::build_mod_sync_job;
 use crate::modpack::modded::{Config as ModdedConfig, ModEntry, ModdedRuntime};
 use crate::modpack::orchestrator::{
-    UpdatePhase, scale_to, wait_for_done_marker, wait_job, wait_pod_gone, wait_pod_running,
+    UpdatePhase, current_replicas, scale_to, wait_job, wait_pod_gone,
 };
 use crate::modpack::paper::Config as PaperConfig;
 use crate::routes::servers::create::insert_audit;
 
 const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);
 const SYNC_JOB_TIMEOUT: Duration = Duration::from_mins(15);
-const POD_RUNNING_TIMEOUT: Duration = Duration::from_mins(2);
-const VERIFY_BOOT_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// Selects which `source_config` field + on-disk subdir the sync FSM operates on.
 #[derive(Debug, Clone, Copy)]
@@ -74,6 +72,7 @@ pub async fn run(state: AppState, server_id: String, guard: UpdateGuard, target:
     let outcome = run_inner(&state, &server_id, &guard, target).await;
     match outcome {
         Ok(()) => {
+            record_terminal(&state, &server_id, UpdatePhase::Succeeded);
             guard.emit(UpdatePhase::Succeeded);
             tracing::info!(
                 server.id = %server_id,
@@ -82,6 +81,8 @@ pub async fn run(state: AppState, server_id: String, guard: UpdateGuard, target:
             );
         }
         Err(err) => {
+            set_update_error(&state, &server_id, err.to_string());
+            record_terminal(&state, &server_id, UpdatePhase::Failed);
             guard.emit(UpdatePhase::Failed);
             tracing::error!(
                 server.id = %server_id,
@@ -134,12 +135,19 @@ async fn run_inner(
     }
     let desired = compute_desired(&row.1, target)?;
 
+    // Capture pre-sync replica count so we don't auto-start a server the
+    // user had stopped. Mirrors the manual-backup `was_running` pattern;
+    // sync has no rollback (re-apply recovers the dir), so leaving the
+    // server at the user's prior state is the right default.
+    let was_running = current_replicas(&state.kube, &state.mc_namespace, server_id).await? >= 1;
+
     // Acquire the global Job lock. Sync only mounts the data PVC, but
     // serializing all panel-spawned Jobs keeps the cluster gentle and
     // matches the M5 update FSM's pattern.
     let permit = state.snapshot_pvc_lock.lock().await;
 
-    // Stop.
+    // Stop. No-op when already stopped — the wait_pod_gone returns
+    // immediately because the pod is already absent.
     guard.emit(UpdatePhase::Stopping);
     scale_to(&state.kube, &state.mc_namespace, server_id, 0).await?;
     let mc_pod = format!("mc-{server_id}-0");
@@ -197,25 +205,16 @@ async fn run_inner(
 
     drop(permit);
 
-    // Start + verify.
-    guard.emit(UpdatePhase::Starting);
-    scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
-
-    guard.emit(UpdatePhase::Verifying);
-    wait_pod_running(
-        &state.kube,
-        &state.mc_namespace,
-        &mc_pod,
-        POD_RUNNING_TIMEOUT,
-    )
-    .await?;
-    wait_for_done_marker(
-        &state.kube,
-        &state.mc_namespace,
-        server_id,
-        VERIFY_BOOT_TIMEOUT,
-    )
-    .await?;
+    // Restore prior replica count. Sync has no rollback (re-applying
+    // re-syncs), no backup, and no boot-marker to verify against —
+    // mirroring `run_backup`, we only restart if the server was running
+    // at the start. A manual-create + initial-mod-install path leaves
+    // the server stopped so the user's first Start click is the explicit
+    // boot trigger.
+    if was_running {
+        guard.emit(UpdatePhase::Starting);
+        scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
+    }
 
     // Persist: replace committed list, clear pending.
     let new_count = commit(&state.pool, server_id, &row.1, target, desired).await?;

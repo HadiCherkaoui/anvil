@@ -1,4 +1,4 @@
-//! Transitive required-dependency resolver for Modrinth & `CurseForge` mods.
+//! Transitive required-dependency resolver for Modrinth mods.
 //!
 //! Given a seed [`ModEntry`] the user just picked, resolves every required
 //! dependency reachable in upstream metadata, excluding entries already
@@ -6,6 +6,11 @@
 //!
 //! Optional, embedded, incompatible, etc. relations are dropped at
 //! [`super::deps`] normalisation; only `Required` deps are followed.
+//!
+//! Modrinth-only by design: individual mods are sourced exclusively from
+//! Modrinth (catalog `type=mod` is Modrinth, Modrinth deps point only at
+//! other Modrinth projects), so the resolver doesn't need a `CurseForge`
+//! branch. CF stays load-bearing for modpack-level downloads.
 //!
 //! Per-step failures (network, missing version, parse) are logged and
 //! skipped — the Add op for the seed still goes through.
@@ -16,7 +21,7 @@ use anyhow::{Result, anyhow};
 use tracing::{Level, event};
 
 use super::ModpackHttp;
-use super::deps::{DepKind, DependencySpec, from_curseforge, from_modrinth};
+use super::deps::{DepKind, DependencySpec, from_modrinth};
 use super::modded::ModEntry;
 
 /// How deep a chain of required deps the resolver follows before bailing.
@@ -121,20 +126,14 @@ async fn fetch_deps_for_entry(
     http: &ModpackHttp<'_>,
     entry: &ModEntry,
 ) -> Result<Vec<DependencySpec>> {
-    match entry.provider.as_str() {
-        "modrinth" => {
-            let v = http.mr.version(&entry.version_id).await?;
-            Ok(from_modrinth(&v.dependencies))
-        }
-        "curseforge" => {
-            let cf = http.cf.ok_or_else(|| anyhow!("CF client unavailable"))?;
-            let project_id: u32 = entry.project_id.parse()?;
-            let file_id: u32 = entry.version_id.parse()?;
-            let f = cf.file(project_id, file_id).await?;
-            Ok(from_curseforge(&f.dependencies))
-        }
-        other => Err(anyhow!("unknown provider {other:?}")),
+    if entry.provider != "modrinth" {
+        // Mods only come from Modrinth in the catalog flow; anything
+        // else is a stale/legacy row we can't resolve deps for. Returning
+        // empty lets the seed's Add op still go through.
+        return Ok(Vec::new());
     }
+    let v = http.mr.version(&entry.version_id).await?;
+    from_modrinth(http.mr, &v.dependencies).await
 }
 
 async fn resolve_one(
@@ -142,11 +141,10 @@ async fn resolve_one(
     spec: &DependencySpec,
     ctx: &ResolveContext<'_>,
 ) -> Result<ModEntry> {
-    match spec.provider.as_str() {
-        "modrinth" => resolve_one_modrinth(http, spec, ctx).await,
-        "curseforge" => resolve_one_curseforge(http, spec, ctx).await,
-        other => Err(anyhow!("unknown provider {other:?}")),
+    if spec.provider != "modrinth" {
+        return Err(anyhow!("non-modrinth dep providers not supported"));
     }
+    resolve_one_modrinth(http, spec, ctx).await
 }
 
 async fn resolve_one_modrinth(
@@ -185,100 +183,4 @@ async fn resolve_one_modrinth(
         download_url: primary.url.clone(),
         sha512: primary.hashes.sha512.clone(),
     })
-}
-
-async fn resolve_one_curseforge(
-    http: &ModpackHttp<'_>,
-    spec: &DependencySpec,
-    ctx: &ResolveContext<'_>,
-) -> Result<ModEntry> {
-    let cf = http.cf.ok_or_else(|| anyhow!("CF client unavailable"))?;
-    let project_id: u32 = spec.project_id.parse()?;
-    let project = cf.project(project_id).await?;
-
-    let file = if let Some(vid) = &spec.pinned_version_id {
-        let file_id: u32 = vid.parse()?;
-        cf.file(project_id, file_id).await?
-    } else {
-        let files = cf.list_files(project_id).await?;
-        files
-            .iter()
-            .filter(|f| cf_file_matches(f, ctx.mc_version, ctx.loader))
-            .max_by(|a, b| a.file_date.cmp(&b.file_date))
-            .cloned()
-            .ok_or_else(|| anyhow!("no compatible CurseForge version"))?
-    };
-
-    let download_url = file
-        .download_url
-        .clone()
-        .ok_or_else(|| anyhow!("CurseForge file has no download URL"))?;
-    let filename = if file.file_name.is_empty() {
-        file.display_name.clone()
-    } else {
-        file.file_name.clone()
-    };
-    Ok(ModEntry {
-        provider: "curseforge".to_owned(),
-        project_id: project.id.to_string(),
-        project_slug: project.slug,
-        project_name: project.name,
-        version_id: file.id.to_string(),
-        version_name: file.display_name.clone(),
-        filename,
-        download_url,
-        sha512: None,
-    })
-}
-
-fn cf_file_matches(file: &super::cf_client::CfFile, mc_version: &str, loader: &str) -> bool {
-    let mc_ok = file
-        .game_versions
-        .iter()
-        .any(|v| v.eq_ignore_ascii_case(mc_version));
-    let loader_ok = file
-        .game_versions
-        .iter()
-        .any(|v| v.eq_ignore_ascii_case(loader));
-    mc_ok && loader_ok
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::modpack::cf_client::CfFile;
-
-    fn cf(id: u32, gvs: &[&str]) -> CfFile {
-        CfFile {
-            id,
-            display_name: format!("v{id}"),
-            release_type: 1,
-            is_server_pack: false,
-            server_pack_file_id: None,
-            download_url: Some(format!("https://example/{id}.jar")),
-            file_date: format!("2026-01-{id:02}"),
-            file_name: format!("{id}.jar"),
-            game_versions: gvs.iter().map(|s| (*s).to_owned()).collect(),
-            dependencies: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn cf_file_matches_when_both_present() {
-        let f = cf(1, &["1.21.4", "Forge"]);
-        assert!(cf_file_matches(&f, "1.21.4", "Forge"));
-        assert!(cf_file_matches(&f, "1.21.4", "forge"));
-    }
-
-    #[test]
-    fn cf_file_skips_when_mc_missing() {
-        let f = cf(1, &["1.20", "Forge"]);
-        assert!(!cf_file_matches(&f, "1.21.4", "forge"));
-    }
-
-    #[test]
-    fn cf_file_skips_when_loader_missing() {
-        let f = cf(1, &["1.21.4"]);
-        assert!(!cf_file_matches(&f, "1.21.4", "fabric"));
-    }
 }

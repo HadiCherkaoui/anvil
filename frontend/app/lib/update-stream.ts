@@ -27,7 +27,11 @@ const resultSchema = z.enum(["succeeded", "failed-rolled-back", "failed"]);
 const frameSchema = z.discriminatedUnion("type", [
 	z.object({ type: z.literal("hello"), phase: phaseSchema }),
 	z.object({ type: z.literal("progress"), phase: phaseSchema }),
-	z.object({ type: z.literal("done"), result: resultSchema }),
+	z.object({
+		type: z.literal("done"),
+		result: resultSchema,
+		error: z.string().nullable().optional(),
+	}),
 	z.object({ type: z.literal("end"), reason: z.string() }),
 ]);
 
@@ -44,6 +48,7 @@ export type UpdateStreamStatus =
 export interface UpdateStreamState {
 	phase: UpdatePhase | null;
 	result: UpdateResult | null;
+	error: string | null;
 	status: UpdateStreamStatus;
 	endedReason: string | null;
 }
@@ -51,6 +56,7 @@ export interface UpdateStreamState {
 const INITIAL: UpdateStreamState = {
 	phase: null,
 	result: null,
+	error: null,
 	status: "connecting",
 	endedReason: null,
 };
@@ -121,6 +127,7 @@ export function useUpdateStream(serverId: string | null): UpdateStreamState {
 						setState((s) => ({
 							...s,
 							result: frame.result,
+							error: frame.error ?? null,
 							status: "ended",
 						}));
 						break;
