@@ -24,6 +24,12 @@ const ERROR_REASONS: &[&str] = &[
     "RunContainerError",
 ];
 
+/// How long a pod can sit `ContainersNotReady` before we surface it as
+/// `Error`. Tuned to the slowest expected boot (mod-heavy CurseForge
+/// pack on a cold node); past this, it's almost always a real failure
+/// rather than a long boot.
+const CONTAINERS_NOT_READY_GRACE_SECS: i64 = 60;
+
 /// Derives the live [`ServerStatus`] from the `StatefulSet`'s replicas/ready
 /// counts plus the optional Pod.
 ///
@@ -58,26 +64,57 @@ pub fn derive_status(replicas: i32, ready_replicas: i32, pod: Option<&Pod>) -> S
     ServerStatus::Starting
 }
 
-/// Returns `true` if any container is in a terminal failure: either waiting
-/// with one of the [`ERROR_REASONS`], or restarted at least once and not yet
-/// ready (catches the window between a crash and `CrashLoopBackOff` taking
-/// over).
+/// Returns `true` if the pod is in a terminal failure mode anvil should
+/// surface as `Error`:
+///
+/// - any container is waiting with one of the [`ERROR_REASONS`];
+/// - `PodScheduled = False` with reason `Unschedulable` (no node has
+///   the resources / volumes / taints to host the pod);
+/// - `ContainersReady = False` for longer than
+///   [`CONTAINERS_NOT_READY_GRACE_SECS`] (boot has stalled).
+///
+/// A single restart no longer counts as `Error` — Minecraft servers
+/// occasionally restart cleanly during world-load and the panel
+/// shouldn't flag that. We rely on `ERROR_REASONS` to catch the real
+/// crash loop; that reason is set by kubelet on the second restart.
 fn pod_in_error_state(pod: &Pod) -> bool {
     let Some(status) = pod.status.as_ref() else {
         return false;
     };
+
+    if let Some(conditions) = status.conditions.as_ref() {
+        for c in conditions {
+            if c.type_ == "PodScheduled"
+                && c.status == "False"
+                && c.reason.as_deref() == Some("Unschedulable")
+            {
+                return true;
+            }
+            if c.type_ == "ContainersReady" && c.status == "False" {
+                // `Time` wraps `k8s_openapi::jiff::Timestamp`. Use the
+                // re-exported jiff so we don't need it as a runtime
+                // dependency on its own.
+                let stuck_for = c
+                    .last_transition_time
+                    .as_ref()
+                    .map(|t| k8s_openapi::jiff::Timestamp::now().as_second() - t.0.as_second())
+                    .unwrap_or(0);
+                if stuck_for >= CONTAINERS_NOT_READY_GRACE_SECS {
+                    return true;
+                }
+            }
+        }
+    }
+
     let Some(statuses) = status.container_statuses.as_ref() else {
         return false;
     };
     statuses.iter().any(|cs| {
-        let waiting_error = cs
-            .state
+        cs.state
             .as_ref()
             .and_then(|st| st.waiting.as_ref())
             .and_then(|w| w.reason.as_deref())
-            .is_some_and(|r| ERROR_REASONS.contains(&r));
-        let restarted_unready = cs.restart_count > 0 && !cs.ready;
-        waiting_error || restarted_unready
+            .is_some_and(|r| ERROR_REASONS.contains(&r))
     })
 }
 
@@ -101,18 +138,24 @@ pub fn derive_endpoint(
 ) -> Option<Endpoint> {
     match exposure_mode {
         "loadbalancer" => {
-            let ip = svc?
+            let ingress = svc?
                 .status
                 .as_ref()?
                 .load_balancer
                 .as_ref()?
                 .ingress
                 .as_ref()?
-                .first()?
+                .first()?;
+            // Some LB providers (most cloud LBs, MetalLB with
+            // hostname-only configs) populate `hostname` instead of
+            // `ip`. Fall back so the panel surfaces the address either
+            // way.
+            let host = ingress
                 .ip
-                .clone()?;
+                .clone()
+                .or_else(|| ingress.hostname.clone())?;
             Some(Endpoint {
-                host: ip,
+                host,
                 port: MC_PORT,
             })
         }
@@ -230,9 +273,12 @@ mod tests {
     }
 
     #[test]
-    fn replicas_one_restart_count_unready_is_error() {
+    fn replicas_one_restart_count_unready_is_starting() {
+        // Single restart without a terminal waiting reason is no longer
+        // treated as Error — MC sometimes restarts during world load
+        // and a clean restart shouldn't trip the panel.
         let pod = make_pod_with_restart_count(1, false);
-        assert_eq!(derive_status(1, 0, Some(&pod)), ServerStatus::Error);
+        assert_eq!(derive_status(1, 0, Some(&pod)), ServerStatus::Starting);
     }
 
     #[test]

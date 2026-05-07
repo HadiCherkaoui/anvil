@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use anyhow::anyhow;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetSpec};
 use k8s_openapi::api::core::v1::{
@@ -16,11 +17,12 @@ use k8s_openapi::api::core::v1::{
     Service, ServicePort, ServiceSpec, Volume, VolumeMount, VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use rand::RngExt as _;
 use rand::distr::Alphanumeric;
 
+use crate::error::AppError;
 use crate::k8s::{
     ANNOTATION_CREATED_AT, ANNOTATION_MC_VERSION, ANNOTATION_MEMORY_MI, ANNOTATION_SERVER_NAME,
     LABEL_SERVER, MANAGED_BY_LABEL, MANAGED_BY_VALUE,
@@ -213,6 +215,14 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
 /// `StatefulSet` controller adopts an existing PVC matching the
 /// template's `<name>-<sts>-<ord>` shape rather than creating a new one,
 /// so this pre-creation is benign.
+///
+/// **No `ownerReference` is set on this PVC by design.** k8s does not GC
+/// `StatefulSet`-template PVCs when the `StatefulSet` is deleted (the
+/// retention default is to keep the data) — and Anvil mirrors that
+/// guarantee for the pre-created PVC. The server-delete handler in
+/// `routes/servers/delete.rs` is responsible for explicitly deleting the
+/// PVC after the user confirms data loss; relying on owner-ref GC would
+/// turn `kubectl delete sts` into accidental data loss.
 #[must_use]
 pub fn build_data_pvc(p: &BuildParams<'_>) -> PersistentVolumeClaim {
     let pvc_name = format!("data-mc-{}-0", p.id);
@@ -248,12 +258,17 @@ pub fn build_data_pvc(p: &BuildParams<'_>) -> PersistentVolumeClaim {
 /// `exposure_mode`; for `NodePort` the assigned port is set from
 /// `params.nodeport`.
 ///
-/// # Panics
+/// **Signature change (was `-> Service`)**: now returns `Result` because
+/// the previous `.expect(...)` on missing `nodeport` panicked the worker
+/// thread inside the handler instead of returning a 500. The create
+/// handler in `routes/servers/create.rs` must call this with `?`.
 ///
-/// Panics if `exposure_mode == "nodeport"` and `nodeport` is `None`.
-/// The create handler must always pre-allocate the port.
-#[must_use]
-pub fn build_service(p: &BuildParams<'_>) -> Service {
+/// # Errors
+///
+/// `AppError::Internal` if `exposure_mode == "nodeport"` and `nodeport`
+/// is `None` — this is a panel bug (the create handler must pre-allocate
+/// the port before calling).
+pub fn build_service(p: &BuildParams<'_>) -> Result<Service, AppError> {
     let resource_name = format!("mc-{}", p.id);
     let labels = server_labels(p.id);
 
@@ -273,13 +288,16 @@ pub fn build_service(p: &BuildParams<'_>) -> Service {
         ..ServicePort::default()
     };
     if p.exposure_mode == "nodeport" {
-        port.node_port = Some(
-            p.nodeport
-                .expect("create handler must pre-assign a NodePort before calling build_service"),
-        );
+        let np = p.nodeport.ok_or_else(|| {
+            AppError::Internal(anyhow!(
+                "build_service: NodePort exposure requires a pre-assigned nodeport for server {}",
+                p.id
+            ))
+        })?;
+        port.node_port = Some(np);
     }
 
-    Service {
+    Ok(Service {
         metadata: ObjectMeta {
             name: Some(resource_name),
             namespace: Some(p.namespace.to_owned()),
@@ -293,7 +311,7 @@ pub fn build_service(p: &BuildParams<'_>) -> Service {
             ..ServiceSpec::default()
         }),
         status: None,
-    }
+    })
 }
 
 /// Builds the headless Service that gives the `StatefulSet` pod stable
@@ -369,13 +387,38 @@ pub fn rcon_password() -> String {
 /// data PVC (`data-mc-{id}-0`) so anvil can run `pods/exec` against
 /// `/data` while the MC server is stopped. Owned and torn down by
 /// anvil; no controller wraps it.
+///
+/// `sts_uid` is the parent `StatefulSet`'s `metadata.uid`. When `Some`,
+/// it is encoded as a non-controlling `ownerReference` so a delete of
+/// the StatefulSet GCs the helper Pod. `None` is permitted but means
+/// the caller is responsible for tear-down (`tear_down_helper`).
 #[must_use]
-pub fn build_files_helper_pod(id: &str, namespace: &str, image: &str) -> Pod {
+pub fn build_files_helper_pod(
+    id: &str,
+    namespace: &str,
+    image: &str,
+    sts_uid: Option<&str>,
+) -> Pod {
     let pod_name = format!("mc-{id}-files");
     let pvc_name = format!("data-mc-{id}-0");
+    let sts_name = format!("mc-{id}");
 
     let mut labels = server_labels(id);
     labels.insert("app.anvil.io/role".to_owned(), "files-helper".to_owned());
+
+    // Non-controlling ownerRef: blockOwnerDeletion=false so deleting
+    // the parent STS doesn't stall on the helper, controller=false so
+    // the StatefulSet controller does not try to adopt this pod.
+    let owner_refs = sts_uid.map(|uid| {
+        vec![OwnerReference {
+            api_version: "apps/v1".to_owned(),
+            kind: "StatefulSet".to_owned(),
+            name: sts_name,
+            uid: uid.to_owned(),
+            controller: Some(false),
+            block_owner_deletion: Some(false),
+        }]
+    });
 
     let mut limits: BTreeMap<String, Quantity> = BTreeMap::new();
     limits.insert("cpu".to_owned(), Quantity("100m".to_owned()));
@@ -414,6 +457,7 @@ pub fn build_files_helper_pod(id: &str, namespace: &str, image: &str) -> Pod {
             name: Some(pod_name),
             namespace: Some(namespace.to_owned()),
             labels: Some(labels),
+            owner_references: owner_refs,
             ..ObjectMeta::default()
         },
         spec: Some(PodSpec {
@@ -694,7 +738,7 @@ mod tests {
 
     #[test]
     fn service_loadbalancer_has_no_nodeport() {
-        let svc = build_service(&params());
+        let svc = build_service(&params()).expect("service build");
         let spec = svc.spec.as_ref().unwrap();
         assert_eq!(spec.type_.as_deref(), Some("LoadBalancer"));
         let port = &spec.ports.as_ref().unwrap()[0];
@@ -710,7 +754,7 @@ mod tests {
             if mode == "nodeport" {
                 p.nodeport = Some(30_005);
             }
-            let svc = build_service(&p);
+            let svc = build_service(&p).expect("service build");
             let ports = svc.spec.as_ref().unwrap().ports.as_ref().unwrap();
             assert_eq!(
                 ports.len(),
@@ -730,7 +774,7 @@ mod tests {
         let mut p = params();
         p.exposure_mode = "nodeport";
         p.nodeport = Some(30_005);
-        let svc = build_service(&p);
+        let svc = build_service(&p).expect("service build");
         let spec = svc.spec.as_ref().unwrap();
         assert_eq!(spec.type_.as_deref(), Some("NodePort"));
         let port = &spec.ports.as_ref().unwrap()[0];
@@ -738,10 +782,18 @@ mod tests {
     }
 
     #[test]
+    fn service_nodeport_without_port_returns_error() {
+        let mut p = params();
+        p.exposure_mode = "nodeport";
+        p.nodeport = None;
+        assert!(build_service(&p).is_err());
+    }
+
+    #[test]
     fn service_clusterip_type_set() {
         let mut p = params();
         p.exposure_mode = "clusterip";
-        let svc = build_service(&p);
+        let svc = build_service(&p).expect("service build");
         assert_eq!(
             svc.spec.as_ref().unwrap().type_.as_deref(),
             Some("ClusterIP")
@@ -767,14 +819,14 @@ mod tests {
 
     #[test]
     fn helper_pod_name_and_namespace() {
-        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef", None);
         assert_eq!(pod.metadata.name.as_deref(), Some("mc-abcd1234-files"));
         assert_eq!(pod.metadata.namespace.as_deref(), Some("mc"));
     }
 
     #[test]
     fn helper_pod_carries_managed_labels_plus_role() {
-        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef", None);
         let labels = pod.metadata.labels.as_ref().unwrap();
         assert_eq!(
             labels.get(MANAGED_BY_LABEL).map(String::as_str),
@@ -792,7 +844,7 @@ mod tests {
 
     #[test]
     fn helper_pod_runs_sleep_infinity() {
-        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef", None);
         let container = &pod.spec.as_ref().unwrap().containers[0];
         assert_eq!(container.image.as_deref(), Some("alpine@sha256:beef"));
         assert_eq!(
@@ -804,7 +856,7 @@ mod tests {
 
     #[test]
     fn helper_pod_mounts_data_pvc_by_claim_name() {
-        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef", None);
         let spec = pod.spec.as_ref().unwrap();
         let volume = spec
             .volumes
@@ -821,8 +873,28 @@ mod tests {
     }
 
     #[test]
+    fn helper_pod_owner_ref_set_when_uid_provided() {
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef", Some("uid-123"));
+        let refs = pod.metadata.owner_references.as_ref().unwrap();
+        assert_eq!(refs.len(), 1);
+        let r = &refs[0];
+        assert_eq!(r.kind, "StatefulSet");
+        assert_eq!(r.api_version, "apps/v1");
+        assert_eq!(r.name, "mc-abcd1234");
+        assert_eq!(r.uid, "uid-123");
+        assert_eq!(r.controller, Some(false));
+        assert_eq!(r.block_owner_deletion, Some(false));
+    }
+
+    #[test]
+    fn helper_pod_owner_ref_omitted_when_uid_none() {
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef", None);
+        assert!(pod.metadata.owner_references.is_none());
+    }
+
+    #[test]
     fn helper_pod_resource_limits_are_modest() {
-        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef");
+        let pod = build_files_helper_pod("abcd1234", "mc", "alpine@sha256:beef", None);
         let res = pod.spec.as_ref().unwrap().containers[0]
             .resources
             .as_ref()

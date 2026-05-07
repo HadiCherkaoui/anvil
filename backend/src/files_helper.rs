@@ -9,7 +9,7 @@ use bytes::Bytes;
 use futures_util::{Stream, StreamExt as _};
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, AttachParams, DeleteParams, PostParams};
+use kube::api::{Api, AttachParams, DeleteParams, PostParams, PropagationPolicy};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::AppState;
@@ -25,13 +25,20 @@ pub struct PodExecResult {
     pub exit_code: Option<i32>,
 }
 
-/// 5-second cap for capture-shape execs (list, stat, mkdir, rename,
-/// delete). Streaming variants use a longer idle-read timeout instead.
+/// 5-second cap for capture-shape execs (list, stat, mkdir).
+/// Streaming variants use a longer idle-read timeout instead.
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 5-minute cap for long-running capture execs (`rm -rf`, large rename
+/// across directories). Used by [`pod_exec_capture_long`].
+const CAPTURE_LONG_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Runs `cmd` in `pod_name`, capturing stdout / stderr / exit code.
 /// 5-second end-to-end timeout. Used for: list (`LIST_SCRIPT`), stat
-/// pre-flights, mkdir, rename, single-file delete, recursive delete.
+/// pre-flights, mkdir.
+///
+/// For potentially long-running operations (`rm -rf` of a large world,
+/// rename across directories) use [`pod_exec_capture_long`].
 ///
 /// # Errors
 ///
@@ -42,6 +49,34 @@ pub async fn pod_exec_capture(
     namespace: &str,
     pod_name: &str,
     cmd: &[&str],
+) -> Result<PodExecResult, AppError> {
+    pod_exec_capture_with_timeout(state, namespace, pod_name, cmd, CAPTURE_TIMEOUT).await
+}
+
+/// Long-form variant of [`pod_exec_capture`] with a 5-minute end-to-end
+/// timeout. Use for `rm -rf` of large trees and cross-directory renames
+/// where the 5-second cap would falsely abort a still-progressing
+/// operation. Stdout / stderr drain concurrently.
+///
+/// # Errors
+///
+/// `AppError::Internal` on kube transport failure, timeout, or stream
+/// read failure.
+pub async fn pod_exec_capture_long(
+    state: &AppState,
+    namespace: &str,
+    pod_name: &str,
+    cmd: &[&str],
+) -> Result<PodExecResult, AppError> {
+    pod_exec_capture_with_timeout(state, namespace, pod_name, cmd, CAPTURE_LONG_TIMEOUT).await
+}
+
+async fn pod_exec_capture_with_timeout(
+    state: &AppState,
+    namespace: &str,
+    pod_name: &str,
+    cmd: &[&str],
+    cap: Duration,
 ) -> Result<PodExecResult, AppError> {
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), namespace);
 
@@ -55,19 +90,30 @@ pub async fn pod_exec_capture(
             .exec(pod_name, cmd.iter().copied(), &attach)
             .await
             .map_err(|e| anyhow!(e))?;
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
+        let stdout_reader = process.stdout();
+        let stderr_reader = process.stderr();
 
-        if let Some(mut s) = process.stdout() {
-            tokio::io::copy(&mut s, &mut stdout_buf)
-                .await
-                .map_err(|e| anyhow!(e))?;
-        }
-        if let Some(mut e) = process.stderr() {
-            tokio::io::copy(&mut e, &mut stderr_buf)
-                .await
-                .map_err(|err| anyhow!(err))?;
-        }
+        // Drain concurrently — sequential drain deadlocks when stderr
+        // fills its pipe buffer before stdout reaches EOF.
+        let drain_stdout = async {
+            let mut buf = Vec::new();
+            if let Some(mut s) = stdout_reader {
+                tokio::io::copy(&mut s, &mut buf)
+                    .await
+                    .map_err(|e| anyhow!(e))?;
+            }
+            anyhow::Ok(buf)
+        };
+        let drain_stderr = async {
+            let mut buf = Vec::new();
+            if let Some(mut e) = stderr_reader {
+                tokio::io::copy(&mut e, &mut buf)
+                    .await
+                    .map_err(|err| anyhow!(err))?;
+            }
+            anyhow::Ok(buf)
+        };
+        let (stdout_buf, stderr_buf) = tokio::try_join!(drain_stdout, drain_stderr)?;
 
         let status = process.take_status();
         let exit_code = match status {
@@ -85,12 +131,12 @@ pub async fn pod_exec_capture(
         })
     };
 
-    match tokio::time::timeout(CAPTURE_TIMEOUT, fut).await {
+    match tokio::time::timeout(cap, fut).await {
         Ok(Ok(result)) => Ok(result),
         Ok(Err(err)) => Err(AppError::Internal(err)),
         Err(_) => Err(AppError::Internal(anyhow!(
             "pod_exec_capture timed out after {} seconds",
-            CAPTURE_TIMEOUT.as_secs()
+            cap.as_secs()
         ))),
     }
 }
@@ -169,24 +215,34 @@ where
 
     drop(stdin); // signal EOF to the remote command
 
-    // Drain stderr and check exit code under the idle-read timeout.
-    let mut stderr_buf = Vec::new();
-    if let Some(mut e) = process.stderr() {
-        let _ = tokio::time::timeout(
-            STREAM_IDLE_TIMEOUT,
-            tokio::io::copy(&mut e, &mut stderr_buf),
-        )
-        .await;
-    }
+    // Drain stderr and consume the termination status concurrently.
+    // Sequential reads race: take_status() can resolve before stderr
+    // EOF on a fast failure, dropping diagnostics; or stderr-first can
+    // deadlock if the status channel closes first on some kube versions.
+    let stderr_reader = process.stderr();
+    let status_fut = process.take_status();
 
-    let status = process.take_status();
-    let exit_code = match status {
-        Some(fut) => match tokio::time::timeout(STREAM_IDLE_TIMEOUT, fut).await {
-            Ok(Some(s)) => parse_exit_code(s.status.as_deref(), s.message.as_deref()),
-            _ => None,
-        },
-        None => None,
+    let drain_stderr = async {
+        let mut buf = Vec::new();
+        if let Some(mut e) = stderr_reader {
+            let _ = tokio::time::timeout(
+                STREAM_IDLE_TIMEOUT,
+                tokio::io::copy(&mut e, &mut buf),
+            )
+            .await;
+        }
+        buf
     };
+    let read_status = async {
+        match status_fut {
+            Some(fut) => match tokio::time::timeout(STREAM_IDLE_TIMEOUT, fut).await {
+                Ok(Some(s)) => parse_exit_code(s.status.as_deref(), s.message.as_deref()),
+                _ => None,
+            },
+            None => None,
+        }
+    };
+    let (stderr_buf, exit_code) = tokio::join!(drain_stderr, read_status);
 
     if exit_code != Some(0) {
         let stderr_str = String::from_utf8_lossy(&stderr_buf);
@@ -261,7 +317,12 @@ pub async fn tear_down_helper(state: &AppState, server_id: &str) -> Result<(), A
     let pod_name = format!("mc-{server_id}-files");
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
 
-    match pods.delete(&pod_name, &DeleteParams::default()).await {
+    let dp = DeleteParams {
+        propagation_policy: Some(PropagationPolicy::Foreground),
+        grace_period_seconds: Some(15),
+        ..DeleteParams::default()
+    };
+    match pods.delete(&pod_name, &dp).await {
         Ok(_) => {}
         Err(kube::Error::Api(e)) if e.code == 404 => {}
         Err(e) => return Err(AppError::Internal(anyhow!(e))),
@@ -288,31 +349,51 @@ pub async fn tear_down_helper(state: &AppState, server_id: &str) -> Result<(), A
 /// # Errors
 ///
 /// `Conflict("pvc_not_initialized")` if the data PVC is missing;
+/// `NotFound` if the parent `StatefulSet` is missing;
 /// `Internal` on transport failure or wait timeout.
 pub async fn ensure_helper(state: &AppState, server_id: &str) -> Result<(), AppError> {
     let pod_name = format!("mc-{server_id}-files");
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
 
-    // Fast path: helper already exists. Wait for Running and return.
-    if let Some(_existing) = pods
+    // Fast path: helper already exists. If it's healthy / starting,
+    // wait for Running. If it's wedged (Failed phase, or Pending with
+    // a terminal waiting reason like ImagePullBackOff), delete and
+    // recreate — otherwise the caller would block on a pod that will
+    // never become Ready.
+    if let Some(existing) = pods
         .get_opt(&pod_name)
         .await
         .map_err(|e| AppError::Internal(anyhow!(e)))?
     {
-        return crate::modpack::orchestrator::wait_pod_running(
-            &state.kube,
-            &state.mc_namespace,
-            &pod_name,
-            Duration::from_secs(30),
-        )
-        .await
-        .map_err(AppError::Internal);
+        if helper_pod_broken(&existing) {
+            tear_down_helper(state, server_id).await?;
+        } else {
+            return crate::modpack::orchestrator::wait_pod_running(
+                &state.kube,
+                &state.mc_namespace,
+                &pod_name,
+                Duration::from_secs(30),
+            )
+            .await
+            .map_err(AppError::Internal);
+        }
     }
+
+    // Fetch the STS to use as ownerReference target — when the user
+    // deletes the server, k8s GCs the helper Pod with it.
+    let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
+    let sts = stsets
+        .get_opt(&format!("mc-{server_id}"))
+        .await
+        .map_err(|e| AppError::Internal(anyhow!(e)))?
+        .ok_or(AppError::NotFound)?;
+    let sts_uid = sts.metadata.uid.as_deref();
 
     let pod = crate::k8s_builders::build_files_helper_pod(
         server_id,
         &state.mc_namespace,
         &state.files_helper_image,
+        sts_uid,
     );
 
     match pods.create(&PostParams::default(), &pod).await {
@@ -339,6 +420,40 @@ pub async fn ensure_helper(state: &AppState, server_id: &str) -> Result<(), AppE
     )
     .await
     .map_err(AppError::Internal)
+}
+
+/// Container `waiting` reasons that mean the helper Pod will never
+/// reach Running on its own. Mirrors `k8s_status::ERROR_REASONS`.
+const HELPER_ERROR_REASONS: &[&str] = &[
+    "CrashLoopBackOff",
+    "ImagePullBackOff",
+    "ErrImagePull",
+    "CreateContainerConfigError",
+    "RunContainerError",
+];
+
+/// Returns `true` when the helper Pod is in a state that requires
+/// delete+recreate: terminal phase or a container stuck on a known-bad
+/// waiting reason.
+fn helper_pod_broken(pod: &Pod) -> bool {
+    let Some(status) = pod.status.as_ref() else {
+        return false;
+    };
+    if let Some(phase) = status.phase.as_deref()
+        && (phase == "Failed" || phase == "Unknown")
+    {
+        return true;
+    }
+    let Some(statuses) = status.container_statuses.as_ref() else {
+        return false;
+    };
+    statuses.iter().any(|cs| {
+        cs.state
+            .as_ref()
+            .and_then(|st| st.waiting.as_ref())
+            .and_then(|w| w.reason.as_deref())
+            .is_some_and(|r| HELPER_ERROR_REASONS.contains(&r))
+    })
 }
 
 fn pvc_not_found(message: &str) -> bool {

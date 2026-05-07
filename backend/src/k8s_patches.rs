@@ -1,4 +1,4 @@
-//! Strategic-merge patches we apply to managed `StatefulSet`s outside the
+//! Server-side-apply patches we apply to managed `StatefulSet`s outside the
 //! reconcile path.
 //!
 //! Currently a single helper — the orchestrator and the settings handler both
@@ -13,13 +13,20 @@ use kube::Api;
 use kube::api::{Patch, PatchParams};
 use serde_json::json;
 
-/// Strategic-merges the `mc` container's `env` array on a managed `StatefulSet`.
+/// Field manager identifier used on every server-side-apply patch the panel
+/// emits. Sharing a single name keeps ownership consistent across handlers
+/// (start, stop, settings, storage, orchestrator) — k8s tracks per-field
+/// ownership by manager name.
+pub const ANVIL_FIELD_MANAGER: &str = "anvil";
+
+/// Server-side-applies the `mc` container's full `env` array on a managed
+/// `StatefulSet`.
 ///
-/// k8s strategic-merge keys env entries by `name`, so this patch updates /
-/// inserts every entry in `env` and leaves unrelated entries on the resource
-/// untouched. Pass the *full* env block when you need a deterministic state
-/// (e.g. settings PATCH rebuilds and resends every entry) — passing a partial
-/// list only mutates the listed names.
+/// Strategic-merge silently dropped removals (the panel's previous shape) —
+/// k8s merges arrays by `name` and never observes a removal. Server-side
+/// apply with `force: true` makes the panel the authoritative owner of
+/// `containers[name=mc].env`, so any entry omitted from `env` is removed.
+/// Callers pass the *full* env block.
 ///
 /// # Errors
 ///
@@ -33,7 +40,14 @@ pub async fn patch_statefulset_env(
 ) -> Result<()> {
     let stsets: Api<StatefulSet> = Api::namespaced(client.clone(), ns);
     let resource_name = format!("mc-{server_id}");
-    let patch = json!({
+    // Apply patches must include enough identifying state for the API
+    // server to resolve the target — apiVersion+kind+name on the
+    // resource, plus the container `name` so strategic-merge keys onto
+    // the right container. The env block is the authoritative slice.
+    let apply = json!({
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": { "name": resource_name },
         "spec": {
             "template": {
                 "spec": {
@@ -47,12 +61,9 @@ pub async fn patch_statefulset_env(
             }
         }
     });
+    let pp = PatchParams::apply(ANVIL_FIELD_MANAGER).force();
     stsets
-        .patch(
-            &resource_name,
-            &PatchParams::default(),
-            &Patch::Strategic(&patch),
-        )
+        .patch(&resource_name, &pp, &Patch::Apply(&apply))
         .await
         .with_context(|| format!("patching env on StatefulSet {resource_name}"))?;
     Ok(())
