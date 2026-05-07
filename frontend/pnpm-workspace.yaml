@@ -1,3 +1,14 @@
-ignoredBuiltDependencies:
-  - sharp
-  - unrs-resolver
+# pnpm 11 config — the package-script allowlist moved here from
+# `package.json#pnpm.onlyBuiltDependencies` (which pnpm 11 silently
+# ignores). Each entry must be `true` (run the package's postinstall
+# scripts) or `false` (skip them); without an entry pnpm 11 refuses
+# the install with ERR_PNPM_IGNORED_BUILDS.
+#
+# - sharp: Next.js' image processor. Unused at runtime because we set
+#   `output: 'export'` + `images.unoptimized: true`, but Next.js still
+#   pulls it in as a dep so pnpm needs to know what to do with its
+#   build script.
+# - unrs-resolver: native module resolver loaded by eslint-config-next.
+allowBuilds:
+  sharp: true
+  unrs-resolver: true
