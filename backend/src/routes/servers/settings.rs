@@ -114,7 +114,7 @@ pub async fn handle(
         // Optimistic-locking CAS on source_config: read raw → mutate →
         // `UPDATE … WHERE source_config = ?`. 0 rows-affected means a
         // concurrent writer landed; retry once on a fresh read.
-        let cfg_after = apply_modpack_patch_cas(
+        apply_modpack_patch_cas(
             &state.pool,
             &id,
             source_config,
@@ -122,8 +122,7 @@ pub async fn handle(
             req.version_skip.clone(),
             req.force_version.clone(),
         )
-        .await?;
-        cfg_after
+        .await?
     } else {
         Value::Object(serde_json::Map::new())
     };
@@ -150,6 +149,7 @@ pub async fn handle(
 /// `initial_raw` is the first attempt's CAS key), mutates the JSON, then
 /// `UPDATE … WHERE source_config = ?`. On 0 rows-affected, re-reads and
 /// retries once before surfacing a conflict.
+#[allow(clippy::option_option)] // 3-state: absent / null / Some — matches JSON merge-patch semantics on the API
 async fn apply_modpack_patch_cas(
     pool: &sqlx::SqlitePool,
     id: &str,

@@ -88,7 +88,7 @@ pub async fn list(
     let path = validate_data_path_argv_only(&raw_path)?.to_owned();
     let target = data_path(&path);
 
-    let pod_name = target_pod_for_files(&state, &server_id).await?;
+    let pod_name = Box::pin(target_pod_for_files(&state, &server_id)).await?;
 
     let result = pod_exec_capture(
         &state,
@@ -139,7 +139,7 @@ pub async fn download(
         });
     }
     let target = data_path(&path);
-    let pod_name = target_pod_for_files(&state, &server_id).await?;
+    let pod_name = Box::pin(target_pod_for_files(&state, &server_id)).await?;
 
     // Pre-flight: stat for existence. Missing file → 404. We deliberately
     // don't set Content-Length from the stat size — the file may be
@@ -208,7 +208,7 @@ pub async fn upload(
     }
 
     let target = data_path(&path);
-    let pod_name = target_pod_for_files(&state, &server_id).await?;
+    let pod_name = Box::pin(target_pod_for_files(&state, &server_id)).await?;
 
     // Pre-flight: parent must exist and be a directory.
     let parent = match path.rsplit_once('/').map(|(p, _)| p) {
@@ -278,7 +278,7 @@ pub async fn action(
     Path(server_id): Path<String>,
     Json(body): Json<FileAction>,
 ) -> Result<StatusCode, AppError> {
-    let pod_name = target_pod_for_files(&state, &server_id).await?;
+    let pod_name = Box::pin(target_pod_for_files(&state, &server_id)).await?;
     let now = Utc::now().timestamp();
 
     match body {

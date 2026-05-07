@@ -347,15 +347,7 @@ pub async fn handle(
     // succeeds because the SQLite row exists). Order: secret → headless
     // svc → STS → PVC → public svc. Rollback walks in reverse and is
     // 404-tolerant — a resource that never landed is fine to "delete".
-    #[derive(Default)]
-    struct Created {
-        secret: bool,
-        headless: bool,
-        sts: bool,
-        pvc: bool,
-        public_svc: bool,
-    }
-    let mut created = Created::default();
+    let mut created = CreatedResources::default();
     let resource_name = format!("mc-{id}");
     let pvc_name = format!("data-{resource_name}-0");
     let headless_name = format!("{resource_name}-headless");
@@ -392,7 +384,11 @@ pub async fn handle(
         // accepted it, in which case the delete also legitimately 404s.
         let dp = kube::api::DeleteParams::default();
         if created.public_svc {
-            tolerate_404(services.delete(&resource_name, &dp).await, "public_svc", &id);
+            tolerate_404(
+                services.delete(&resource_name, &dp).await,
+                "public_svc",
+                &id,
+            );
         }
         if created.pvc {
             tolerate_404(pvcs.delete(&pvc_name, &dp).await, "pvc", &id);
@@ -988,10 +984,22 @@ async fn insert_server(
     }
 }
 
+/// Tracks which k8s resources were durably created during a server-create
+/// transaction so we can roll them back in reverse on a later step's failure.
+#[derive(Default)]
+#[allow(clippy::struct_excessive_bools)]
+struct CreatedResources {
+    secret: bool,
+    headless: bool,
+    sts: bool,
+    pvc: bool,
+    public_svc: bool,
+}
+
 /// Logs a kube delete result issued during create-rollback. 404s mean the
 /// resource was never durably created and we silently move on; transport
 /// errors are logged so the operator can clean them up if needed (the
-/// SQLite row remains and a follow-up DELETE will retry the steps).
+/// `SQLite` row remains and a follow-up DELETE will retry the steps).
 fn tolerate_404<T>(result: Result<T, kube::Error>, kind: &'static str, server_id: &str) {
     match result {
         Ok(_) => {}

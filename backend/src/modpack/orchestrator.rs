@@ -384,7 +384,9 @@ async fn run_inner(
         .bind(server_id)
         .execute(&mut *tx)
         .await?;
-    tx.commit().await.context("committing persist transaction")?;
+    tx.commit()
+        .await
+        .context("committing persist transaction")?;
     Ok(())
 }
 

@@ -35,9 +35,7 @@ async fn with_retry(
     let mut backoff = BACKOFF_INITIAL;
     let mut last_status: Option<reqwest::StatusCode> = None;
     for attempt in 0..=MAX_RETRIES {
-        let req = build()
-            .build()
-            .context("building Modrinth request")?;
+        let req = build().build().context("building Modrinth request")?;
         match http.execute(req).await {
             Ok(resp) => {
                 let status = resp.status();
@@ -318,16 +316,13 @@ impl ModrinthClient {
         let limit_s = limit.to_string();
         let offset_s = q.offset.to_string();
         let resp = with_retry(&self.inner.http, || {
-            self.inner
-                .http
-                .get(format!("{MR_API}/search"))
-                .query(&[
-                    ("query", q.query),
-                    ("facets", facets_json.as_str()),
-                    ("limit", limit_s.as_str()),
-                    ("offset", offset_s.as_str()),
-                    ("index", "relevance"),
-                ])
+            self.inner.http.get(format!("{MR_API}/search")).query(&[
+                ("query", q.query),
+                ("facets", facets_json.as_str()),
+                ("limit", limit_s.as_str()),
+                ("offset", offset_s.as_str()),
+                ("index", "relevance"),
+            ])
         })
         .await?;
         if !resp.status().is_success() {

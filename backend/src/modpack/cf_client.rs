@@ -29,9 +29,7 @@ async fn with_retry(
     let mut backoff = BACKOFF_INITIAL;
     let mut last_status: Option<reqwest::StatusCode> = None;
     for attempt in 0..=MAX_RETRIES {
-        let req = build()
-            .build()
-            .context("building CurseForge request")?;
+        let req = build().build().context("building CurseForge request")?;
         match http.execute(req).await {
             Ok(resp) => {
                 let status = resp.status();
@@ -340,16 +338,13 @@ impl CurseForgeClient {
         let page_size_s = page_size.to_string();
         let index_s = index.to_string();
         let resp = with_retry(&self.inner.http, || {
-            self.inner
-                .http
-                .get(&url)
-                .query(&[
-                    ("gameId", game_id_s.as_str()),
-                    ("classId", class_id_s.as_str()),
-                    ("searchFilter", query),
-                    ("pageSize", page_size_s.as_str()),
-                    ("index", index_s.as_str()),
-                ])
+            self.inner.http.get(&url).query(&[
+                ("gameId", game_id_s.as_str()),
+                ("classId", class_id_s.as_str()),
+                ("searchFilter", query),
+                ("pageSize", page_size_s.as_str()),
+                ("index", index_s.as_str()),
+            ])
         })
         .await?;
         if !resp.status().is_success() {
@@ -383,13 +378,10 @@ impl CurseForgeClient {
             let page_size_s = PAGE_SIZE.to_string();
             let index_s = index.to_string();
             let resp = with_retry(&self.inner.http, || {
-                self.inner
-                    .http
-                    .get(&url)
-                    .query(&[
-                        ("pageSize", page_size_s.as_str()),
-                        ("index", index_s.as_str()),
-                    ])
+                self.inner.http.get(&url).query(&[
+                    ("pageSize", page_size_s.as_str()),
+                    ("index", index_s.as_str()),
+                ])
             })
             .await?;
             let status = resp.status();
@@ -420,8 +412,7 @@ fn evict(cache: &mut HashMap<u32, CacheEntry>) {
     if cache.len() < CACHE_MAX_ENTRIES {
         return;
     }
-    let mut by_age: Vec<(u32, Instant)> =
-        cache.iter().map(|(k, v)| (*k, v.fetched_at)).collect();
+    let mut by_age: Vec<(u32, Instant)> = cache.iter().map(|(k, v)| (*k, v.fetched_at)).collect();
     by_age.sort_by_key(|(_, t)| *t);
     let drop_n = cache.len() - (CACHE_MAX_ENTRIES / 2);
     for (k, _) in by_age.into_iter().take(drop_n) {

@@ -723,7 +723,10 @@ mod tests {
             "/World 2.zip",
             "/mods/sodium.jar",
         ] {
-            assert!(validate_data_path_argv_only(p).is_ok(), "expected {p:?} to pass");
+            assert!(
+                validate_data_path_argv_only(p).is_ok(),
+                "expected {p:?} to pass"
+            );
         }
     }
 
@@ -735,49 +738,70 @@ mod tests {
     #[test]
     fn data_path_rejects_relative_paths() {
         for p in ["world", "./world", "world/level.dat", "  "] {
-            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
+            assert!(
+                validate_data_path_argv_only(p).is_err(),
+                "expected {p:?} to fail"
+            );
         }
     }
 
     #[test]
     fn data_path_rejects_traversal_segments() {
         for p in ["/..", "/world/..", "/foo/../bar", "/../etc/passwd"] {
-            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
+            assert!(
+                validate_data_path_argv_only(p).is_err(),
+                "expected {p:?} to fail"
+            );
         }
     }
 
     #[test]
     fn data_path_rejects_dot_segments() {
         for p in ["/.", "/world/.", "/./bar"] {
-            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
+            assert!(
+                validate_data_path_argv_only(p).is_err(),
+                "expected {p:?} to fail"
+            );
         }
     }
 
     #[test]
     fn data_path_rejects_double_slash() {
         for p in ["//", "/foo//bar", "/foo/"] {
-            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
+            assert!(
+                validate_data_path_argv_only(p).is_err(),
+                "expected {p:?} to fail"
+            );
         }
     }
 
     #[test]
     fn data_path_rejects_leading_dash() {
         for p in ["/-rf", "/foo/-bar"] {
-            assert!(validate_data_path_argv_only(p).is_err(), "expected {p:?} to fail");
+            assert!(
+                validate_data_path_argv_only(p).is_err(),
+                "expected {p:?} to fail"
+            );
         }
     }
 
     #[test]
     fn data_path_rejects_control_chars() {
         for bad in ["/foo\nbar", "/foo\tbar", "/foo\0bar", "/foo\x7fbar"] {
-            assert!(validate_data_path_argv_only(bad).is_err(), "expected {bad:?} to fail");
+            assert!(
+                validate_data_path_argv_only(bad).is_err(),
+                "expected {bad:?} to fail"
+            );
         }
     }
 
     #[test]
     fn data_path_rejects_quote_and_backslash() {
         for bad in ["/foo'bar", "/foo\\bar"] {
-            assert!(validate_data_path_argv_only(bad).is_err(), "expected {bad:?} to fail");
+            assert!(
+                validate_data_path_argv_only(bad).is_err(),
+                "expected {bad:?} to fail"
+            );
         }
     }
 

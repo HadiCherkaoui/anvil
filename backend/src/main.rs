@@ -134,7 +134,9 @@ fn init_tracing(default_filter: &str) {
             Ok(f) => (f, None),
             Err(e) => (
                 EnvFilter::new(default_filter),
-                Some(format!("RUST_LOG={raw:?} is invalid ({e}); using default filter")),
+                Some(format!(
+                    "RUST_LOG={raw:?} is invalid ({e}); using default filter"
+                )),
             ),
         },
         None => (EnvFilter::new(default_filter), None),

@@ -31,7 +31,7 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 5-minute cap for long-running capture execs (`rm -rf`, large rename
 /// across directories). Used by [`pod_exec_capture_long`].
-const CAPTURE_LONG_TIMEOUT: Duration = Duration::from_secs(300);
+const CAPTURE_LONG_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Runs `cmd` in `pod_name`, capturing stdout / stderr / exit code.
 /// 5-second end-to-end timeout. Used for: list (`LIST_SCRIPT`), stat
@@ -225,11 +225,8 @@ where
     let drain_stderr = async {
         let mut buf = Vec::new();
         if let Some(mut e) = stderr_reader {
-            let _ = tokio::time::timeout(
-                STREAM_IDLE_TIMEOUT,
-                tokio::io::copy(&mut e, &mut buf),
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(STREAM_IDLE_TIMEOUT, tokio::io::copy(&mut e, &mut buf)).await;
         }
         buf
     };

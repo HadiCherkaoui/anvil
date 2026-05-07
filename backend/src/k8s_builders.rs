@@ -390,7 +390,7 @@ pub fn rcon_password() -> String {
 ///
 /// `sts_uid` is the parent `StatefulSet`'s `metadata.uid`. When `Some`,
 /// it is encoded as a non-controlling `ownerReference` so a delete of
-/// the StatefulSet GCs the helper Pod. `None` is permitted but means
+/// the `StatefulSet` GCs the helper Pod. `None` is permitted but means
 /// the caller is responsible for tear-down (`tear_down_helper`).
 #[must_use]
 pub fn build_files_helper_pod(

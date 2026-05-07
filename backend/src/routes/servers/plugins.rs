@@ -360,7 +360,7 @@ async fn write_loop(
     let rx_opt: Option<watch::Receiver<UpdatePhase>> = state
         .update_phase_buses
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&id)
         .cloned();
 

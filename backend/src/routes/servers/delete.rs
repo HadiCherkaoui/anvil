@@ -137,8 +137,7 @@ pub async fn handle(
     //    is allowed to outlive the server.
     let now = Utc::now().timestamp();
     insert_audit(&state.pool, &id, "deleted", None, now).await?;
-    if let Err(e) =
-        insert_audit(&state.pool, &id, "backup_dir_cleanup_scheduled", None, now).await
+    if let Err(e) = insert_audit(&state.pool, &id, "backup_dir_cleanup_scheduled", None, now).await
     {
         tracing::error!(error = ?e, "audit insert failed");
     }

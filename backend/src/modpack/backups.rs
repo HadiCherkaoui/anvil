@@ -211,10 +211,7 @@ pub async fn mark_auto_backup_status(
 /// # Errors
 ///
 /// Returns the underlying `sqlx` error.
-pub async fn fail_stale_pending_auto_backups(
-    state: &AppState,
-    older_than_secs: i64,
-) -> Result<()> {
+pub async fn fail_stale_pending_auto_backups(state: &AppState, older_than_secs: i64) -> Result<()> {
     let cutoff = Utc::now().timestamp() - older_than_secs;
     sqlx::query(
         "UPDATE backups SET status = 'failed'
@@ -573,9 +570,7 @@ async fn run_restore_inner(
     .context("reverting servers row to backup snapshot")?;
 
     let env = build_runtime_env_from_snapshot(&snap, server_id)?;
-    if let Err(e) =
-        patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &env).await
-    {
+    if let Err(e) = patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &env).await {
         // Env patch failed but SQL already swapped to `snap`. Roll back the
         // SQL UPDATE so DB matches the env (which is still `pre`). /data is
         // from the backup though, so the server may still misboot — log
@@ -612,10 +607,7 @@ async fn run_restore_inner(
 
 /// Reads the live `servers` row into a [`BackupSnapshot`]-shaped value so a
 /// failed restore can revert the SQL/env to match what /data was before.
-async fn load_pre_restore_snapshot(
-    state: &AppState,
-    server_id: &str,
-) -> Result<BackupSnapshot> {
+async fn load_pre_restore_snapshot(state: &AppState, server_id: &str) -> Result<BackupSnapshot> {
     use sqlx::Row as _;
     let row = sqlx::query(
         "SELECT mc_version, memory_mi, storage_size_gi, storage_class,

@@ -695,17 +695,15 @@ async fn fetch_latest_compatible(
     // Tier the filter so a Paper plugin with both `paper`-only and
     // `bukkit`/`spigot` builds prefers Paper-tagged ones, falling back
     // only when none exist. The first non-empty tier wins.
-    let pick = loaders
-        .iter()
-        .find_map(|accept| {
-            versions
-                .iter()
-                .filter(|v| v.loaders.iter().any(|l| l == accept))
-                .filter(|v| v.game_versions.iter().any(|g| g == mc_version))
-                .filter(|v| v.files.iter().any(|f| f.primary))
-                .max_by(|a, b| a.date_published.cmp(&b.date_published))
-                .cloned()
-        });
+    let pick = loaders.iter().find_map(|accept| {
+        versions
+            .iter()
+            .filter(|v| v.loaders.iter().any(|l| l == accept))
+            .filter(|v| v.game_versions.iter().any(|g| g == mc_version))
+            .filter(|v| v.files.iter().any(|f| f.primary))
+            .max_by(|a, b| a.date_published.cmp(&b.date_published))
+            .cloned()
+    });
     Ok(pick.map(|v| LatestPick {
         version_id: v.id,
         version_name: v.version_number,

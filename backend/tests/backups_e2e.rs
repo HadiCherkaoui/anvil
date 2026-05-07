@@ -285,7 +285,7 @@ async fn restore_unknown_backup_404() {
     let resp = app
         .oneshot(empty_request(
             Method::POST,
-            "/api/servers/ts-bk/backups/bk-missing/restore",
+            "/api/servers/ts-bk/backups/bk-deadbeefdeadbeefdeadbeefdeadbeef/restore",
             &token,
         ))
         .await
@@ -297,13 +297,19 @@ async fn restore_unknown_backup_404() {
 async fn restore_known_backup_starts_fsm_202() {
     let state = test_state();
     seed_vanilla_server(&state, "ts-bk", "smoke").await;
-    seed_backup_row(&state, "ts-bk", "bk-x", Some("snap")).await;
+    seed_backup_row(
+        &state,
+        "ts-bk",
+        "bk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        Some("snap"),
+    )
+    .await;
     let token = token_for(&state, "u");
     let app = anvil::router(state);
     let resp = app
         .oneshot(empty_request(
             Method::POST,
-            "/api/servers/ts-bk/backups/bk-x/restore",
+            "/api/servers/ts-bk/backups/bk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/restore",
             &token,
         ))
         .await
@@ -323,7 +329,7 @@ async fn delete_unknown_backup_404() {
     let resp = app
         .oneshot(empty_request(
             Method::DELETE,
-            "/api/servers/ts-bk/backups/bk-missing",
+            "/api/servers/ts-bk/backups/bk-deadbeefdeadbeefdeadbeefdeadbeef",
             &token,
         ))
         .await

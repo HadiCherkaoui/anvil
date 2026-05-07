@@ -43,6 +43,9 @@ use crate::ws::{EndReason, Frame};
 const HEARTBEAT: Duration = Duration::from_secs(30);
 /// Maximum time we wait for a pod to be Running before sending End.
 const POD_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
+/// Maximum time we wait for `pods.log_stream` to open before retrying.
+/// A stalled kube API otherwise freezes the WS task without heartbeats.
+const LOG_OPEN_TIMEOUT: Duration = Duration::from_mins(1);
 /// Sleep between pod-status polls while waiting for Running.
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Number of trailing log lines kube sends as historical context
@@ -163,11 +166,10 @@ async fn write_loop(
         let log_stream = tokio::select! {
             biased;
             _ = &mut close_rx => return,
-            res = tokio::time::timeout(Duration::from_secs(60), pods.log_stream(&pod_name, &log_params)) => {
+            res = tokio::time::timeout(LOG_OPEN_TIMEOUT, pods.log_stream(&pod_name, &log_params)) => {
                 match res {
                     Ok(Ok(s)) => s,
-                    Ok(Err(_)) => continue 'outer,
-                    Err(_) => continue 'outer,
+                    Ok(Err(_)) | Err(_) => continue 'outer,
                 }
             }
         };

@@ -25,7 +25,7 @@ const ERROR_REASONS: &[&str] = &[
 ];
 
 /// How long a pod can sit `ContainersNotReady` before we surface it as
-/// `Error`. Tuned to the slowest expected boot (mod-heavy CurseForge
+/// `Error`. Tuned to the slowest expected boot (mod-heavy `CurseForge`
 /// pack on a cold node); past this, it's almost always a real failure
 /// rather than a long boot.
 const CONTAINERS_NOT_READY_GRACE_SECS: i64 = 60;
@@ -94,11 +94,9 @@ fn pod_in_error_state(pod: &Pod) -> bool {
                 // `Time` wraps `k8s_openapi::jiff::Timestamp`. Use the
                 // re-exported jiff so we don't need it as a runtime
                 // dependency on its own.
-                let stuck_for = c
-                    .last_transition_time
-                    .as_ref()
-                    .map(|t| k8s_openapi::jiff::Timestamp::now().as_second() - t.0.as_second())
-                    .unwrap_or(0);
+                let stuck_for = c.last_transition_time.as_ref().map_or(0, |t| {
+                    k8s_openapi::jiff::Timestamp::now().as_second() - t.0.as_second()
+                });
                 if stuck_for >= CONTAINERS_NOT_READY_GRACE_SECS {
                     return true;
                 }
@@ -150,10 +148,7 @@ pub fn derive_endpoint(
             // hostname-only configs) populate `hostname` instead of
             // `ip`. Fall back so the panel surfaces the address either
             // way.
-            let host = ingress
-                .ip
-                .clone()
-                .or_else(|| ingress.hostname.clone())?;
+            let host = ingress.ip.clone().or_else(|| ingress.hostname.clone())?;
             Some(Endpoint {
                 host,
                 port: MC_PORT,

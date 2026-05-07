@@ -351,8 +351,7 @@ async fn run_inner(
         .execute(&mut *tx)
         .await
         .map_err(|e| FsmError::Pre(e.into()))?;
-    let details_text =
-        json!({"new_mc": new_mc, "new_loader": new_loader}).to_string();
+    let details_text = json!({"new_mc": new_mc, "new_loader": new_loader}).to_string();
     sqlx::query(
         "INSERT INTO audit_log (ts, server_id, action, details, actor)
          VALUES (?, ?, 'version_change_succeeded', ?, NULL)",
@@ -363,9 +362,7 @@ async fn run_inner(
     .execute(&mut *tx)
     .await
     .map_err(|e| FsmError::Pre(e.into()))?;
-    tx.commit()
-        .await
-        .map_err(|e| FsmError::Pre(e.into()))?;
+    tx.commit().await.map_err(|e| FsmError::Pre(e.into()))?;
     Ok(())
 }
 
