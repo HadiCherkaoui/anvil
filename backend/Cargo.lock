@@ -113,7 +113,6 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
- "tokio-stream",
  "tower",
  "tower-http",
  "tower-test",
