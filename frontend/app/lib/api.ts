@@ -169,8 +169,6 @@ export const clusterCapabilitiesSchema = z.object({
 	// SC being in this list.
 	expandable_storage_classes: z.array(z.string()).default([]),
 	default_storage_class: z.string().nullable(),
-	// M5: gates the CurseForge option in the New Server modal.
-	cf_api_key_present: z.boolean().default(false),
 });
 
 export const mcVersionsResponseSchema = z.object({
@@ -293,7 +291,6 @@ export const settingsRequestSchema = z.object({
 	memory_mi: z.number().int().min(1024).max(65_536).optional(),
 	auto_update_mode: autoUpdateModeSchema.optional(),
 	version_skip: z.array(z.string()).optional(),
-	force_version: z.string().nullable().optional(),
 	properties: serverPropertiesSchema.optional(),
 });
 
@@ -625,8 +622,8 @@ export async function changeServerVersion(
 	return jsonOrThrow(res, changeVersionResponseSchema);
 }
 
-/// PATCHes per-server modpack settings (auto_update_mode, version_skip,
-/// force_version). Only the fields supplied are updated.
+/// PATCHes per-server modpack settings (auto_update_mode, version_skip).
+/// Only the fields supplied are updated.
 export async function updateServerSettings(
 	id: string,
 	patch: SettingsRequest,
