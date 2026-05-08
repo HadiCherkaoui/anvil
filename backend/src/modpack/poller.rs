@@ -638,7 +638,6 @@ struct FilePick {
 struct LatestPick {
     version_id: String,
     version_name: String,
-    published_at: Option<String>,
 }
 
 #[allow(
@@ -707,7 +706,6 @@ async fn fetch_latest_compatible(
     Ok(pick.map(|v| LatestPick {
         version_id: v.id,
         version_name: v.version_number,
-        published_at: Some(v.date_published),
     }))
 }
 
@@ -734,8 +732,8 @@ async fn upsert_mod_update(
     let _ = sqlx::query(
         "INSERT OR REPLACE INTO mod_updates
              (server_id, provider, project_id, current_version_id, latest_version_id,
-              latest_version_name, latest_published_at, checked_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              latest_version_name, checked_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(server_id)
     .bind(provider)
@@ -743,7 +741,6 @@ async fn upsert_mod_update(
     .bind(current_version_id)
     .bind(&latest.version_id)
     .bind(&latest.version_name)
-    .bind(latest.published_at.as_deref())
     .bind(now)
     .execute(&state.pool)
     .await;
@@ -779,8 +776,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO mod_updates
                  (server_id, provider, project_id, current_version_id,
-                  latest_version_id, latest_version_name, latest_published_at, checked_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  latest_version_id, latest_version_name, checked_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind("srv-1")
         .bind("modrinth")
@@ -788,7 +785,6 @@ mod tests {
         .bind("ver-old")
         .bind("ver-new")
         .bind("Fabric API 0.99.0")
-        .bind("2026-04-01T00:00:00Z")
         .bind(now)
         .execute(&pool)
         .await
@@ -849,8 +845,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO mod_updates
                  (server_id, provider, project_id, current_version_id,
-                  latest_version_id, latest_version_name, latest_published_at, checked_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  latest_version_id, latest_version_name, checked_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind("srv-2")
         .bind("modrinth")
@@ -858,7 +854,6 @@ mod tests {
         .bind("v1")
         .bind("v2")
         .bind("LP 5.5")
-        .bind(Option::<String>::None)
         .bind(0_i64)
         .execute(&pool)
         .await
