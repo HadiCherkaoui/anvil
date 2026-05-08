@@ -22,10 +22,6 @@ use crate::error::AppError;
 pub const CAPABILITIES_TTL: Duration = Duration::from_mins(5);
 
 /// Cluster capabilities response shape.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool gates an independent feature in the frontend; bitmask would be opaque"
-)]
 #[derive(Debug, Clone, Serialize)]
 pub struct ClusterCapabilities {
     /// Whether the create handler will accept `exposure_mode=loadbalancer`.
@@ -43,9 +39,6 @@ pub struct ClusterCapabilities {
     /// Name of the `StorageClass` annotated `is-default-class=true`,
     /// if any.
     pub default_storage_class: Option<String>,
-    /// Whether the backend has a `CurseForge` API key configured. The frontend
-    /// hides the `CurseForge` option in the New Server modal when this is false.
-    pub cf_api_key_present: bool,
 }
 
 /// In-memory cache slot held in `AppState`.
@@ -85,11 +78,7 @@ pub async fn current_caps(state: &AppState) -> Result<ClusterCapabilities, AppEr
     let storage_classes: Api<StorageClass> = Api::all(state.kube.clone());
     let lp = ListParams::default();
     let list = storage_classes.list(&lp).await?;
-    let caps = compute_caps_from_scs(
-        &list.items,
-        state.loadbalancer_supported,
-        state.cf_client.is_some(),
-    );
+    let caps = compute_caps_from_scs(&list.items, state.loadbalancer_supported);
     write_cache(&state.capabilities_cache, &caps);
     Ok(caps)
 }
@@ -99,11 +88,7 @@ pub async fn current_caps(state: &AppState) -> Result<ClusterCapabilities, AppEr
 /// Pure function — extracted from [`handle`] so the `expandable_storage_classes`
 /// derivation can be unit-tested without driving a kube client.
 #[must_use]
-pub fn compute_caps_from_scs(
-    scs: &[StorageClass],
-    loadbalancer: bool,
-    cf_api_key_present: bool,
-) -> ClusterCapabilities {
+pub fn compute_caps_from_scs(scs: &[StorageClass], loadbalancer: bool) -> ClusterCapabilities {
     let mut classes: Vec<String> = Vec::new();
     let mut expandable: Vec<String> = Vec::new();
     let mut default: Option<String> = None;
@@ -137,7 +122,6 @@ pub fn compute_caps_from_scs(
         available_storage_classes: classes,
         expandable_storage_classes: expandable,
         default_storage_class: default,
-        cf_api_key_present,
     }
 }
 
@@ -192,7 +176,7 @@ mod tests {
             sc("openebs-hostpath", false, false),
             sc("fast", true, false),
         ];
-        let caps = compute_caps_from_scs(&scs, true, true);
+        let caps = compute_caps_from_scs(&scs, true);
 
         assert_eq!(
             caps.expandable_storage_classes,
@@ -210,16 +194,14 @@ mod tests {
         assert!(caps.loadbalancer);
         assert!(caps.nodeport);
         assert!(caps.clusterip);
-        assert!(caps.cf_api_key_present);
     }
 
     #[test]
     fn capabilities_no_expandable_when_all_disallow() {
         let scs = vec![sc("a", false, false), sc("b", false, false)];
-        let caps = compute_caps_from_scs(&scs, false, false);
+        let caps = compute_caps_from_scs(&scs, false);
         assert!(caps.expandable_storage_classes.is_empty());
         assert!(!caps.loadbalancer);
-        assert!(!caps.cf_api_key_present);
         assert_eq!(caps.default_storage_class, None);
     }
 
@@ -229,7 +211,7 @@ mod tests {
         nameless.metadata.name = None;
         nameless.allow_volume_expansion = Some(true);
         let scs = vec![nameless, sc("named", true, false)];
-        let caps = compute_caps_from_scs(&scs, true, false);
+        let caps = compute_caps_from_scs(&scs, true);
         assert_eq!(caps.expandable_storage_classes, vec!["named".to_owned()],);
     }
 }
