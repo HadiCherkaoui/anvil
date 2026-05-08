@@ -230,47 +230,29 @@ user to run if they want to validate any item live.
 
 ## 5. Functionality that exists but smells speculative
 
-1. **`changelog_excerpt`** — defined on `VersionInfo`
-   (`backend/src/modpack/mod.rs:55`), written to DB by the poller
-   (`poller.rs:130-137`, always `None`), surfaced in the API response
-   (`routes/servers/get.rs:48,109,158` as `latest_changelog_excerpt`),
-   and re-exposed in the frontend Zod schema (`api.ts:70`). No code
-   path populates it from CurseForge. No CF-API call fetches a
-   changelog. End-to-end dead.
+Cleaned up 2026-05-08. Every previously-flagged orphan in this section
+has been deleted or verified gone:
 
-2. **`force_version`** — settable via `PATCH /settings`
-   (`routes/servers/settings.rs:65-70`); cleared on success by the
-   orchestrator (`orchestrator.rs:592`); but `pick_target_version`
-   does not read it (`orchestrator.rs:336-362`). The persisted value
-   has no consumer. The orchestrator's fallback path that *would* use
-   it (`serde_project_id`, `provider_to_config`) is itself dead — see
-   §5.3.
+- `changelog_excerpt` — column dropped (migration 0013), no Rust or
+  frontend references.
+- `force_version` — field dropped from `SettingsRequest`,
+  `curseforge::Config`, `modrinth::Config`; `validate_force_version` and
+  the orchestrator's null-wipe gone.
+- `provider_to_config` / `serde_project_id` — already removed before
+  this audit ran; verified gone.
+- `cf_api_key_present` — dropped from `ClusterCapabilities` and the
+  capabilities handler. The frontend Zod schema parses it with
+  `.default(false)` so the absent field is tolerated silently.
+- `mod_updates.latest_published_at` — write-only column dropped
+  (migration 0014); the matching `LatestPick.published_at` field and
+  bind site removed.
 
-3. **`provider_to_config` and `serde_project_id`** —
-   `orchestrator.rs:366-384`. `provider_to_config` is hardcoded to
-   return `None`; `serde_project_id` then propagates that `None`;
-   `pick_target_version` errors with `"provider has no project id"`.
-   The fallback "look up by id from the cached file list" path (lines
-   348-361) is therefore unreachable. Today this only matters if a
-   user tries to update to a version that isn't the latest — the
-   handler errors out instead of using the cache.
+Still flagged for follow-up (not orphans, but in this neighbourhood):
 
-4. **`CurseForgeClient::fetch_files` uses `pageSize=50` single-shot.**
-   `cf_client.rs:208`. The CF API paginates `/mods/{id}/files`. Old
+1. **`CurseForgeClient::fetch_files` uses `pageSize=50` single-shot.**
+   `cf_client.rs`. The CF API paginates `/mods/{id}/files`. Old
    modpacks with many historical versions silently truncate. Benign
-   today (the only consumer is `latest`); becomes a bug the moment
-   anyone fixes §5.2 and §5.3.
-
-5. **`cf_api_key_present` on `ClusterCapabilities`.** Exposed by
-   `routes/cluster.rs` and present in the frontend schema
-   (`api.ts:82`). No frontend component reads it. The intended use
-   was to gate the CF sub-form in NewServerModal — the sub-form
-   doesn't exist, so the gate has no consumer.
-
-6. **`SettingsRequest::force_version: Option<Option<String>>`.**
-   The double-Option is the JSON-`null`-vs-absent distinction, which
-   is correct for a PATCH — but until §5.2 is fixed, the field is
-   write-only.
+   today (the only consumer is `latest`).
 
 ---
 
