@@ -1,7 +1,7 @@
 //! Vanilla MC server provider (refactored from the M2 inline path).
 //!
-//! Drives the `itzg/minecraft-server` image which configures itself from
-//! env vars (EULA, TYPE, VERSION, `INIT_MEMORY`, `MAX_MEMORY`, RCON). The
+//! Drives the configured itzg image, which configures itself from env vars
+//! (EULA, TYPE, VERSION, `INIT_MEMORY`, `MAX_MEMORY`, RCON). The
 //! `extra_env` set mirrors what M2's `build_statefulset` hardcoded.
 
 use std::time::Duration;
@@ -11,21 +11,13 @@ use k8s_openapi::api::core::v1::{EnvVar, EnvVarSource, SecretKeySelector};
 
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
-/// Container image used for managed vanilla Minecraft servers.
-///
-/// Pinned to the Java 25 tag — the JRE is forward-compatible with vanilla
-/// jars compiled against earlier Javas, and modern modpacks (ATM-11 +
-/// `NeoForge` 26.x) ship class files with version 69 (Java 25). Same image
-/// across all providers means the cluster pulls one upstream tag.
-const VANILLA_IMAGE: &str = "itzg/minecraft-server:java25";
-
 /// How long we wait for the vanilla server to print `Done (` after boot.
 ///
 /// Plain Vanilla starts in well under a minute; allow 5 to absorb a slow
 /// pull or a cold ZFS PVC mount.
 const VANILLA_BOOT_TIMEOUT: Duration = Duration::from_mins(5);
 
-/// Vanilla MC server provider — itzg/minecraft-server with env-var config.
+/// Vanilla MC server provider — itzg image with env-var config.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VanillaProvider {
     mc_version: VanillaVersion,
@@ -75,10 +67,6 @@ impl VanillaProvider {
 impl ModpackProvider for VanillaProvider {
     fn kind(&self) -> &'static str {
         "vanilla"
-    }
-
-    fn pod_image(&self) -> &str {
-        VANILLA_IMAGE
     }
 
     fn launch_command(&self) -> Option<Vec<String>> {
@@ -179,12 +167,6 @@ mod tests {
     fn provider_kind_is_vanilla() {
         let p = VanillaProvider::new();
         assert_eq!(p.kind(), "vanilla");
-    }
-
-    #[test]
-    fn provider_pod_image_is_itzg_java25() {
-        let p = VanillaProvider::new();
-        assert_eq!(p.pod_image(), VANILLA_IMAGE);
     }
 
     #[test]

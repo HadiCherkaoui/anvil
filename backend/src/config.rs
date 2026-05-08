@@ -86,6 +86,16 @@ pub struct Config {
     /// Image used for the per-server "files-helper" Pod (sub-project D).
     /// Pin by digest. Required — backend refuses to start without it.
     pub files_helper_image: String,
+    /// IANA timezone applied as the `TZ` env var on every managed MC pod
+    /// (chart `mcDefaults.timezone`). Required — backend refuses to start
+    /// without it.
+    pub mc_timezone: String,
+    /// Container image for managed MC `StatefulSet`s across all providers
+    /// (chart `mcDefaults.itzgImage`). Required.
+    pub mc_itzg_image: String,
+    /// Image for backup / restore / snapshot-cleanup Jobs (chart
+    /// `mcDefaults.busyboxImage`). Required.
+    pub mc_busybox_image: String,
 }
 
 // `Vec<u8>` for `session_key` would print the raw HMAC key in `Debug`; hand-roll
@@ -117,6 +127,9 @@ impl std::fmt::Debug for Config {
                 &self.modpack_poll_interval_minutes,
             )
             .field("files_helper_image", &self.files_helper_image)
+            .field("mc_timezone", &self.mc_timezone)
+            .field("mc_itzg_image", &self.mc_itzg_image)
+            .field("mc_busybox_image", &self.mc_busybox_image)
             .finish()
     }
 }
@@ -130,6 +143,7 @@ impl Config {
     /// `SocketAddr`, if `ANVIL_MC_STORAGE_CLASS` is unset (the chart enforces
     /// this; the binary refuses to start without it), or if `ANVIL_LB_SUPPORTED`
     /// does not parse as a `bool`.
+    #[allow(clippy::too_many_lines)] // Linear env-var loader; splitting would only obscure the parse order.
     pub fn from_env() -> Result<Self> {
         let bind_addr_str =
             env::var("ANVIL_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_owned());
@@ -212,6 +226,22 @@ impl Config {
             bail!("ANVIL_FILES_HELPER_IMAGE must not be empty");
         }
 
+        let mc_timezone = env::var("ANVIL_MC_TIMEZONE")
+            .context("ANVIL_MC_TIMEZONE must be set (helm chart mcDefaults.timezone)")?;
+        if mc_timezone.is_empty() {
+            bail!("ANVIL_MC_TIMEZONE must not be empty");
+        }
+        let mc_itzg_image = env::var("ANVIL_MC_ITZG_IMAGE")
+            .context("ANVIL_MC_ITZG_IMAGE must be set (helm chart mcDefaults.itzgImage)")?;
+        if mc_itzg_image.is_empty() {
+            bail!("ANVIL_MC_ITZG_IMAGE must not be empty");
+        }
+        let mc_busybox_image = env::var("ANVIL_MC_BUSYBOX_IMAGE")
+            .context("ANVIL_MC_BUSYBOX_IMAGE must be set (helm chart mcDefaults.busyboxImage)")?;
+        if mc_busybox_image.is_empty() {
+            bail!("ANVIL_MC_BUSYBOX_IMAGE must not be empty");
+        }
+
         Ok(Self {
             bind_addr,
             database_url,
@@ -231,6 +261,9 @@ impl Config {
             modpack_snapshots_pvc,
             modpack_poll_interval_minutes,
             files_helper_image,
+            mc_timezone,
+            mc_itzg_image,
+            mc_busybox_image,
         })
     }
 }

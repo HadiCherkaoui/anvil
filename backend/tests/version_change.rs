@@ -64,6 +64,9 @@ fn test_state() -> AppState {
         )),
         snapshot_pvc_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         files_helper_image: "alpine@sha256:test".to_owned(),
+        mc_timezone: "Etc/UTC".to_owned(),
+        mc_itzg_image: "itzg/minecraft-server:test".to_owned(),
+        mc_busybox_image: "busybox:test".to_owned(),
     }
 }
 

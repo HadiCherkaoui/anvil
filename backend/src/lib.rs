@@ -111,6 +111,12 @@ pub struct AppState {
     pub snapshot_pvc_lock: Arc<AsyncMutex<()>>,
     /// Image used for the per-server "files-helper" Pod (sub-project D).
     pub files_helper_image: String,
+    /// IANA timezone applied as `TZ` env var on every managed MC pod.
+    pub mc_timezone: String,
+    /// Container image for managed MC `StatefulSet`s across all providers.
+    pub mc_itzg_image: String,
+    /// Image used by backup / restore / snapshot-cleanup Jobs.
+    pub mc_busybox_image: String,
 }
 
 // `kube::Client` doesn't impl `Debug`, so the derive on `AppState` would
@@ -144,6 +150,9 @@ impl fmt::Debug for AppState {
             .field("update_terminals", &"<map>")
             .field("snapshot_pvc_lock", &"<lock>")
             .field("files_helper_image", &self.files_helper_image)
+            .field("mc_timezone", &self.mc_timezone)
+            .field("mc_itzg_image", &self.mc_itzg_image)
+            .field("mc_busybox_image", &self.mc_busybox_image)
             .finish()
     }
 }

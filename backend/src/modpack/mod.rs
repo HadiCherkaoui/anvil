@@ -90,9 +90,6 @@ pub trait ModpackProvider: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// Container image the per-server `StatefulSet` runs.
-    fn pod_image(&self) -> &str;
-
     /// Container command override. `None` lets the image's default entrypoint run.
     fn launch_command(&self) -> Option<Vec<String>>;
 

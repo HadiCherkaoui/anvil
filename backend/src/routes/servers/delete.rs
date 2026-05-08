@@ -122,6 +122,7 @@ pub async fn handle(
         &id,
         &state.mc_namespace,
         snapshots_pvc.as_str(),
+        &state.mc_busybox_image,
     );
     if let Err(e) =
         crate::modpack::orchestrator::spawn_job(&state.kube, &state.mc_namespace, &cleanup_job)

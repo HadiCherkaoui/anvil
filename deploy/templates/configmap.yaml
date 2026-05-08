@@ -40,3 +40,10 @@ data:
   # Image used for the per-server "files-helper" Pod, lazy-spawned when
   # the MC server is stopped so anvil can pods/exec into /data.
   ANVIL_FILES_HELPER_IMAGE: {{ .Values.mcDefaults.filesHelperImage | quote }}
+  # --- Managed-server image / timezone defaults ---------------------------
+  # IANA timezone stamped onto every managed MC pod (TZ env var).
+  ANVIL_MC_TIMEZONE: {{ .Values.mcDefaults.timezone | quote }}
+  # Image used by every managed MC StatefulSet across all providers.
+  ANVIL_MC_ITZG_IMAGE: {{ .Values.mcDefaults.itzgImage | quote }}
+  # Image used by backup / restore / snapshot-cleanup Jobs.
+  ANVIL_MC_BUSYBOX_IMAGE: {{ .Values.mcDefaults.busyboxImage | quote }}

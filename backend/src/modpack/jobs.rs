@@ -6,7 +6,7 @@
 //! (we own retry semantics — the Job's job is to run once and report).
 //!
 //! M5: the modpack swap step migrated from a Job here to an in-orchestrator
-//! `StatefulSet` env patch (CF and Modrinth both run on `itzg/minecraft-server`
+//! `StatefulSet` env patch (CF and Modrinth both run on the same itzg image
 //! which redownloads when `CF_FILE_ID` / `MODRINTH_VERSION` changes). The
 //! restore + backup Jobs remain — rollback still needs a snapshot.
 
@@ -24,9 +24,6 @@ use crate::k8s::{LABEL_SERVER, MANAGED_BY_LABEL, MANAGED_BY_VALUE};
 /// Auto-cleanup window for completed Jobs. 10min gives the orchestrator
 /// time to read final status before the API server reaps them.
 const JOB_TTL_SECONDS: i32 = 600;
-
-/// Image used for backup/restore — busybox ships `tar` + `sh` and is tiny.
-const BUSYBOX_IMAGE: &str = "busybox:1.36";
 
 /// Image used for swap — alpine because we need `curl` + `unzip` available
 /// via `apk add`. Pinned to a recent stable tag.
@@ -55,6 +52,7 @@ pub fn build_backup_job(
     snapshots_pvc: &str,
     subdir: &str,
     gc_keep: Option<usize>,
+    busybox_image: &str,
 ) -> Job {
     let resource_name = format!("mc-{server_id}");
     let pvc_name = format!("data-{resource_name}-0");
@@ -76,7 +74,7 @@ pub fn build_backup_job(
 
     let container = Container {
         name: "tar".to_owned(),
-        image: Some(BUSYBOX_IMAGE.to_owned()),
+        image: Some(busybox_image.to_owned()),
         command: Some(vec!["sh".to_owned(), "-c".to_owned(), cmd]),
         volume_mounts: Some(vec![
             VolumeMount {
@@ -115,6 +113,7 @@ pub fn build_restore_job(
     namespace: &str,
     snapshots_pvc: &str,
     subdir: &str,
+    busybox_image: &str,
 ) -> Job {
     let resource_name = format!("mc-{server_id}");
     let pvc_name = format!("data-{resource_name}-0");
@@ -129,7 +128,7 @@ pub fn build_restore_job(
 
     let container = Container {
         name: "untar".to_owned(),
-        image: Some(BUSYBOX_IMAGE.to_owned()),
+        image: Some(busybox_image.to_owned()),
         command: Some(vec!["sh".to_owned(), "-c".to_owned(), cmd]),
         volume_mounts: Some(vec![
             VolumeMount {
@@ -390,6 +389,8 @@ mod tests {
             .clone()
     }
 
+    const TEST_BUSYBOX: &str = "busybox:test";
+
     #[test]
     fn backup_job_name_includes_server_id_and_archive_id() {
         let j = build_backup_job(
@@ -399,6 +400,7 @@ mod tests {
             "mc-snapshots",
             "auto",
             Some(3),
+            TEST_BUSYBOX,
         );
         assert_eq!(
             j.metadata.name.as_deref(),
@@ -409,7 +411,15 @@ mod tests {
 
     #[test]
     fn backup_job_mounts_data_read_only() {
-        let j = build_backup_job("abc", "1", "mc", "mc-snapshots", "auto", Some(3));
+        let j = build_backup_job(
+            "abc",
+            "1",
+            "mc",
+            "mc-snapshots",
+            "auto",
+            Some(3),
+            TEST_BUSYBOX,
+        );
         let vmounts = j.spec.unwrap().template.spec.unwrap().containers[0]
             .volume_mounts
             .clone()
@@ -420,13 +430,29 @@ mod tests {
 
     #[test]
     fn backup_job_no_retries() {
-        let j = build_backup_job("abc", "1", "mc", "mc-snapshots", "auto", Some(3));
+        let j = build_backup_job(
+            "abc",
+            "1",
+            "mc",
+            "mc-snapshots",
+            "auto",
+            Some(3),
+            TEST_BUSYBOX,
+        );
         assert_eq!(j.spec.unwrap().backoff_limit, Some(0));
     }
 
     #[test]
     fn auto_backup_keeps_gc() {
-        let j = build_backup_job("abc", "1700000000", "mc", "mc-snapshots", "auto", Some(3));
+        let j = build_backup_job(
+            "abc",
+            "1700000000",
+            "mc",
+            "mc-snapshots",
+            "auto",
+            Some(3),
+            TEST_BUSYBOX,
+        );
         let cmd = extract_command(&j);
         assert!(cmd.contains("xargs -r rm -f"));
         assert!(cmd.contains("/snap/mc-abc/auto/1700000000.tgz"));
@@ -435,7 +461,15 @@ mod tests {
 
     #[test]
     fn manual_backup_does_not_emit_gc_command() {
-        let j = build_backup_job("abc", "bk-uuid", "mc", "mc-snapshots", "manual", None);
+        let j = build_backup_job(
+            "abc",
+            "bk-uuid",
+            "mc",
+            "mc-snapshots",
+            "manual",
+            None,
+            TEST_BUSYBOX,
+        );
         let cmd = extract_command(&j);
         assert!(!cmd.contains("xargs"), "manual backup must not GC: {cmd}");
         assert!(cmd.contains("/snap/mc-abc/manual/bk-uuid.tgz"));
@@ -443,7 +477,7 @@ mod tests {
 
     #[test]
     fn restore_job_wipes_then_untars() {
-        let j = build_restore_job("abc", "1", "mc", "mc-snapshots", "auto");
+        let j = build_restore_job("abc", "1", "mc", "mc-snapshots", "auto", TEST_BUSYBOX);
         let script = extract_command(&j);
         assert!(script.contains("find /data -mindepth 1 -delete"));
         assert!(script.contains("tar xzf /snap/mc-abc/auto/1.tgz"));
@@ -451,7 +485,14 @@ mod tests {
 
     #[test]
     fn restore_job_subdir_path_is_honoured() {
-        let j = build_restore_job("abc", "bk-uuid", "mc", "mc-snapshots", "manual");
+        let j = build_restore_job(
+            "abc",
+            "bk-uuid",
+            "mc",
+            "mc-snapshots",
+            "manual",
+            TEST_BUSYBOX,
+        );
         let script = extract_command(&j);
         assert!(script.contains("/snap/mc-abc/manual/bk-uuid.tgz"));
         assert_eq!(j.metadata.name.as_deref(), Some("restore-mc-abc-bk-uuid"));

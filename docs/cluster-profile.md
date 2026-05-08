@@ -46,6 +46,12 @@ Last verified: **2026-05-02** against cluster `homelab` (`kubectl` against conte
    complexity.
 5. **`cert-manager` not installed.** If M3 adds TLS via Traefik ingress, install
    `cert-manager` first or skip ingress and rely on the LoadBalancer IP.
+6. **Timezone defaults to `Etc/UTC`.** The chart's `mcDefaults.timezone` is the universal
+   default; the homelab `HelmRelease` overrides to `Europe/Zurich` so MC / JVM / installer
+   logs match the operator's wall clock. Other operators set their own IANA zone.
+7. **Container images for managed servers are configurable.** `mcDefaults.itzgImage`
+   (every MC `StatefulSet`) and `mcDefaults.busyboxImage` (backup/restore Jobs) default
+   to tag-pinned upstream values; pin by digest at install time in production.
 
 ## Prereqs to Resolve Before M1
 

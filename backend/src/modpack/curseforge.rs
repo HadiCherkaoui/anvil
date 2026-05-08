@@ -1,6 +1,6 @@
 //! `CurseForge` modpack provider.
 //!
-//! Drives `itzg/minecraft-server:java25` with `TYPE=AUTO_CURSEFORGE`. itzg
+//! Drives the configured itzg image with `TYPE=AUTO_CURSEFORGE`. itzg
 //! shells out to its `mc-image-helper install-curseforge` tool, which
 //! requires `--slug` (the modpack URL slug, e.g. `all-the-mods-11`) and
 //! optionally `--file-id`. The file id MUST point at the modpack's CLIENT
@@ -31,10 +31,6 @@ use super::cf_client::CfFile;
 use super::memory::build_memory_env;
 use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
-
-/// Container image used for CurseForge-driven servers — same image as
-/// vanilla / Modrinth so the cluster only ever pulls one upstream tag.
-const CF_IMAGE: &str = "itzg/minecraft-server:java25";
 
 /// Name of the shared `Secret` carrying `CF_API_KEY`. The chart provisions
 /// this in the managed-server namespace alongside the panel's own copy.
@@ -207,10 +203,6 @@ impl ModpackProvider for CurseForgeServerPack {
 
     fn project_id(&self) -> Option<String> {
         Some(self.config.project_id.to_string())
-    }
-
-    fn pod_image(&self) -> &str {
-        CF_IMAGE
     }
 
     fn launch_command(&self) -> Option<Vec<String>> {
@@ -501,12 +493,6 @@ mod tests {
             .unwrap();
         assert_eq!(sk.name, "mc-abcd-rcon");
         assert_eq!(sk.key, "password");
-    }
-
-    #[test]
-    fn provider_pod_image_is_itzg_java25() {
-        let p = pack_with_file(7_777);
-        assert_eq!(p.pod_image(), CF_IMAGE);
     }
 
     #[test]

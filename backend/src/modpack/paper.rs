@@ -1,4 +1,4 @@
-//! Paper provider — `itzg/minecraft-server` with `TYPE=PAPER`.
+//! Paper provider — configured itzg image with `TYPE=PAPER`.
 //!
 //! Paper consumes Bukkit-API plugins, not Forge mods. The plugin list is
 //! persisted in `source_config` and synced to `/data/plugins/` via the
@@ -16,7 +16,6 @@ use super::modded::ModEntry;
 use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
-const PAPER_IMAGE: &str = "itzg/minecraft-server:java25";
 const PAPER_BOOT_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Persisted Paper config (lives in `servers.source_config`).
@@ -64,10 +63,6 @@ impl PaperServerProvider {
 impl ModpackProvider for PaperServerProvider {
     fn kind(&self) -> &'static str {
         "paper"
-    }
-
-    fn pod_image(&self) -> &str {
-        PAPER_IMAGE
     }
 
     fn launch_command(&self) -> Option<Vec<String>> {

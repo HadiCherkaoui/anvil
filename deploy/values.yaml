@@ -64,6 +64,19 @@ mcDefaults:
   # tag-mutation supply-chain attack must not be able to swap the image
   # out from under us. Default is alpine:3.20 from public.ecr.aws.
   filesHelperImage: "alpine:3.20"
+  # IANA timezone applied as the TZ env var on every managed MC pod. Sets
+  # log-timestamp locale for Minecraft + JVM + mc-image-helper. Etc/UTC
+  # ships as the universal default; override per-deployment to match the
+  # operator's locale (e.g. "Europe/Zurich"). itzg's image bundles tzdata.
+  timezone: "Etc/UTC"
+  # Container image used by every managed MC StatefulSet across all
+  # providers (vanilla, modded, modrinth, paper, curseforge). Same image
+  # everywhere means the cluster only pulls one upstream tag. Pin by
+  # digest in production: itzg/minecraft-server@sha256:<digest>.
+  itzgImage: "itzg/minecraft-server:java25"
+  # Image used by backup, restore, and snapshot-cleanup Jobs. busybox
+  # ships tar + sh and is tiny. Pin by digest in production.
+  busyboxImage: "busybox:1.36"
 
 # Persistence for the panel's own SQLite database. The PVC mounts at
 # /var/lib/anvil; ANVIL_DATABASE_URL points the backend at that path.

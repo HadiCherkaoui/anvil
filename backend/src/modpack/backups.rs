@@ -419,6 +419,7 @@ async fn run_backup_inner(
         snapshots_pvc.as_str(),
         "manual",
         None,
+        &state.mc_busybox_image,
     );
     let job_name = job
         .metadata
@@ -533,6 +534,7 @@ async fn run_restore_inner(
         &state.mc_namespace,
         snapshots_pvc.as_str(),
         "manual",
+        &state.mc_busybox_image,
     );
     let job_name = job
         .metadata
@@ -676,6 +678,7 @@ pub fn build_delete_job(
     backup_id: &str,
     namespace: &str,
     snapshots_pvc: &str,
+    busybox_image: &str,
 ) -> Job {
     let cmd = format!(
         "rm -f /snap/mc-{server_id}/manual/{backup_id}.tgz; \
@@ -686,13 +689,19 @@ pub fn build_delete_job(
         namespace,
         snapshots_pvc,
         &cmd,
+        busybox_image,
     )
 }
 
 /// Builds a one-shot busybox Job that removes the per-server `manual/`
 /// subdir on the snapshots PVC. Used by the server delete cascade.
 #[must_use]
-pub fn build_dir_cleanup_job(server_id: &str, namespace: &str, snapshots_pvc: &str) -> Job {
+pub fn build_dir_cleanup_job(
+    server_id: &str,
+    namespace: &str,
+    snapshots_pvc: &str,
+    busybox_image: &str,
+) -> Job {
     let cmd = format!(
         "rm -rf /snap/mc-{server_id}/manual; \
          echo cleaned /snap/mc-{server_id}/manual"
@@ -702,18 +711,25 @@ pub fn build_dir_cleanup_job(server_id: &str, namespace: &str, snapshots_pvc: &s
         namespace,
         snapshots_pvc,
         &cmd,
+        busybox_image,
     )
 }
 
 /// Constructs a busybox Job that mounts the snapshots PVC at `/snap` and
 /// runs the given shell command. Backed by the same image / `RestartPolicy`
 /// pattern the orchestrator's backup Jobs use.
-fn small_pvc_job(name: &str, namespace: &str, snapshots_pvc: &str, cmd: &str) -> Job {
+fn small_pvc_job(
+    name: &str,
+    namespace: &str,
+    snapshots_pvc: &str,
+    cmd: &str,
+    busybox_image: &str,
+) -> Job {
     let mut labels = BTreeMap::new();
     labels.insert("app.kubernetes.io/name".to_owned(), "anvil".to_owned());
     let container = Container {
         name: "rm".to_owned(),
-        image: Some("busybox:1.36".to_owned()),
+        image: Some(busybox_image.to_owned()),
         command: Some(vec!["sh".to_owned(), "-c".to_owned(), cmd.to_owned()]),
         volume_mounts: Some(vec![VolumeMount {
             name: "snap".to_owned(),
@@ -778,7 +794,7 @@ mod tests {
 
     #[test]
     fn delete_job_targets_manual_subdir() {
-        let j = build_delete_job("abc", "bk-uuid", "mc", "mc-snapshots");
+        let j = build_delete_job("abc", "bk-uuid", "mc", "mc-snapshots", "busybox:test");
         let cmd = extract_command(&j);
         assert!(cmd.contains("/snap/mc-abc/manual/bk-uuid.tgz"));
         assert_eq!(j.metadata.name.as_deref(), Some("backup-delete-bk-uuid"));
@@ -786,7 +802,7 @@ mod tests {
 
     #[test]
     fn cleanup_job_wipes_manual_dir() {
-        let j = build_dir_cleanup_job("abc", "mc", "mc-snapshots");
+        let j = build_dir_cleanup_job("abc", "mc", "mc-snapshots", "busybox:test");
         let cmd = extract_command(&j);
         assert!(cmd.contains("rm -rf /snap/mc-abc/manual"));
         assert_eq!(j.metadata.name.as_deref(), Some("backup-cleanup-abc"));
@@ -794,7 +810,7 @@ mod tests {
 
     #[test]
     fn small_pvc_job_mounts_snapshots_pvc() {
-        let j = build_delete_job("abc", "bk-uuid", "mc", "mc-snapshots");
+        let j = build_delete_job("abc", "bk-uuid", "mc", "mc-snapshots", "busybox:test");
         let v = j.spec.unwrap().template.spec.unwrap().volumes.unwrap();
         let snap = v.iter().find(|x| x.name == "snap").unwrap();
         let pvc = snap.persistent_volume_claim.as_ref().unwrap();

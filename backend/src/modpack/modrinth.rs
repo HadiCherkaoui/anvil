@@ -1,8 +1,8 @@
 //! Modrinth `.mrpack` provider.
 //!
-//! Reuses `itzg/minecraft-server:java25` with `TYPE=AUTO_MODRINTH` —
-//! itzg's launcher handles `.mrpack` unzip + loader install. The provider
-//! picks the newest version matching the channel filter and skip list.
+//! Reuses the configured itzg image with `TYPE=AUTO_MODRINTH` — itzg's
+//! launcher handles `.mrpack` unzip + loader install. The provider picks
+//! the newest version matching the channel filter and skip list.
 
 use std::time::Duration;
 
@@ -16,7 +16,6 @@ use super::mr_client::MrVersion;
 use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
-const MR_IMAGE: &str = "itzg/minecraft-server:java25";
 const MR_BOOT_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Persisted Modrinth modpack config (lives in `servers.source_config`).
@@ -97,10 +96,6 @@ impl ModpackProvider for ModrinthServerPack {
 
     fn project_id(&self) -> Option<String> {
         Some(self.config.project_id.clone())
-    }
-
-    fn pod_image(&self) -> &str {
-        MR_IMAGE
     }
 
     fn launch_command(&self) -> Option<Vec<String>> {

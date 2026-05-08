@@ -6,7 +6,7 @@
 //! through the [`UpdateGuard`]'s watch sender so the WS at
 //! `/api/servers/:id/update/stream` can stream them to the frontend.
 //!
-//! M5 swap step: CF + Modrinth both run on `itzg/minecraft-server`, which
+//! M5 swap step: CF + Modrinth both run on the same itzg image, which
 //! redownloads its pack when `CF_FILE_ID` / `MODRINTH_VERSION` changes.
 //! The Swapping phase is therefore a `StatefulSet` env patch — no separate
 //! Job, no manual unzip, no `WIPE_LIST` / `PRESERVE_LIST` script. Backup
@@ -261,6 +261,7 @@ async fn run_inner(
         snapshots_pvc.as_str(),
         "auto",
         Some(BACKUP_KEEP_COUNT),
+        &state.mc_busybox_image,
     );
     let backup_name = backup_job
         .metadata
@@ -869,6 +870,7 @@ async fn rollback(
         &state.mc_namespace,
         snapshots_pvc.as_str(),
         "auto",
+        &state.mc_busybox_image,
     );
     // Pin the rollback to the exact archive Phase 3 produced. Concurrent
     // updates of the same server can't race because the per-server lock

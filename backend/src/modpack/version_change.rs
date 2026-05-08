@@ -238,6 +238,7 @@ async fn run_inner(
         snapshots_pvc.as_str(),
         "auto",
         Some(BACKUP_KEEP_COUNT),
+        &state.mc_busybox_image,
     );
     let backup_name = backup_job
         .metadata
@@ -506,6 +507,7 @@ async fn rollback(state: &AppState, server_id: &str, ctx: &RollbackContext) -> R
         &state.mc_namespace,
         snapshots_pvc.as_str(),
         "auto",
+        &state.mc_busybox_image,
     );
     let restore_name = restore
         .metadata

@@ -1,7 +1,7 @@
 //! Modded runtime provider — Fabric / Forge / `NeoForge` with explicit modlist.
 //!
-//! Reuses `itzg/minecraft-server:java25` with `TYPE` switching. Mod jars are
-//! NOT delivered via itzg's `MODS=` env — anvil's `mod-sync` Job is the sole
+//! Reuses the configured itzg image with `TYPE` switching. Mod jars are NOT
+//! delivered via itzg's `MODS=` env — anvil's `mod-sync` Job is the sole
 //! writer to `/data/mods`. This keeps anvil's modlist the unambiguous source
 //! of truth.
 
@@ -15,7 +15,6 @@ use super::memory::build_memory_env;
 use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 
-const MODDED_IMAGE: &str = "itzg/minecraft-server:java25";
 const MODDED_BOOT_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// One installed mod (persisted in `source_config.mods`).
@@ -172,10 +171,6 @@ impl ModdedRuntime {
 impl ModpackProvider for ModdedRuntime {
     fn kind(&self) -> &'static str {
         "modded"
-    }
-
-    fn pod_image(&self) -> &str {
-        MODDED_IMAGE
     }
 
     fn launch_command(&self) -> Option<Vec<String>> {

@@ -180,8 +180,13 @@ pub async fn delete(
     backup_must_exist(&state, &id, &backup_id).await?;
 
     let snapshots_pvc = state.snapshots_pvc.as_ref();
-    let job =
-        backups::build_delete_job(&id, &backup_id, &state.mc_namespace, snapshots_pvc.as_str());
+    let job = backups::build_delete_job(
+        &id,
+        &backup_id,
+        &state.mc_namespace,
+        snapshots_pvc.as_str(),
+        &state.mc_busybox_image,
+    );
     let job_name = job
         .metadata
         .name

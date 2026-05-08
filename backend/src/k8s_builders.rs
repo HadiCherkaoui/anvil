@@ -13,8 +13,9 @@ use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetSpec};
 use k8s_openapi::api::core::v1::{
     Container, ContainerPort, EnvVar, PersistentVolumeClaim, PersistentVolumeClaimSpec,
-    PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec, ResourceRequirements, Secret,
-    Service, ServicePort, ServiceSpec, Volume, VolumeMount, VolumeResourceRequirements,
+    PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec, Probe, ResourceRequirements,
+    Secret, Service, ServicePort, ServiceSpec, TCPSocketAction, Volume, VolumeMount,
+    VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
@@ -52,13 +53,16 @@ pub struct BuildParams<'a> {
     /// `extra_env`. Not enforced as a k8s resource constraint; see the
     /// container builder for why.
     pub memory_mi: i64,
-    /// Container image (e.g. `itzg/minecraft-server:java25`). Comes from
-    /// `ModpackProvider::pod_image`.
+    /// Container image. Sourced from `mcDefaults.itzgImage` in the chart.
     pub image: &'a str,
     /// Container command override; `None` lets the image entrypoint run.
     pub command: Option<&'a [String]>,
     /// Provider-supplied env vars (already includes RCON for vanilla).
     pub extra_env: &'a [EnvVar],
+    /// IANA timezone written into the pod's `TZ` env var so log timestamps
+    /// (Minecraft, JVM, mc-image-helper) line up with the operator's locale.
+    /// Sourced from `mcDefaults.timezone` in the chart; default `Etc/UTC`.
+    pub timezone: &'a str,
     /// Service exposure mode (`loadbalancer` | `nodeport` | `clusterip`).
     pub exposure_mode: &'a str,
     /// PVC `storageClassName`. `None` => omit field, k8s uses cluster default.
@@ -112,7 +116,7 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
     let mut env = p.extra_env.to_vec();
     env.push(EnvVar {
         name: "TZ".to_owned(),
-        value: Some("Europe/Zurich".to_owned()),
+        value: Some(p.timezone.to_owned()),
         value_from: None,
     });
 
@@ -143,6 +147,22 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
             mount_path: "/data".to_owned(),
             ..VolumeMount::default()
         }]),
+        // Mark Ready only when the JVM is accepting on 25565, not just
+        // when the PID exists. Targets the named "mc" port (not the int)
+        // so renaming the port keeps the probe valid.
+        // failure_threshold * period_seconds = 60 * 5 = 300 s — the
+        // budget for a heavy modpack to finish first-boot world gen.
+        readiness_probe: Some(Probe {
+            tcp_socket: Some(TCPSocketAction {
+                port: IntOrString::String("mc".to_owned()),
+                host: None,
+            }),
+            initial_delay_seconds: Some(20),
+            period_seconds: Some(5),
+            timeout_seconds: Some(2),
+            failure_threshold: Some(60),
+            ..Probe::default()
+        }),
         ..Container::default()
     };
 
@@ -489,9 +509,10 @@ mod tests {
             namespace: "mc",
             mc_version: "1.21.4",
             memory_mi: 4096,
-            image: "itzg/minecraft-server:java25",
+            image: "test-mc-image:test",
             command: None,
             extra_env: vanilla_env_for_test(),
+            timezone: "Etc/UTC",
             exposure_mode: "loadbalancer",
             storage_class: Some("tank"),
             storage_size_gi: 10,
@@ -586,7 +607,7 @@ mod tests {
             .as_ref()
             .unwrap();
         let tz = env.iter().find(|e| e.name == "TZ").unwrap();
-        assert_eq!(tz.value.as_deref(), Some("Europe/Zurich"));
+        assert_eq!(tz.value.as_deref(), Some("Etc/UTC"));
     }
 
     #[test]
@@ -690,6 +711,74 @@ mod tests {
             .collect();
         assert_eq!(by_name.get("mc"), Some(&i32::from(MC_PORT)));
         assert_eq!(by_name.get("rcon"), Some(&i32::from(RCON_PORT)));
+    }
+
+    #[test]
+    fn statefulset_mc_container_has_readiness_probe_with_tcp_socket() {
+        let sts = build_statefulset(&params());
+        let probe = sts
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers[0]
+            .readiness_probe
+            .as_ref()
+            .expect("readiness_probe must be set on the mc container");
+        assert!(probe.tcp_socket.is_some(), "probe must be tcp_socket");
+        assert!(probe.http_get.is_none(), "probe must not be http_get");
+        assert!(probe.exec.is_none(), "probe must not be exec");
+        assert!(probe.grpc.is_none(), "probe must not be grpc");
+    }
+
+    #[test]
+    fn statefulset_readiness_probe_targets_named_mc_port() {
+        // Rename-resilience guard: targeting the named port means the
+        // probe survives a future container_port refactor as long as
+        // the port is still named "mc". An IntOrString::Int(25565)
+        // would silently break under such a rename.
+        let sts = build_statefulset(&params());
+        let probe = sts
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers[0]
+            .readiness_probe
+            .as_ref()
+            .unwrap();
+        let tcp = probe.tcp_socket.as_ref().unwrap();
+        assert_eq!(tcp.port, IntOrString::String("mc".to_owned()));
+        assert!(tcp.host.is_none());
+    }
+
+    #[test]
+    fn statefulset_readiness_probe_uses_documented_timings() {
+        // Locks the 5-minute (60 * 5 s) first-boot budget against
+        // accidental tightening — heavy modpacks need every second of it.
+        let sts = build_statefulset(&params());
+        let probe = sts
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers[0]
+            .readiness_probe
+            .as_ref()
+            .unwrap();
+        assert_eq!(probe.initial_delay_seconds, Some(20));
+        assert_eq!(probe.period_seconds, Some(5));
+        assert_eq!(probe.timeout_seconds, Some(2));
+        assert_eq!(probe.failure_threshold, Some(60));
     }
 
     #[test]
