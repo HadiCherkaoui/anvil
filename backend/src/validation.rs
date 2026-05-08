@@ -31,9 +31,6 @@ const STORAGE_SIZE_GI_MIN: i64 = 10;
 /// Maximum PVC size (GiB). Generous ceiling; anything more is a misconfig.
 const STORAGE_SIZE_GI_MAX: i64 = 500;
 
-/// Maximum length of a `force_version` string.
-const FORCE_VERSION_MAX_LEN: usize = 128;
-
 /// Maximum entries in a `version_skip` list.
 const VERSION_SKIP_MAX_LEN: usize = 50;
 
@@ -163,32 +160,6 @@ pub fn validate_storage_size_gi(gi: i64) -> Result<(), AppError> {
             message: format!(
                 "storage_size_gi must be in [{STORAGE_SIZE_GI_MIN}..={STORAGE_SIZE_GI_MAX}]"
             ),
-        });
-    }
-    Ok(())
-}
-
-/// Validates `force_version` — `[A-Za-z0-9._-]{1,128}`.
-///
-/// Accepts ASCII alphanumerics plus `.`, `_`, `-`; bounded to 128 bytes.
-///
-/// # Errors
-///
-/// Returns [`AppError::BadRequest`] with `code = "force_version_invalid"`.
-pub fn validate_force_version(v: &str) -> Result<(), AppError> {
-    if v.is_empty() || v.len() > FORCE_VERSION_MAX_LEN {
-        return Err(AppError::BadRequest {
-            code: "force_version_invalid",
-            message: format!("force_version must be 1..={FORCE_VERSION_MAX_LEN} characters"),
-        });
-    }
-    if !v
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    {
-        return Err(AppError::BadRequest {
-            code: "force_version_invalid",
-            message: "force_version may only contain [A-Za-z0-9._-]".to_owned(),
         });
     }
     Ok(())
@@ -566,16 +537,6 @@ mod tests {
         assert!(validate_storage_size_gi(10).is_ok());
         assert!(validate_storage_size_gi(500).is_ok());
         assert!(validate_storage_size_gi(501).is_err());
-    }
-
-    #[test]
-    fn force_version_format() {
-        assert!(validate_force_version("1.21.4").is_ok());
-        assert!(validate_force_version("ATM-11_v3.2-final").is_ok());
-        assert!(validate_force_version("").is_err());
-        assert!(validate_force_version("bad version!").is_err());
-        assert!(validate_force_version("contains space").is_err());
-        assert!(validate_force_version(&"a".repeat(129)).is_err());
     }
 
     #[test]

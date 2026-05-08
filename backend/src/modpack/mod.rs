@@ -185,7 +185,6 @@ mod tests {
             "project_id": "AANobbMI",
             "channel": "release",
             "version_skip": [],
-            "force_version": null,
             "current_version_id": "",
             "current_version_name": "",
             "auto_update_mode": "notify"

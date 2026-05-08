@@ -94,9 +94,6 @@ pub struct Config {
     /// to skip. Compared against the CLIENT file id stored in
     /// `current_version_id`, since that's what we surface in the UI.
     pub version_skip: Vec<String>,
-    /// When set, the orchestrator targets exactly this client file id and
-    /// bypasses the latest-version logic.
-    pub force_version: Option<String>,
     /// CLIENT file id currently deployed (the one with `manifest.json`).
     /// itzg unpacks the client zip, reads its manifest, and downloads the
     /// linked server pack itself — passing the server-pack id here would
@@ -313,7 +310,6 @@ mod tests {
             slug: "atm-11".to_owned(),
             channel,
             version_skip: skip,
-            force_version: None,
             current_version_id: 0,
             current_version_name: String::new(),
             auto_update_mode: AutoUpdateMode::Notify,
@@ -418,7 +414,6 @@ mod tests {
             slug: "atm-11".to_owned(),
             channel: Channel::Release,
             version_skip: Vec::new(),
-            force_version: None,
             current_version_id: id,
             current_version_name: format!("file-{id}"),
             auto_update_mode: AutoUpdateMode::Notify,

@@ -407,7 +407,6 @@ async fn persist_new_version_tx(
     if let Some(obj) = cfg.as_object_mut() {
         obj.insert("current_version_id".into(), json!(version.id));
         obj.insert("current_version_name".into(), json!(version.name));
-        obj.insert("force_version".into(), json!(null));
     }
     let new_raw = serde_json::to_string(&cfg)?;
     sqlx::query("UPDATE servers SET source_config = ?, mc_version = ? WHERE id = ?")
@@ -529,9 +528,9 @@ pub(crate) async fn fetch_memory_mi(pool: &sqlx::SqlitePool, server_id: &str) ->
 
 /// Builds a fresh provider snapshot whose `current_version_id` matches the
 /// orchestrator's target while preserving every other field the user owns
-/// (slug, channel, skip list, `force_version`, `auto_update_mode`). The
-/// created provider is only used to render the new env block; its persisted
-/// form lands in the DB later via [`persist_new_version`].
+/// (slug, channel, skip list, `auto_update_mode`). The created provider is
+/// only used to render the new env block; its persisted form lands in the
+/// DB later via [`persist_new_version`].
 ///
 /// We deserialize the existing `source_config` rather than reaching through
 /// the trait so the slug — needed for `CF_SLUG` and not exposed by the

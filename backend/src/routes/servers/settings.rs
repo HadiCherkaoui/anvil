@@ -1,8 +1,7 @@
 //! `PATCH /api/servers/:id/settings` — update server settings.
 //!
 //! `memory_mi` applies on next start to every server type. Modpack-specific
-//! fields (`auto_update_mode`, `version_skip`, `force_version`) are rejected
-//! on vanilla rows.
+//! fields (`auto_update_mode`, `version_skip`) are rejected on vanilla rows.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -18,7 +17,7 @@ use crate::modpack::curseforge::AutoUpdateMode;
 use crate::modpack::{ProviderContext, VanillaProvider, from_db};
 use crate::routes::servers::create::insert_audit;
 use crate::server_properties::ServerProperties;
-use crate::validation::{validate_force_version, validate_memory_mi, validate_version_skip};
+use crate::validation::{validate_memory_mi, validate_version_skip};
 
 /// Request body — every field optional, only present fields update.
 #[derive(Debug, Default, Deserialize)]
@@ -27,7 +26,6 @@ pub struct SettingsRequest {
     pub memory_mi: Option<i64>,
     pub auto_update_mode: Option<AutoUpdateMode>,
     pub version_skip: Option<Vec<String>>,
-    pub force_version: Option<Option<String>>,
     /// Full-replacement when present. Validated and written verbatim to
     /// `servers.properties`; the `StatefulSet` env is rebuilt and patched
     /// in the same path as `memory_mi`.
@@ -53,8 +51,7 @@ pub async fn handle(
             .await?;
     let (source_kind, source_config) = row.ok_or(AppError::NotFound)?;
 
-    let touches_modpack =
-        req.auto_update_mode.is_some() || req.version_skip.is_some() || req.force_version.is_some();
+    let touches_modpack = req.auto_update_mode.is_some() || req.version_skip.is_some();
     if touches_modpack && source_kind == "vanilla" {
         return Err(AppError::BadRequest {
             code: "not_modded",
@@ -67,9 +64,6 @@ pub async fn handle(
     }
     if let Some(skips) = req.version_skip.as_ref() {
         validate_version_skip(skips)?;
-    }
-    if let Some(Some(v)) = req.force_version.as_ref() {
-        validate_force_version(v)?;
     }
     if let Some(p) = req.properties.as_ref() {
         p.validate()?;
@@ -120,7 +114,6 @@ pub async fn handle(
             source_config,
             req.auto_update_mode,
             req.version_skip.clone(),
-            req.force_version.clone(),
         )
         .await?
     } else {
@@ -149,14 +142,12 @@ pub async fn handle(
 /// `initial_raw` is the first attempt's CAS key), mutates the JSON, then
 /// `UPDATE … WHERE source_config = ?`. On 0 rows-affected, re-reads and
 /// retries once before surfacing a conflict.
-#[allow(clippy::option_option)] // 3-state: absent / null / Some — matches JSON merge-patch semantics on the API
 async fn apply_modpack_patch_cas(
     pool: &sqlx::SqlitePool,
     id: &str,
     initial_raw: String,
     auto_update_mode: Option<AutoUpdateMode>,
     version_skip: Option<Vec<String>>,
-    force_version: Option<Option<String>>,
 ) -> Result<Value, AppError> {
     let mut raw_before = initial_raw;
     for attempt in 0..2 {
@@ -174,12 +165,6 @@ async fn apply_modpack_patch_cas(
         }
         if let Some(ref skips) = version_skip {
             obj.insert("version_skip".into(), serde_json::json!(skips));
-        }
-        if let Some(ref force) = force_version {
-            obj.insert(
-                "force_version".into(),
-                force.clone().map_or(Value::Null, Value::String),
-            );
         }
         let new_raw = serde_json::to_string(&cfg).map_err(|e| AppError::Internal(e.into()))?;
         let res =

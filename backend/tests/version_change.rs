@@ -147,7 +147,6 @@ async fn seed_modrinth_server(state: &AppState, id: &str, name: &str) {
         "project_id": "AANobbMI",
         "channel": "release",
         "version_skip": [],
-        "force_version": null,
         "current_version_id": "abc",
         "current_version_name": "ATM-9 4.4",
         "auto_update_mode": "notify",
