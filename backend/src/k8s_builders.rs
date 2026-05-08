@@ -65,6 +65,12 @@ pub struct BuildParams<'a> {
     pub timezone: &'a str,
     /// Service exposure mode (`loadbalancer` | `nodeport` | `clusterip`).
     pub exposure_mode: &'a str,
+    /// Server source kind (`vanilla` | `paper` | `modded` | `curseforge` |
+    /// `modrinth`). Used to size the readiness probe — fast-booting kinds
+    /// (vanilla / paper) probe early and aggressively; modpack kinds wait
+    /// longer and probe less often so kubelet logs aren't spammed during
+    /// the multi-minute first-boot world generation.
+    pub source_kind: &'a str,
     /// PVC `storageClassName`. `None` => omit field, k8s uses cluster default.
     pub storage_class: Option<&'a str>,
     /// PVC size in GiB.
@@ -91,6 +97,37 @@ fn server_annotations(p: &BuildParams<'_>) -> BTreeMap<String, String> {
     a.insert(ANNOTATION_MC_VERSION.to_owned(), p.mc_version.to_owned());
     a.insert(ANNOTATION_MEMORY_MI.to_owned(), p.memory_mi.to_string());
     a
+}
+
+/// Builds the readiness probe sized for `source_kind`.
+///
+/// Vanilla and Paper boot in 10–30 s (vanilla) and 15–60 s (Paper), so we
+/// probe aggressively from t = 5 s and tick every 2 s — the panel UI flips
+/// to Running roughly one period after the JVM binds 25565. Modpack kinds
+/// (modded / `CurseForge` / Modrinth) take 1–10+ minutes for first-boot
+/// world generation; we delay 20 s to skip the JVM-warmup churn and tick
+/// every 5 s. Total fail budget is `failure_threshold × period_seconds`,
+/// padded for the slowest expected boot per kind.
+fn readiness_probe(source_kind: &str) -> Probe {
+    let (initial_delay, period, failure_threshold) = match source_kind {
+        // Fast-booting kinds.
+        "vanilla" | "paper" => (5, 2, 60),
+        // Modpack kinds — first boot can be 5+ minutes for heavy packs
+        // (e.g. ATM-11). 60 × 5 s = 300 s before kubelet starts emitting
+        // "probe failing" events, which is enough quiet time.
+        _ => (20, 5, 60),
+    };
+    Probe {
+        tcp_socket: Some(TCPSocketAction {
+            port: IntOrString::String("mc".to_owned()),
+            host: None,
+        }),
+        initial_delay_seconds: Some(initial_delay),
+        period_seconds: Some(period),
+        timeout_seconds: Some(2),
+        failure_threshold: Some(failure_threshold),
+        ..Probe::default()
+    }
 }
 
 /// Builds the `StatefulSet` for a managed server (replicas=0, single
@@ -150,19 +187,7 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
         // Mark Ready only when the JVM is accepting on 25565, not just
         // when the PID exists. Targets the named "mc" port (not the int)
         // so renaming the port keeps the probe valid.
-        // failure_threshold * period_seconds = 60 * 5 = 300 s — the
-        // budget for a heavy modpack to finish first-boot world gen.
-        readiness_probe: Some(Probe {
-            tcp_socket: Some(TCPSocketAction {
-                port: IntOrString::String("mc".to_owned()),
-                host: None,
-            }),
-            initial_delay_seconds: Some(20),
-            period_seconds: Some(5),
-            timeout_seconds: Some(2),
-            failure_threshold: Some(60),
-            ..Probe::default()
-        }),
+        readiness_probe: Some(readiness_probe(p.source_kind)),
         ..Container::default()
     };
 
@@ -514,6 +539,7 @@ mod tests {
             extra_env: vanilla_env_for_test(),
             timezone: "Etc/UTC",
             exposure_mode: "loadbalancer",
+            source_kind: "vanilla",
             storage_class: Some("tank"),
             storage_size_gi: 10,
             nodeport: None,
@@ -758,13 +784,11 @@ mod tests {
         assert!(tcp.host.is_none());
     }
 
-    #[test]
-    fn statefulset_readiness_probe_uses_documented_timings() {
-        // Locks the 5-minute (60 * 5 s) first-boot budget against
-        // accidental tightening — heavy modpacks need every second of it.
-        let sts = build_statefulset(&params());
-        let probe = sts
-            .spec
+    fn probe_for_kind(kind: &'static str) -> Probe {
+        let mut p = params();
+        p.source_kind = kind;
+        let sts = build_statefulset(&p);
+        sts.spec
             .as_ref()
             .unwrap()
             .template
@@ -773,12 +797,44 @@ mod tests {
             .unwrap()
             .containers[0]
             .readiness_probe
-            .as_ref()
-            .unwrap();
-        assert_eq!(probe.initial_delay_seconds, Some(20));
-        assert_eq!(probe.period_seconds, Some(5));
-        assert_eq!(probe.timeout_seconds, Some(2));
-        assert_eq!(probe.failure_threshold, Some(60));
+            .clone()
+            .unwrap()
+    }
+
+    #[test]
+    fn readiness_probe_is_aggressive_for_fast_booting_kinds() {
+        // Vanilla and Paper bind 25565 in seconds, not minutes — probe
+        // early (5 s) and often (every 2 s) so the panel flips to Running
+        // promptly instead of waiting on the modpack-sized 20 s delay.
+        for kind in ["vanilla", "paper"] {
+            let probe = probe_for_kind(kind);
+            assert_eq!(
+                probe.initial_delay_seconds,
+                Some(5),
+                "fast-kind {kind}: initial_delay"
+            );
+            assert_eq!(probe.period_seconds, Some(2), "fast-kind {kind}: period");
+            assert_eq!(probe.timeout_seconds, Some(2));
+            assert_eq!(probe.failure_threshold, Some(60));
+        }
+    }
+
+    #[test]
+    fn readiness_probe_is_patient_for_modpack_kinds() {
+        // Heavy packs (ATM-11 et al.) take >5 min for first-boot world
+        // gen — locking 60 * 5 s = 300 s of fail budget before kubelet
+        // starts emitting "probe failing" events keeps the eventlog quiet.
+        for kind in ["modded", "curseforge", "modrinth"] {
+            let probe = probe_for_kind(kind);
+            assert_eq!(
+                probe.initial_delay_seconds,
+                Some(20),
+                "slow-kind {kind}: initial_delay"
+            );
+            assert_eq!(probe.period_seconds, Some(5), "slow-kind {kind}: period");
+            assert_eq!(probe.timeout_seconds, Some(2));
+            assert_eq!(probe.failure_threshold, Some(60));
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@ apiVersion: v2
 name: anvil
 description: k8s-native Minecraft server panel
 type: application
-version: 1.0.12
+version: 1.0.13
 appVersion: "1.0.0"
 home: https://gitlab.cherkaoui.ch/HadiCherkaoui/anvil
 maintainers:

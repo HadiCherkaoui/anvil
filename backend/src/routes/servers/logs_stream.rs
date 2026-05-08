@@ -25,7 +25,6 @@ use futures_util::AsyncBufReadExt as _;
 use futures_util::TryStreamExt as _;
 use futures_util::sink::SinkExt as _;
 use futures_util::stream::{SplitSink, SplitStream, StreamExt as _};
-use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::Pod;
 use kube::Api;
 use kube::api::LogParams;
@@ -34,8 +33,6 @@ use tokio::time::{Instant, MissedTickBehavior, interval};
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::k8s::ServerStatus;
-use crate::k8s_status::derive_status;
 use crate::routes::servers::get::fetch_server_row;
 use crate::ws::{EndReason, Frame};
 
@@ -107,7 +104,6 @@ async fn write_loop(
     let resource_name = format!("mc-{id}");
     let pod_name = format!("{resource_name}-0");
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
-    let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
 
     let mut hb = interval(HEARTBEAT);
     hb.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -116,17 +112,13 @@ async fn write_loop(
     hb.tick().await;
 
     'outer: loop {
-        // Wait for Running. Heartbeats and close-watch run during the wait.
-        match wait_for_running(
-            &pods,
-            &stsets,
-            &resource_name,
-            &pod_name,
-            &mut sender,
-            &mut hb,
-            &mut close_rx,
-        )
-        .await
+        // Wait for the mc container to have started — that's when kube has
+        // logs to stream. Gating on Ready (which our readiness probe ties
+        // to "JVM accepting on 25565") would hide every line of boot
+        // output until world gen finishes; for ATM-11 that's >5min of
+        // perceived silence in the console.
+        match wait_for_container_started(&pods, &pod_name, &mut sender, &mut hb, &mut close_rx)
+            .await
         {
             WaitOutcome::Running => {}
             WaitOutcome::ClientClosed => return,
@@ -204,22 +196,21 @@ async fn write_loop(
     }
 }
 
-/// Outcome of [`wait_for_running`].
+/// Outcome of [`wait_for_container_started`].
 enum WaitOutcome {
-    /// Pod transitioned to Running.
+    /// Container transitioned to Running (logs are now streamable).
     Running,
     /// Client closed the WS while we were waiting.
     ClientClosed,
-    /// Hit [`POD_WAIT_TIMEOUT`] without ever seeing Running.
+    /// Hit [`POD_WAIT_TIMEOUT`] without ever seeing the container start.
     Timeout,
 }
 
-/// Polls the pod status every [`POD_POLL_INTERVAL`] up to
-/// [`POD_WAIT_TIMEOUT`]. Heartbeats keep ticking; client-close aborts.
-async fn wait_for_running(
+/// Polls every [`POD_POLL_INTERVAL`] up to [`POD_WAIT_TIMEOUT`] for the
+/// `mc` container to enter the Running state. Heartbeats keep ticking;
+/// client-close aborts.
+async fn wait_for_container_started(
     pods: &Api<Pod>,
-    stsets: &Api<StatefulSet>,
-    resource_name: &str,
     pod_name: &str,
     sender: &mut SplitSink<WebSocket, Message>,
     hb: &mut tokio::time::Interval,
@@ -227,7 +218,7 @@ async fn wait_for_running(
 ) -> WaitOutcome {
     let deadline = Instant::now() + POD_WAIT_TIMEOUT;
     loop {
-        if let Ok(true) = check_running(pods, stsets, resource_name, pod_name).await {
+        if let Ok(true) = check_container_started(pods, pod_name).await {
             return WaitOutcome::Running;
         }
         if Instant::now() >= deadline {
@@ -246,32 +237,20 @@ async fn wait_for_running(
     }
 }
 
-/// Reads the `StatefulSet` + Pod and returns whether the pod is Running.
-/// Errors are treated as "not running yet, keep polling."
+/// Returns `true` once the `mc` container's state is `Running` — kube
+/// has logs to stream the moment kubelet flips that field, regardless
+/// of the readiness probe (which gates the *Ready* condition, not log
+/// availability).
 ///
-/// Both reads are issued concurrently — on a busy kube API the
-/// difference between sequential and parallel is the time of one extra
-/// round-trip per poll, which directly bounds how long the WS sits in
-/// "connecting" before sending Hello.
-async fn check_running(
-    pods: &Api<Pod>,
-    stsets: &Api<StatefulSet>,
-    resource_name: &str,
-    pod_name: &str,
-) -> Result<bool, kube::Error> {
-    let (sts_res, pod_res) = tokio::join!(stsets.get_opt(resource_name), pods.get_opt(pod_name),);
-    let sts = sts_res?;
-    let pod = pod_res?;
-    let (replicas, ready) = sts.as_ref().map_or((0, 0), |s| {
-        let r = s.spec.as_ref().and_then(|sp| sp.replicas).unwrap_or(0);
-        let ready = s
-            .status
-            .as_ref()
-            .and_then(|st| st.ready_replicas)
-            .unwrap_or(0);
-        (r, ready)
-    });
-    Ok(derive_status(replicas, ready, pod.as_ref()) == ServerStatus::Running)
+/// Errors are treated as "not started yet, keep polling."
+async fn check_container_started(pods: &Api<Pod>, pod_name: &str) -> Result<bool, kube::Error> {
+    let pod = pods.get_opt(pod_name).await?;
+    Ok(pod
+        .as_ref()
+        .and_then(|p| p.status.as_ref())
+        .and_then(|s| s.container_statuses.as_ref())
+        .and_then(|cs| cs.iter().find(|c| c.name == "mc"))
+        .is_some_and(|c| c.state.as_ref().is_some_and(|st| st.running.is_some())))
 }
 
 /// Sends a frame, returning Err on transport failure so the caller can

@@ -33,6 +33,19 @@ const JOB_TTL_SECONDS: i32 = 600;
 /// by passing `gc_keep = None`.
 pub const BACKUP_KEEP_COUNT: usize = 3;
 
+/// Max chars of `archive_id` we splice into a Job name. Job names propagate
+/// to the auto-injected `batch.kubernetes.io/job-name` label whose value
+/// is bounded by the 63-char DNS-1035 label limit; with the longest prefix
+/// (`restore-mc-{36-char-uuid}-`) that leaves 15 chars for the suffix. Cap
+/// at 12 to keep a small safety margin for future prefix changes.
+const ARCHIVE_ID_NAME_CAP: usize = 12;
+
+/// Returns `archive_id` truncated to [`ARCHIVE_ID_NAME_CAP`] chars for use
+/// in Job metadata. Path / DB still consume the full id.
+fn name_suffix(archive_id: &str) -> &str {
+    archive_id.get(..ARCHIVE_ID_NAME_CAP).unwrap_or(archive_id)
+}
+
 /// Builds the backup Job.
 ///
 /// Tars `/data` into `/snap/mc-{id}/{subdir}/{archive_id}.tgz` on the shared
@@ -52,7 +65,7 @@ pub fn build_backup_job(
 ) -> Job {
     let resource_name = format!("mc-{server_id}");
     let pvc_name = format!("data-{resource_name}-0");
-    let job_name = format!("backup-{resource_name}-{archive_id}");
+    let job_name = format!("backup-{resource_name}-{}", name_suffix(archive_id));
     let archive_path = format!("/snap/{resource_name}/{subdir}/{archive_id}.tgz");
     // Tar, then optionally `ls -t` newest-first and drop the first N — busybox
     // `xargs -r` skips the rm when the list is empty.
@@ -113,7 +126,7 @@ pub fn build_restore_job(
 ) -> Job {
     let resource_name = format!("mc-{server_id}");
     let pvc_name = format!("data-{resource_name}-0");
-    let job_name = format!("restore-{resource_name}-{archive_id}");
+    let job_name = format!("restore-{resource_name}-{}", name_suffix(archive_id));
     let archive_path = format!("/snap/{resource_name}/{subdir}/{archive_id}.tgz");
     // `find /data -mindepth 1 -delete` rather than `rm -rf /data/*` so dotfiles
     // (e.g. `.eulafailures`) get cleaned up too. busybox find supports `-delete`.
@@ -560,5 +573,71 @@ mod tests {
         // Guard the script never reverts to a hardcoded /data/mods path.
         assert!(MOD_SYNC_SCRIPT.contains("DEST=\"/data/$TARGET_DIR\""));
         assert!(!MOD_SYNC_SCRIPT.contains("/data/mods/*.jar"));
+    }
+
+    // Regression: a UUID-shaped server_id plus a `bk-{32hex}` manual
+    // archive_id used to produce an 82-char Job name; k8s rejected the
+    // create at admission because the auto-injected
+    // `batch.kubernetes.io/job-name` label exceeded the 63-byte cap.
+    const REAL_UUID: &str = "b6ed52f6-741f-4639-8bba-754a45d75367";
+    const REAL_BK: &str = "bk-d6577c07038b4b20912de48089220ec1";
+
+    #[test]
+    fn backup_job_name_fits_label_limit_with_uuid_and_manual_id() {
+        let j = build_backup_job(
+            REAL_UUID,
+            REAL_BK,
+            "mc",
+            "mc-snapshots",
+            "manual",
+            None,
+            TEST_BUSYBOX,
+        );
+        let name = j.metadata.name.as_deref().unwrap();
+        assert!(
+            name.len() <= 63,
+            "job name must fit DNS-1035 label cap: {} chars: {name}",
+            name.len()
+        );
+    }
+
+    #[test]
+    fn restore_job_name_fits_label_limit_with_uuid_and_manual_id() {
+        let j = build_restore_job(
+            REAL_UUID,
+            REAL_BK,
+            "mc",
+            "mc-snapshots",
+            "manual",
+            TEST_BUSYBOX,
+        );
+        let name = j.metadata.name.as_deref().unwrap();
+        assert!(
+            name.len() <= 63,
+            "job name must fit DNS-1035 label cap: {} chars: {name}",
+            name.len()
+        );
+    }
+
+    #[test]
+    fn backup_archive_path_keeps_full_archive_id_even_when_name_truncates() {
+        // The Job NAME is shortened to fit the label cap, but the path on
+        // the snapshots PVC must still match the DB row's snapshot_path
+        // (`manual/{archive_id}.tgz`) verbatim — otherwise restore reads
+        // from a different file than the one we wrote.
+        let j = build_backup_job(
+            REAL_UUID,
+            REAL_BK,
+            "mc",
+            "mc-snapshots",
+            "manual",
+            None,
+            TEST_BUSYBOX,
+        );
+        let cmd = extract_command(&j);
+        assert!(
+            cmd.contains(&format!("/snap/mc-{REAL_UUID}/manual/{REAL_BK}.tgz")),
+            "archive path must use the full archive_id: {cmd}"
+        );
     }
 }

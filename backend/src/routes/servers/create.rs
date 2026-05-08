@@ -330,6 +330,7 @@ pub async fn handle(
         extra_env: &extra_env,
         timezone: state.mc_timezone.as_str(),
         exposure_mode: &exposure_mode,
+        source_kind: resolved.source_kind,
         storage_class: effective_storage_class.as_deref(),
         storage_size_gi,
         nodeport,
