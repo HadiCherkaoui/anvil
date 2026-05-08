@@ -54,7 +54,7 @@ helm install anvil anvil-1.0.10.tgz \
   --set mcNamespace=mc \
   --set mcDefaults.storageClassName=tank \
   --set mcDefaults.loadbalancerSupported=true \
-  --set mcDefaults.filesHelperImage="alpine@sha256:<digest>" \
+  --set mcDefaults.alpineImage="alpine@sha256:<digest>" \
   --set persistence.size=1Gi \
   --set oidc.enabled=true \
   --set oidc.issuerUrl="https://authentik.example.com/application/o/anvil/" \
@@ -109,7 +109,7 @@ also appear as defaults in the New Server form.
 | `mcDefaults.serviceType` | no | `LoadBalancer` | Default exposure mode (`LoadBalancer` \| `NodePort` \| `ClusterIP`). Per-server overridable from the UI. |
 | `mcDefaults.nodeHost` | no | `""` | External IP/hostname displayed for `NodePort` servers. Empty shows `<unset>`. |
 | `mcDefaults.loadbalancerSupported` | no | `true` | When `false`, requests for `exposure_mode=loadbalancer` are rejected `502 lb_unavailable`. |
-| `mcDefaults.filesHelperImage` | yes | `alpine:3.20` | **Pin by digest in production** (e.g. `alpine@sha256:…`). The image is mounted with the data PVC; a tag-mutation supply chain attack would gain access to MC server data. |
+| `mcDefaults.alpineImage` | yes | `alpine:3.20` | Alpine image shared by the file-browser helper Pod (sub-project D) and the mod-sync Job (M5 — `apk add curl`). **Pin by digest in production** — both workloads mount the data PVC, so a tag-mutation supply-chain attack would land on MC server data. |
 | `mcDefaults.timezone` | yes | `Etc/UTC` | IANA timezone written into the `TZ` env of every managed MC pod so log timestamps line up with the operator's locale. The homelab override is `Europe/Zurich`. |
 | `mcDefaults.itzgImage` | yes | `itzg/minecraft-server:java25` | Container image used by every managed MC `StatefulSet` (vanilla, modded, modrinth, paper, curseforge). Pin by digest in production. |
 | `mcDefaults.busyboxImage` | yes | `busybox:1.36` | Image used by the backup, restore, and snapshot-cleanup Jobs (busybox ships `tar` + `sh`). Pin by digest in production. |
@@ -323,11 +323,12 @@ spawns a helper Pod (`mc-{id}-files`, `alpine@<digest> + sleep infinity`)
 that mounts the data PVC. The helper is torn down on next start, or
 manually via `DELETE /api/servers/{id}/files/helper`.
 
-**Pin `mcDefaults.filesHelperImage` by digest in production.** The default
+**Pin `mcDefaults.alpineImage` by digest in production.** The default
 `alpine:3.20` resolves the latest tag at run time, which is fine for
-homelabs but a supply-chain risk for production. A tag-mutation attack
-would land code in a Pod that mounts every managed server's data volume
-(`pods/exec` access).
+homelabs but a supply-chain risk for production. The same image is also
+used by the mod-sync Job (M5), so a tag-mutation attack would land code
+in any Pod/Job that mounts a server's data volume (`pods/exec` access
+plus mod download paths).
 
 The upload size cap is hardcoded at 100 MiB. Larger files should be
 uploaded over RCON-tooling or `kubectl cp` directly.

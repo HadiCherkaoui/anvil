@@ -389,7 +389,7 @@ pub async fn ensure_helper(state: &AppState, server_id: &str) -> Result<(), AppE
     let pod = crate::k8s_builders::build_files_helper_pod(
         server_id,
         &state.mc_namespace,
-        &state.files_helper_image,
+        &state.mc_alpine_image,
         sts_uid,
     );
 

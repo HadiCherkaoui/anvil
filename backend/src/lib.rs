@@ -109,8 +109,9 @@ pub struct AppState {
     /// Serializes backup + swap + restore Jobs panel-wide so one Job at a
     /// time mounts the shared snapshots PVC (RWO on single-node ZFS).
     pub snapshot_pvc_lock: Arc<AsyncMutex<()>>,
-    /// Image used for the per-server "files-helper" Pod (sub-project D).
-    pub files_helper_image: String,
+    /// Alpine image shared by the per-server file-browser helper Pod
+    /// (sub-project D) and the mod-sync Job (M5).
+    pub mc_alpine_image: String,
     /// IANA timezone applied as `TZ` env var on every managed MC pod.
     pub mc_timezone: String,
     /// Container image for managed MC `StatefulSet`s across all providers.
@@ -149,7 +150,7 @@ impl fmt::Debug for AppState {
             .field("update_errors", &"<map>")
             .field("update_terminals", &"<map>")
             .field("snapshot_pvc_lock", &"<lock>")
-            .field("files_helper_image", &self.files_helper_image)
+            .field("mc_alpine_image", &self.mc_alpine_image)
             .field("mc_timezone", &self.mc_timezone)
             .field("mc_itzg_image", &self.mc_itzg_image)
             .field("mc_busybox_image", &self.mc_busybox_image)

@@ -36,11 +36,10 @@ data:
   {{- if .Values.modpack.snapshotsPvc.enabled }}
   ANVIL_MODPACK_SNAPSHOTS_PVC: "mc-snapshots"
   {{- end }}
-  # --- File browser (sub-project D) ---------------------------------------
-  # Image used for the per-server "files-helper" Pod, lazy-spawned when
-  # the MC server is stopped so anvil can pods/exec into /data.
-  ANVIL_FILES_HELPER_IMAGE: {{ .Values.mcDefaults.filesHelperImage | quote }}
   # --- Managed-server image / timezone defaults ---------------------------
+  # Alpine image shared by the file-browser helper Pod (sub-project D)
+  # and the mod-sync Job (M5 — needs `apk add curl`).
+  ANVIL_MC_ALPINE_IMAGE: {{ .Values.mcDefaults.alpineImage | quote }}
   # IANA timezone stamped onto every managed MC pod (TZ env var).
   ANVIL_MC_TIMEZONE: {{ .Values.mcDefaults.timezone | quote }}
   # Image used by every managed MC StatefulSet across all providers.

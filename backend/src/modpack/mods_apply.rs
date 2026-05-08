@@ -179,6 +179,7 @@ async fn run_inner(
         target.target_dir(),
         &keep,
         &urls,
+        &state.mc_alpine_image,
     );
     let job_name = sync_job
         .metadata

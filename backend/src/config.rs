@@ -83,9 +83,10 @@ pub struct Config {
     pub modpack_snapshots_pvc: String,
     /// Hourly poll interval for `modpack_versions` updates.
     pub modpack_poll_interval_minutes: u64,
-    /// Image used for the per-server "files-helper" Pod (sub-project D).
+    /// Alpine image shared by the per-server file-browser helper Pod
+    /// (sub-project D) and the mod-sync Job (M5 — needs `apk add curl`).
     /// Pin by digest. Required — backend refuses to start without it.
-    pub files_helper_image: String,
+    pub mc_alpine_image: String,
     /// IANA timezone applied as the `TZ` env var on every managed MC pod
     /// (chart `mcDefaults.timezone`). Required — backend refuses to start
     /// without it.
@@ -126,7 +127,7 @@ impl std::fmt::Debug for Config {
                 "modpack_poll_interval_minutes",
                 &self.modpack_poll_interval_minutes,
             )
-            .field("files_helper_image", &self.files_helper_image)
+            .field("mc_alpine_image", &self.mc_alpine_image)
             .field("mc_timezone", &self.mc_timezone)
             .field("mc_itzg_image", &self.mc_itzg_image)
             .field("mc_busybox_image", &self.mc_busybox_image)
@@ -220,10 +221,10 @@ impl Config {
             bail!("ANVIL_MODPACK_POLL_MINUTES must be > 0");
         }
 
-        let files_helper_image = env::var("ANVIL_FILES_HELPER_IMAGE")
-            .context("ANVIL_FILES_HELPER_IMAGE must be set (helm chart mc.filesHelperImage)")?;
-        if files_helper_image.is_empty() {
-            bail!("ANVIL_FILES_HELPER_IMAGE must not be empty");
+        let mc_alpine_image = env::var("ANVIL_MC_ALPINE_IMAGE")
+            .context("ANVIL_MC_ALPINE_IMAGE must be set (helm chart mcDefaults.alpineImage)")?;
+        if mc_alpine_image.is_empty() {
+            bail!("ANVIL_MC_ALPINE_IMAGE must not be empty");
         }
 
         let mc_timezone = env::var("ANVIL_MC_TIMEZONE")
@@ -260,7 +261,7 @@ impl Config {
             cf_api_key,
             modpack_snapshots_pvc,
             modpack_poll_interval_minutes,
-            files_helper_image,
+            mc_alpine_image,
             mc_timezone,
             mc_itzg_image,
             mc_busybox_image,

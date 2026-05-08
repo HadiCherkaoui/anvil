@@ -388,11 +388,13 @@ Path validation rejects empty segments, `.`/`..`, leading dashes, control
 characters, and paths > 4 KiB. `/` is the only "root" — operations cannot
 target it.
 
-The helper image is pinned by digest via `mc.filesHelperImage` in the Helm
-chart so a tag-mutation supply-chain attack can't swap the image out from
-under us. Default is `alpine:3.20`, but pin to your own mirror in
-production. See [ADR 0006-style discussion in the M5 spec](milestones.md#m5--modpack-support-curseforge-serverfiles)
-for sub-project D context.
+The helper image is pinned by digest via `mcDefaults.alpineImage` in the
+Helm chart so a tag-mutation supply-chain attack can't swap the image out
+from under us. Default is `alpine:3.20`, but pin to your own mirror in
+production. The same value is reused by the mod-sync Job (M5 — `apk add
+curl` to download mods/plugins). See [ADR 0006-style discussion in the
+M5 spec](milestones.md#m5--modpack-support-curseforge-serverfiles) for
+sub-project D context.
 
 ## Background work: poller, restart, restore
 
@@ -495,7 +497,7 @@ template projects them into a `ConfigMap` and a `Secret`. (See
 | `CF_API_KEY` *or* `CF_API_KEY_FILE` | no | — | Enables CurseForge support. Modrinth works without. |
 | `ANVIL_MODPACK_SNAPSHOTS_PVC` | **yes** | — | Name of the shared snapshots PVC. |
 | `ANVIL_MODPACK_POLL_MINUTES` | no | `60` | Poller interval. |
-| `ANVIL_FILES_HELPER_IMAGE` | **yes** | — | Image for the files-helper Pod. Pin by digest. |
+| `ANVIL_MC_ALPINE_IMAGE` | **yes** | — | Alpine image for the files-helper Pod and the mod-sync Job. Pin by digest. |
 
 The Helm chart enforces the required ones at render time via assertions in
 [`deploy/templates/_helpers.tpl`](../deploy/templates/_helpers.tpl) — for

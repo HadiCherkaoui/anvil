@@ -25,10 +25,6 @@ use crate::k8s::{LABEL_SERVER, MANAGED_BY_LABEL, MANAGED_BY_VALUE};
 /// time to read final status before the API server reaps them.
 const JOB_TTL_SECONDS: i32 = 600;
 
-/// Image used for swap — alpine because we need `curl` + `unzip` available
-/// via `apk add`. Pinned to a recent stable tag.
-const ALPINE_IMAGE: &str = "alpine:3.20";
-
 /// How many tar backups the GC tail of the orchestrator's auto-backup Job
 /// keeps per server.
 ///
@@ -161,7 +157,8 @@ pub fn build_restore_job(
 /// downloads any `desired_urls` line whose filename isn't yet present.
 /// Verifies sha512 when supplied. The data PVC is the only mount; no
 /// snapshots PVC needed. `target_dir` is `"mods"` for modded servers and
-/// `"plugins"` for Paper servers.
+/// `"plugins"` for Paper servers. `image` must provide `apk add curl`
+/// (alpine — see `mcDefaults.alpineImage`).
 #[must_use]
 pub fn build_mod_sync_job(
     server_id: &str,
@@ -170,6 +167,7 @@ pub fn build_mod_sync_job(
     target_dir: &str,
     keep_filenames: &[&str],
     desired_urls: &[(&str, &str, Option<&str>)],
+    image: &str,
 ) -> Job {
     let resource_name = format!("mc-{server_id}");
     let pvc_name = format!("data-{resource_name}-0");
@@ -190,7 +188,7 @@ pub fn build_mod_sync_job(
 
     let container = Container {
         name: "sync".to_owned(),
-        image: Some(ALPINE_IMAGE.to_owned()),
+        image: Some(image.to_owned()),
         command: Some(vec![
             "sh".to_owned(),
             "-c".to_owned(),
@@ -390,6 +388,7 @@ mod tests {
     }
 
     const TEST_BUSYBOX: &str = "busybox:test";
+    const TEST_MOD_SYNC: &str = "alpine:test";
 
     #[test]
     fn backup_job_name_includes_server_id_and_archive_id() {
@@ -507,6 +506,7 @@ mod tests {
             "mods",
             &["sodium.jar", "lithium.jar"],
             &[("iris.jar", "https://example/iris.jar", Some("ffff"))],
+            TEST_MOD_SYNC,
         );
         let env = j.spec.unwrap().template.spec.unwrap().containers[0]
             .env
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn mod_sync_job_uses_data_pvc_only() {
-        let j = build_mod_sync_job("abc", 1, "mc", "mods", &[], &[]);
+        let j = build_mod_sync_job("abc", 1, "mc", "mods", &[], &[], TEST_MOD_SYNC);
         let v = j.spec.unwrap().template.spec.unwrap().volumes.unwrap();
         assert_eq!(v.len(), 1);
         let data = v.iter().find(|x| x.name == "data").unwrap();
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn mod_sync_job_name_includes_server_id_and_ts() {
-        let j = build_mod_sync_job("abc", 1_700_000_000, "mc", "mods", &[], &[]);
+        let j = build_mod_sync_job("abc", 1_700_000_000, "mc", "mods", &[], &[], TEST_MOD_SYNC);
         assert_eq!(
             j.metadata.name.as_deref(),
             Some("mod-sync-mc-abc-1700000000")
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn mod_sync_job_target_dir_is_passed_via_env() {
-        let j = build_mod_sync_job("abc", 1, "mc", "plugins", &[], &[]);
+        let j = build_mod_sync_job("abc", 1, "mc", "plugins", &[], &[], TEST_MOD_SYNC);
         let env = j.spec.unwrap().template.spec.unwrap().containers[0]
             .env
             .clone()

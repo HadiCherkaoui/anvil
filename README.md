@@ -71,7 +71,7 @@ helm install anvil oci://gitlab.cherkaoui.ch/hadicherkaoui/anvil/anvil \
   --version 1.0.10 \
   --namespace anvil --create-namespace \
   --set mcDefaults.storageClassName=<your-storage-class> \
-  --set mcDefaults.filesHelperImage="alpine@sha256:<digest>" \
+  --set mcDefaults.alpineImage="alpine@sha256:<digest>" \
   --set oidc.enabled=true \
   --set oidc.issuerUrl="https://authentik.example.com/application/o/anvil/" \
   --set oidc.clientId="<id>" --set oidc.clientSecret="<secret>" \
@@ -107,7 +107,7 @@ ANVIL_OIDC_CLIENT_SECRET="..." \
 ANVIL_OIDC_REDIRECT_URL="http://localhost:8080/api/auth/callback" \
 ANVIL_SESSION_KEY="$(openssl rand -base64 32)" \
 ANVIL_MODPACK_SNAPSHOTS_PVC=mc-snapshots \
-ANVIL_FILES_HELPER_IMAGE=alpine:3.20 \
+ANVIL_MC_ALPINE_IMAGE=alpine:3.20 \
 cargo run --features serve-dir
 ```
 

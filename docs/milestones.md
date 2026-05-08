@@ -210,7 +210,7 @@ were decomposed into four sub-projects:
   delete (single + recursive). Stopped servers handled by a lazy-spawned
   helper Pod (`mc-{id}-files`) torn down on Start. **Adds one new RBAC
   verb (`pods/exec: create`) and extends the existing pods rule with
-  `create+delete` for the helper Pod, one Helm value (`mcDefaults.filesHelperImage`),
+  `create+delete` for the helper Pod, one Helm value (`mcDefaults.alpineImage`),
   no DB migration, no new top-level dependencies (kube `ws`+`runtime`
   features enabled, `async-stream@0.3` added).** Spec:
   `docs/superpowers/specs/2026-05-03-anvil-v2-file-browser-design.md`.

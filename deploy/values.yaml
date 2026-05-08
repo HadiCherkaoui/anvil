@@ -57,13 +57,13 @@ mcDefaults:
   # exposure_mode=loadbalancer are rejected with 502 lb_unavailable.
   # Homelab default per cluster-profile.md: true.
   loadbalancerSupported: true
-  # Pinned image for the per-server "files-helper" Pod (sub-project D).
-  # Mounted into alpine + sleep infinity so anvil can pods/exec into the
-  # data PVC while the MC server is stopped. Pin by digest, not tag —
-  # this Pod runs unprivileged but still shares the data PVC, so a
+  # Alpine image used by the per-server file-browser helper Pod
+  # (sub-project D — `sleep infinity`, mounts the data PVC for pods/exec)
+  # and by the modpack mod-sync Job (M5 — `apk add curl` then download).
+  # Pin by digest, not tag — both workloads mount per-server data, so a
   # tag-mutation supply-chain attack must not be able to swap the image
   # out from under us. Default is alpine:3.20 from public.ecr.aws.
-  filesHelperImage: "alpine:3.20"
+  alpineImage: "alpine:3.20"
   # IANA timezone applied as the TZ env var on every managed MC pod. Sets
   # log-timestamp locale for Minecraft + JVM + mc-image-helper. Etc/UTC
   # ships as the universal default; override per-deployment to match the

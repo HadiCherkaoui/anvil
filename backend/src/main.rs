@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
         update_errors: Arc::new(Mutex::new(HashMap::new())),
         update_terminals: Arc::new(Mutex::new(HashMap::new())),
         snapshot_pvc_lock: Arc::new(AsyncMutex::new(())),
-        files_helper_image: config.files_helper_image.clone(),
+        mc_alpine_image: config.mc_alpine_image.clone(),
         mc_timezone: config.mc_timezone.clone(),
         mc_itzg_image: config.mc_itzg_image.clone(),
         mc_busybox_image: config.mc_busybox_image.clone(),
