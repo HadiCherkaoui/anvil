@@ -132,10 +132,14 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<ServersBody>, Ap
                 &resource_name,
                 &state.mc_namespace,
             );
-            let update_available = match (row.current_version_id, row.latest_id) {
-                (Some(cur), Some(latest)) => cur != latest,
-                _ => false,
-            };
+            // The poller keeps `modpack_versions` rows only when an update
+            // is actually available (see poller.rs:139 — it deletes the row
+            // when current == latest, mode is "never", or the version is
+            // skipped). So the presence of `latest_version_name` already
+            // implies update_available; the prior `current_version_id` vs
+            // `latest_id` comparison was redundant and broke for Modrinth
+            // (string ids) and post-upgrade CF rows (stringified ids).
+            let update_available = row.latest_version_name.is_some();
             let update_in_progress = state
                 .update_locks
                 .lock()
@@ -172,13 +176,9 @@ struct SummaryRow {
     created_at: i64,
     source_kind: String,
     /// Latest version display name from the LEFT JOIN — `None` for vanilla
-    /// or unbumped CF servers.
+    /// or unbumped CF servers. Doubles as the `update_available` signal:
+    /// the poller deletes the row when no update is pending.
     latest_version_name: Option<String>,
-    /// CF `current_version_id` from `source_config`, used to compare against
-    /// `latest_id` and decide whether `update_available` is true.
-    current_version_id: Option<i64>,
-    /// CF `latest_id` from the LEFT JOIN — `None` when no upstream version cached.
-    latest_id: Option<i64>,
 }
 
 /// Tuple shape returned by [`fetch_summary_rows`]; aliased so the
@@ -191,16 +191,14 @@ type SummaryTuple = (
     String,
     i64,
     String,
-    String,
     Option<String>,
-    Option<i64>,
 );
 
 async fn fetch_summary_rows(pool: &SqlitePool) -> Result<Vec<SummaryRow>, AppError> {
     let rows: Vec<SummaryTuple> = sqlx::query_as(
         "SELECT s.id, s.name, s.mc_version, s.memory_mi,
-                s.exposure_mode, s.created_at, s.source_kind, s.source_config,
-                mv.latest_name, mv.latest_id
+                s.exposure_mode, s.created_at, s.source_kind,
+                mv.latest_name
          FROM servers s
          LEFT JOIN modpack_versions mv ON mv.server_id = s.id
          ORDER BY s.created_at ASC",
@@ -218,16 +216,8 @@ async fn fetch_summary_rows(pool: &SqlitePool) -> Result<Vec<SummaryRow>, AppErr
                 exposure_mode,
                 created_at,
                 source_kind,
-                source_config,
                 latest_version_name,
-                latest_id,
             )| {
-                let current_version_id = serde_json::from_str::<serde_json::Value>(&source_config)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("current_version_id")
-                            .and_then(serde_json::Value::as_i64)
-                    });
                 SummaryRow {
                     id,
                     name,
@@ -237,8 +227,6 @@ async fn fetch_summary_rows(pool: &SqlitePool) -> Result<Vec<SummaryRow>, AppErr
                     created_at,
                     source_kind,
                     latest_version_name,
-                    current_version_id,
-                    latest_id,
                 }
             },
         )

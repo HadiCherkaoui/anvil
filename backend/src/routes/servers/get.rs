@@ -176,17 +176,18 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
             .await?;
     let source_config: serde_json::Value =
         serde_json::from_str(&source_config_text).unwrap_or(serde_json::Value::Null);
-    let current_version_id = source_config
-        .get("current_version_id")
-        .and_then(serde_json::Value::as_i64);
     let (latest_version_id, latest_version_name) = match mv {
         Some((id, name)) => (Some(id), Some(name)),
         None => (None, None),
     };
-    let update_available = match (current_version_id, latest_version_id) {
-        (Some(cur), Some(latest)) => cur != latest,
-        _ => false,
-    };
+    // The poller is the source of truth: it deletes the modpack_versions
+    // row whenever current == latest, auto_mode is "never", or the version
+    // is in the skip list (poller.rs:139). So a row's existence already
+    // implies an update is available. Comparing current_version_id here
+    // would be redundant and was previously buggy — as_i64 returned None
+    // for both Modrinth (string ids) and post-upgrade CF rows whose ids
+    // had been stringified by the pre-fix orchestrator.
+    let update_available = latest_version_id.is_some();
     let update_in_progress = state
         .update_locks
         .lock()

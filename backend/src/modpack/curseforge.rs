@@ -25,12 +25,35 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
 use k8s_openapi::api::core::v1::EnvVar;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::cf_client::CfFile;
 use super::memory::build_memory_env;
 use super::vanilla::{env_kv, env_secret};
 use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
+
+/// Accepts either a JSON number or a numeric string for `current_version_id`.
+///
+/// A pre-fix orchestrator bug serialized this field as a JSON string after
+/// every successful upgrade. The forward fix in `orchestrator.rs` now writes
+/// a number, but rows persisted while the bug was live still carry a string.
+/// This deserializer auto-heals those on read so they don't have to be
+/// rewritten by hand. It can be removed once those rows are gone.
+fn u32_or_numeric_string<'de, D>(de: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Num(u32),
+        Str(String),
+    }
+    match Either::deserialize(de)? {
+        Either::Num(n) => Ok(n),
+        Either::Str(s) => s.parse().map_err(serde::de::Error::custom),
+    }
+}
 
 /// Name of the shared `Secret` carrying `CF_API_KEY`. The chart provisions
 /// this in the managed-server namespace alongside the panel's own copy.
@@ -98,6 +121,7 @@ pub struct Config {
     /// itzg unpacks the client zip, reads its manifest, and downloads the
     /// linked server pack itself — passing the server-pack id here would
     /// trip itzg's "do not select a server file" guard.
+    #[serde(deserialize_with = "u32_or_numeric_string")]
     pub current_version_id: u32,
     /// Display name of the currently deployed CLIENT file.
     pub current_version_name: String,
@@ -320,6 +344,60 @@ mod tests {
     fn channel_release_rejects_beta() {
         assert!(!Channel::Release.accepts(2));
         assert!(Channel::Release.accepts(1));
+    }
+
+    #[test]
+    fn config_accepts_current_version_id_as_number() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "project_id": 520914,
+                "slug": "atm-11",
+                "channel": "release",
+                "version_skip": [],
+                "current_version_id": 8066228,
+                "current_version_name": "v1",
+                "auto_update_mode": "notify"
+            }"#,
+        )
+        .expect("number form");
+        assert_eq!(cfg.current_version_id, 8_066_228);
+    }
+
+    // Defensive deserializer: rows persisted while Bug 1 was live carry a
+    // stringified id. Reading those rows must succeed so the poller heals
+    // them on the next tick instead of skipping the server forever.
+    #[test]
+    fn config_accepts_current_version_id_as_numeric_string() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "project_id": 520914,
+                "slug": "atm-11",
+                "channel": "release",
+                "version_skip": [],
+                "current_version_id": "8066228",
+                "current_version_name": "v1",
+                "auto_update_mode": "notify"
+            }"#,
+        )
+        .expect("string form");
+        assert_eq!(cfg.current_version_id, 8_066_228);
+    }
+
+    #[test]
+    fn config_rejects_current_version_id_as_non_numeric_string() {
+        let err = serde_json::from_str::<Config>(
+            r#"{
+                "project_id": 520914,
+                "slug": "atm-11",
+                "channel": "release",
+                "version_skip": [],
+                "current_version_id": "not-a-number",
+                "current_version_name": "v1",
+                "auto_update_mode": "notify"
+            }"#,
+        )
+        .expect_err("garbage must still error");
+        assert!(err.to_string().contains("invalid digit"));
     }
 
     #[test]

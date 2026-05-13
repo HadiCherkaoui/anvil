@@ -391,7 +391,14 @@ async fn run_inner(
     Ok(())
 }
 
-/// Transaction-scoped twin of [`persist_new_version`].
+/// Persists the new version into `servers.source_config` inside a transaction.
+///
+/// Routes through the provider's typed `Config` so each field lands with its
+/// declared JSON shape (`CurseForge` `current_version_id` is a JSON number,
+/// Modrinth's is a JSON string). The earlier `serde_json::Value` mutation
+/// stringified `version.id` for both providers, which the CF `Config`'s
+/// `u32` field rejected on the next `from_db` — silently disabling poll +
+/// detail reads until the row was healed by hand.
 async fn persist_new_version_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     server_id: &str,
@@ -402,13 +409,28 @@ async fn persist_new_version_tx(
         .bind(server_id)
         .fetch_one(&mut **tx)
         .await?;
-    let mut cfg: serde_json::Value =
-        serde_json::from_str(&raw).context("source_config is not JSON")?;
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert("current_version_id".into(), json!(version.id));
-        obj.insert("current_version_name".into(), json!(version.name));
-    }
-    let new_raw = serde_json::to_string(&cfg)?;
+    let new_raw = match provider.kind() {
+        "curseforge" => {
+            use crate::modpack::curseforge::Config as CfCfg;
+            let mut cfg: CfCfg =
+                serde_json::from_str(&raw).context("existing CurseForge source_config invalid")?;
+            cfg.current_version_id = version
+                .id
+                .parse()
+                .with_context(|| format!("CF target id {:?} not numeric", version.id))?;
+            version.name.clone_into(&mut cfg.current_version_name);
+            serde_json::to_string(&cfg)?
+        }
+        "modrinth" => {
+            use crate::modpack::modrinth::Config as MrCfg;
+            let mut cfg: MrCfg =
+                serde_json::from_str(&raw).context("existing Modrinth source_config invalid")?;
+            version.id.clone_into(&mut cfg.current_version_id);
+            version.name.clone_into(&mut cfg.current_version_name);
+            serde_json::to_string(&cfg)?
+        }
+        other => bail!("persist not supported for provider {other}"),
+    };
     sqlx::query("UPDATE servers SET source_config = ?, mc_version = ? WHERE id = ?")
         .bind(&new_raw)
         .bind(&version.name)
@@ -922,4 +944,140 @@ async fn rollback(
     )
     .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Persist round-trip tests for the modpack orchestrator.
+    //!
+    //! These exist to catch Bug 1: `persist_new_version_tx` previously used
+    //! `json!(version.id)` on a `String`, which wrote `current_version_id`
+    //! as a JSON string. `CurseForge`'s `Config` declares the field as
+    //! `u32`, so the next deserialization (poller, detail handler, anywhere
+    //! via `from_db`) rejected the row and silently disabled all background
+    //! checks for that server.
+
+    use super::*;
+
+    const CF_SOURCE_CONFIG: &str = r#"{
+        "project_id": 520914,
+        "slug": "all-the-mods-11",
+        "channel": "release",
+        "version_skip": [],
+        "current_version_id": 1000,
+        "current_version_name": "ATM 11 - 0.0.10",
+        "auto_update_mode": "notify"
+    }"#;
+
+    const MR_SOURCE_CONFIG: &str = r#"{
+        "project_id": "AANobbMI",
+        "channel": "release",
+        "version_skip": [],
+        "current_version_id": "abc12345",
+        "current_version_name": "Adrenaline 1.0",
+        "auto_update_mode": "notify"
+    }"#;
+
+    async fn seed_server(
+        pool: &sqlx::SqlitePool,
+        server_id: &str,
+        source_kind: &str,
+        source_config: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO servers (
+                id, name, mc_version, memory_mi, source_kind, exposure_mode,
+                source_config, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(server_id)
+        .bind(format!("test-{source_kind}"))
+        .bind("1.21.1")
+        .bind(8192_i64)
+        .bind(source_kind)
+        .bind("loadbalancer")
+        .bind(source_config)
+        .bind(1_700_000_000_i64)
+        .execute(pool)
+        .await
+        .expect("seed server row");
+    }
+
+    #[tokio::test]
+    async fn persist_writes_curseforge_current_version_id_as_number() {
+        let pool = crate::db::init("sqlite::memory:").await.expect("db init");
+        let sid = "11111111-2222-3333-4444-555555555555";
+        seed_server(&pool, sid, "curseforge", CF_SOURCE_CONFIG).await;
+
+        let mut provider = from_db("curseforge", CF_SOURCE_CONFIG).expect("provider");
+        let new_version = VersionInfo {
+            id: "8066228".to_owned(),
+            name: "ATM 11 - 0.0.20 - Server Pack".to_owned(),
+            download_url: "https://example.invalid/8066228.zip".to_owned(),
+        };
+
+        let mut tx = pool.begin().await.expect("tx");
+        persist_new_version_tx(&mut tx, sid, &mut provider, &new_version)
+            .await
+            .expect("persist");
+        tx.commit().await.expect("commit");
+
+        let cfg: String = sqlx::query_scalar("SELECT source_config FROM servers WHERE id = ?")
+            .bind(sid)
+            .fetch_one(&pool)
+            .await
+            .expect("read");
+
+        // The JSON must keep current_version_id as a number — otherwise the
+        // next from_db call (poller, detail handler) fails on a u32 field.
+        let parsed: serde_json::Value = serde_json::from_str(&cfg).expect("valid json");
+        let id = parsed
+            .get("current_version_id")
+            .expect("current_version_id");
+        assert!(
+            id.is_number(),
+            "current_version_id must be a JSON number, got {id:?}",
+        );
+        assert_eq!(id.as_u64(), Some(8_066_228));
+
+        // Round-trip through from_db — this is what the poller does every
+        // tick and what regressed in Bug 1.
+        let reloaded = from_db("curseforge", &cfg).expect("from_db after persist");
+        assert_eq!(reloaded.kind(), "curseforge");
+    }
+
+    #[tokio::test]
+    async fn persist_keeps_modrinth_current_version_id_as_string() {
+        let pool = crate::db::init("sqlite::memory:").await.expect("db init");
+        let sid = "22222222-3333-4444-5555-666666666666";
+        seed_server(&pool, sid, "modrinth", MR_SOURCE_CONFIG).await;
+
+        let mut provider = from_db("modrinth", MR_SOURCE_CONFIG).expect("provider");
+        let new_version = VersionInfo {
+            id: "8VJ4TfX1".to_owned(),
+            name: "Adrenaline 1.1".to_owned(),
+            download_url: "https://example.invalid/8VJ4TfX1.mrpack".to_owned(),
+        };
+
+        let mut tx = pool.begin().await.expect("tx");
+        persist_new_version_tx(&mut tx, sid, &mut provider, &new_version)
+            .await
+            .expect("persist");
+        tx.commit().await.expect("commit");
+
+        let cfg: String = sqlx::query_scalar("SELECT source_config FROM servers WHERE id = ?")
+            .bind(sid)
+            .fetch_one(&pool)
+            .await
+            .expect("read");
+
+        let parsed: serde_json::Value = serde_json::from_str(&cfg).expect("valid json");
+        let id = parsed
+            .get("current_version_id")
+            .expect("current_version_id");
+        assert_eq!(id.as_str(), Some("8VJ4TfX1"));
+
+        let reloaded = from_db("modrinth", &cfg).expect("from_db after persist");
+        assert_eq!(reloaded.kind(), "modrinth");
+    }
 }
