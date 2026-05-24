@@ -162,9 +162,7 @@ mod tests {
 
     #[test]
     fn returns_all_releases_no_cap() {
-        // Simulates a full Mojang manifest with way more than the old 20-version
-        // cap. Every release must come through so legacy versions (1.8, etc.)
-        // remain selectable.
+        // Every release must come through so legacy versions (1.8, etc.) remain selectable.
         let mut versions = Vec::new();
         for i in 0..100_usize {
             versions.push(format!(r#"{{"id":"v{i}","type":"release"}}"#));
@@ -181,8 +179,6 @@ mod tests {
 
     #[test]
     fn snapshots_filtered_at_scale() {
-        // Mixed snapshots and releases across a large manifest — only the
-        // releases must come through, no cap on the count.
         let mut entries = Vec::new();
         for i in 0..50_usize {
             entries.push(format!(r#"{{"id":"r{i}","type":"release"}}"#));
