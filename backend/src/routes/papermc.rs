@@ -21,10 +21,6 @@ use crate::error::AppError;
 /// In-memory cache slot held in [`crate::AppState`].
 pub type PaperVersionsCache = Arc<Mutex<Option<(Vec<String>, Instant)>>>;
 
-/// Maximum number of versions surfaced to the frontend. Paper supports
-/// every patch release back to 1.8 — keeping the dropdown short.
-pub const MAX_VERSIONS: usize = 25;
-
 /// How long to keep a parsed listing before re-fetching.
 const CACHE_TTL: Duration = Duration::from_hours(1);
 /// Per-fetch HTTP timeout.
@@ -40,15 +36,13 @@ pub fn new_cache() -> PaperVersionsCache {
 
 #[derive(Deserialize)]
 struct ProjectResponse {
-    /// `PaperMC` returns versions in ascending order; we reverse before
-    /// capping so the dropdown shows newest first.
     versions: Vec<String>,
 }
 
 /// Response body for `GET /api/papermc/versions`.
 #[derive(Debug, Serialize)]
 pub struct PaperVersionsResponse {
-    /// Paper-supported MC versions, newest first, capped at [`MAX_VERSIONS`].
+    /// Paper-supported MC versions, newest first (Paper ships back to 1.8).
     pub versions: Vec<String>,
     /// `"papermc"` on cache hit / fresh fetch; `"fallback"` when the
     /// `PaperMC` API was unreachable AND no cache is available, in which
@@ -62,7 +56,11 @@ const FALLBACK_VERSIONS: &[&str] = &[
     "1.21.4", "1.21.3", "1.21.1", "1.20.6", "1.20.4", "1.20.2", "1.20.1", "1.19.4", "1.18.2",
 ];
 
-/// Parses the `PaperMC` project response into a newest-first capped list.
+/// Parses the `PaperMC` project response into a newest-first version list.
+///
+/// `PaperMC` returns versions in ascending order; we reverse so the
+/// dropdown shows newest first. Every Paper-supported MC version is
+/// included — Paper ships builds back to 1.8.
 ///
 /// # Errors
 ///
@@ -71,7 +69,6 @@ pub fn parse_project(body: &str) -> Result<Vec<String>, serde_json::Error> {
     let p: ProjectResponse = serde_json::from_str(body)?;
     let mut out = p.versions;
     out.reverse();
-    out.truncate(MAX_VERSIONS);
     Ok(out)
 }
 
@@ -165,23 +162,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_project_reverses_and_caps() {
+    fn parses_project_reverses_ordering() {
         let body = r#"{"project_id":"paper","versions":["1.18","1.19","1.20","1.21"]}"#;
         let v = parse_project(body).expect("parse");
         assert_eq!(v, vec!["1.21", "1.20", "1.19", "1.18"]);
     }
 
     #[test]
-    fn cap_enforced_at_max_versions() {
+    fn returns_all_versions_no_cap() {
+        // Every Paper-supported version must come through so legacy
+        // versions (1.8.x, 1.12.x, …) remain selectable.
         let mut versions = Vec::new();
-        for i in 0..(MAX_VERSIONS + 5) {
+        for i in 0..80_usize {
             versions.push(format!("\"v{i}\""));
         }
         let body = format!("{{\"versions\":[{}]}}", versions.join(","));
         let v = parse_project(&body).expect("parse");
-        assert_eq!(v.len(), MAX_VERSIONS);
+        assert_eq!(v.len(), 80);
         // Reversed: newest (highest index) first.
-        assert_eq!(v[0], format!("v{}", MAX_VERSIONS + 4));
+        assert_eq!(v[0], "v79");
+        assert_eq!(v[79], "v0");
     }
 
     #[test]
