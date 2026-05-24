@@ -12,10 +12,11 @@ use crate::error::AppError;
 /// The live source is the cached Mojang manifest in
 /// `AppState::mc_versions_cache`; this fallback list keeps the panel
 /// usable when the manifest endpoint is unreachable.
+#[rustfmt::skip]
 pub const KNOWN_MC_VERSIONS: &[&str] = &[
     // Legacy anchors — the create form keeps accepting these even when
     // the Mojang cache is cold and the upstream is unreachable.
-    "1.8.9", "1.12.2", "1.16.5", "1.18.2", "1.19.2", "1.20.1", // Recent releases.
+    "1.8.9", "1.12.2", "1.16.5", "1.18.2", "1.19.2", "1.20.1",
     "1.20.4", "1.20.6", "1.21.0", "1.21.1", "1.21.3", "1.21.4",
 ];
 
