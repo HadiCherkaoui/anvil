@@ -12,8 +12,12 @@ use crate::error::AppError;
 /// The live source is the cached Mojang manifest in
 /// `AppState::mc_versions_cache`; this fallback list keeps the panel
 /// usable when the manifest endpoint is unreachable.
-pub const KNOWN_MC_VERSIONS: &[&str] =
-    &["1.20.4", "1.20.6", "1.21.0", "1.21.1", "1.21.3", "1.21.4"];
+pub const KNOWN_MC_VERSIONS: &[&str] = &[
+    // Legacy anchors — the create form keeps accepting these even when
+    // the Mojang cache is cold and the upstream is unreachable.
+    "1.8.9", "1.12.2", "1.16.5", "1.18.2", "1.19.2", "1.20.1", // Recent releases.
+    "1.20.4", "1.20.6", "1.21.0", "1.21.1", "1.21.3", "1.21.4",
+];
 
 /// Allowed exposure modes for managed-server Services.
 pub const KNOWN_EXPOSURE_MODES: &[&str] = &["loadbalancer", "nodeport", "clusterip"];
@@ -520,8 +524,17 @@ mod tests {
 
     #[test]
     fn offline_versions_pass() {
+        // Recent anchors — what the floor already had.
         assert!(is_known_mc_version_offline("1.21.4"));
         assert!(is_known_mc_version_offline("1.20.4"));
+        // Legacy anchors — the create form must still accept these when
+        // the Mojang cache is cold (e.g. fresh pod + transient outage).
+        assert!(is_known_mc_version_offline("1.8.9"));
+        assert!(is_known_mc_version_offline("1.12.2"));
+        assert!(is_known_mc_version_offline("1.16.5"));
+        assert!(is_known_mc_version_offline("1.18.2"));
+        assert!(is_known_mc_version_offline("1.19.2"));
+        assert!(is_known_mc_version_offline("1.20.1"));
     }
 
     #[test]
