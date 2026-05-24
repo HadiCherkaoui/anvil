@@ -179,7 +179,6 @@ mod tests {
         let body = format!("{{\"versions\":[{}]}}", versions.join(","));
         let v = parse_project(&body).expect("parse");
         assert_eq!(v.len(), 80);
-        // Reversed: newest (highest index) first.
         assert_eq!(v[0], "v79");
         assert_eq!(v[79], "v0");
     }
