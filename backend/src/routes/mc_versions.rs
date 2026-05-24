@@ -1,8 +1,10 @@
 //! `GET /api/cluster/mc-versions` — cached Mojang version manifest.
 //!
-//! Release versions only, last 20. 24-hour TTL via the `AppState` cache slot.
-//! Offline fallback to a hardcoded baseline so the panel stays usable when
-//! the Mojang CDN is unreachable.
+//! Returns every official release (snapshots filtered out) so the create
+//! form can offer legacy versions like 1.8.9 alongside the latest. 24-hour
+//! TTL via the `AppState` cache slot. Offline fallback to a hardcoded
+//! baseline (see [`crate::validation::KNOWN_MC_VERSIONS`]) keeps the panel
+//! usable when the Mojang CDN is unreachable.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,8 +21,6 @@ use crate::validation::KNOWN_MC_VERSIONS;
 /// Cache slot held in [`AppState`].
 pub type McVersionsCache = Arc<Mutex<Option<(Vec<String>, Instant)>>>;
 
-/// Maximum number of release versions returned to clients.
-pub const MAX_VERSIONS: usize = 20;
 /// How long to keep a fetched manifest before re-fetching.
 const CACHE_TTL: Duration = Duration::from_hours(24);
 /// Mojang version manifest URL.
@@ -49,14 +49,16 @@ struct ManifestVersion {
 /// Response body for `GET /api/cluster/mc-versions`.
 #[derive(Debug, Serialize)]
 pub struct McVersionsResponse {
-    /// Release versions, most recent first, capped at [`MAX_VERSIONS`].
+    /// Release versions, most recent first (every release Mojang lists).
     pub versions: Vec<String>,
     /// `"mojang"` when freshly fetched or cache-hit; `"fallback"` when the
     /// Mojang manifest was unreachable and the hardcoded baseline is served.
     pub source: &'static str,
 }
 
-/// Parses the Mojang manifest JSON into a release-only, capped version list.
+/// Parses the Mojang manifest JSON into a release-only version list.
+///
+/// Mojang lists releases newest-first; that ordering is preserved.
 ///
 /// # Errors
 ///
@@ -69,7 +71,6 @@ pub fn parse_manifest(body: &str) -> Result<Vec<String>, serde_json::Error> {
         .into_iter()
         .filter(|v| v.kind == "release")
         .map(|v| v.id)
-        .take(MAX_VERSIONS)
         .collect();
     out.shrink_to_fit();
     Ok(out)
@@ -138,7 +139,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_release_versions_capped() {
+    fn parses_release_versions_filters_snapshots() {
         let json = r#"{
           "latest": {"release": "1.21.4"},
           "versions": [
@@ -150,7 +151,6 @@ mod tests {
         }"#;
         let v = parse_manifest(json).expect("parses");
         assert_eq!(v, vec!["1.21.4", "1.21.3", "1.21.2"]);
-        assert!(v.len() <= MAX_VERSIONS);
     }
 
     #[test]
@@ -161,9 +161,12 @@ mod tests {
     }
 
     #[test]
-    fn cap_enforced_at_max_versions() {
+    fn returns_all_releases_no_cap() {
+        // Simulates a full Mojang manifest with way more than the old 20-version
+        // cap. Every release must come through so legacy versions (1.8, etc.)
+        // remain selectable.
         let mut versions = Vec::new();
-        for i in 0..(MAX_VERSIONS + 5) {
+        for i in 0..100_usize {
             versions.push(format!(r#"{{"id":"v{i}","type":"release"}}"#));
         }
         let json = format!(
@@ -171,8 +174,27 @@ mod tests {
             versions.join(",")
         );
         let v = parse_manifest(&json).expect("parses");
-        assert_eq!(v.len(), MAX_VERSIONS);
+        assert_eq!(v.len(), 100);
         assert_eq!(v[0], "v0");
+        assert_eq!(v[99], "v99");
+    }
+
+    #[test]
+    fn snapshots_filtered_at_scale() {
+        // Mixed snapshots and releases across a large manifest — only the
+        // releases must come through, no cap on the count.
+        let mut entries = Vec::new();
+        for i in 0..50_usize {
+            entries.push(format!(r#"{{"id":"r{i}","type":"release"}}"#));
+            entries.push(format!(r#"{{"id":"s{i}","type":"snapshot"}}"#));
+        }
+        let json = format!(
+            r#"{{"latest":{{"release":"r0"}},"versions":[{}]}}"#,
+            entries.join(",")
+        );
+        let v = parse_manifest(&json).expect("parses");
+        assert_eq!(v.len(), 50);
+        assert!(v.iter().all(|s| s.starts_with('r')));
     }
 
     #[test]
