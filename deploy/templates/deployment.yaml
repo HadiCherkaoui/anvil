@@ -16,6 +16,12 @@ spec:
       {{- include "anvil.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # Roll the pod when the rendered ConfigMap / Secret content changes.
+        # Without these, `helm upgrade` that only edits values leaves the old
+        # config live until a manual restart.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
       labels:
         {{- include "anvil.selectorLabels" . | nindent 8 }}
     spec:
@@ -68,14 +74,18 @@ spec:
             capabilities:
               drop:
                 - ALL
-          {{- if .Values.persistence.enabled }}
+          # /var/lib/anvil is always mounted writable: the root FS is
+          # read-only and ANVIL_DATABASE_URL points here, so SQLite needs a
+          # writable volume. PVC when persistence is on; ephemeral emptyDir
+          # otherwise (DB resets on restart — for throwaway/test installs).
           volumeMounts:
             - name: data
               mountPath: /var/lib/anvil
-          {{- end }}
-      {{- if .Values.persistence.enabled }}
       volumes:
         - name: data
+          {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "anvil.fullname" . }}-data
-      {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

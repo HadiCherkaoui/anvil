@@ -17,15 +17,14 @@ final v2 leg: a working Files surface that lets you browse, upload,
 download, mkdir, rename, and delete inside a managed server's `/data`
 PVC — without leaving anvil.
 
-CLAUDE.md flagged "file management" as something the existing
-FileBrowser at `files.cherkaoui.ch` would handle. That deferral
-leaked through to `docs/milestones.md` lines 106–113 as the
-"(deferred) FileBrowser deep-link per server" item from M3. The
-deferred plan is unworkable in practice: managed PVCs are
-`ReadWriteOnce` (`zfs.csi.openebs.io`), so an external FileBrowser
-cannot mount the volume while the server pod is running, and the
-homelab does not currently have a deployed FileBrowser instance
-anyway. D supersedes the deep-link plan with an in-anvil FS surface.
+CLAUDE.md flagged "file management" as something an external file
+manager would handle. That deferral leaked through to
+`docs/milestones.md` as the "(deferred) file-browser deep-link per
+server" item from M3. The deferred plan is unworkable in practice:
+managed PVCs are `ReadWriteOnce` (`zfs.csi.openebs.io`), so an
+external file manager cannot mount the volume while the server pod is
+running, and the homelab has no such tool deployed anyway. D
+supersedes the deep-link plan with an in-anvil FS surface.
 
 D also stays on a path that future work — a structured
 `server.properties` editor, a live `mods/` inventory reader,

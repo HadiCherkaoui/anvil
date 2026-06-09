@@ -1,7 +1,13 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	type ReactElement,
+} from "react";
 
 import {
 	ApiError,
@@ -14,7 +20,10 @@ import {
 	stopServer,
 	type ServerDetail,
 } from "../lib/api";
-import { ServerDetailContext, type ServerDetailValue } from "../lib/server-detail-context";
+import {
+	ServerDetailContext,
+	type ServerDetailValue,
+} from "../lib/server-detail-context";
 
 import { Badge, type BadgeVariant } from "../components/Badge";
 import { Button } from "../components/Button";
@@ -245,6 +254,10 @@ export function ServerDetailView(): ReactElement {
 		setSheetOpen(true);
 		if (!detail.update_in_progress) {
 			applyUpdate(detail.id).catch((err: unknown) => {
+				// The POST never started an FSM, so the sheet's stream would
+				// idle forever — close it instead of leaving a dead progress
+				// view open.
+				setSheetOpen(false);
 				const msg =
 					err instanceof ApiError
 						? `${err.code}: ${err.message}`
@@ -263,6 +276,8 @@ export function ServerDetailView(): ReactElement {
 			mc_version: detail.mc_version,
 			loader_version: detail.loader_update.latest_loader,
 		}).catch((err: unknown) => {
+			// No FSM started — don't leave an idle progress sheet open.
+			setSheetOpen(false);
 			const msg =
 				err instanceof ApiError
 					? `${err.code}: ${err.message}`

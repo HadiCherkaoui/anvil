@@ -27,7 +27,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::k8s_patches::patch_statefulset_env;
+use crate::k8s_patches::{patch_statefulset_env, with_properties_env};
 use crate::modpack::guard::{UpdateGuard, record_terminal, set_update_error};
 use crate::modpack::jobs::{build_backup_job, build_restore_job};
 use crate::modpack::orchestrator::{
@@ -56,9 +56,11 @@ pub fn new_backup_id() -> String {
     format!("bk-{}", Uuid::new_v4().simple())
 }
 
-/// Persists the pre-Job `backups` row. Written before spawning the Job so
-/// a partial failure leaves a clear record we can clean up on the failure
-/// path.
+/// Persists the pre-Job `backups` row as `pending`. Written before
+/// spawning the tar Job so the row exists if the process dies mid-Job;
+/// flipped to `complete` once the tar lands (see [`run_backup_inner`]).
+/// A crash leaves it `pending`, which [`fail_stale_pending_backups`] later
+/// reaps and which `list` hides until then.
 async fn insert_backup_row(
     state: &AppState,
     backup_id: &str,
@@ -71,8 +73,8 @@ async fn insert_backup_row(
     sqlx::query(
         "INSERT INTO backups
             (id, server_id, name, created_at, snapshot_path, mc_version, memory_mi,
-             storage_size_gi, storage_class, exposure_mode, source_kind, source_config)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             storage_size_gi, storage_class, exposure_mode, source_kind, source_config, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
     )
     .bind(backup_id)
     .bind(server_id)
@@ -92,12 +94,16 @@ async fn insert_backup_row(
     Ok(())
 }
 
-async fn delete_backup_row(state: &AppState, backup_id: &str) -> Result<()> {
-    sqlx::query("DELETE FROM backups WHERE id = ?")
+/// Removes a backup row only while it is still `pending` — i.e. the tar Job
+/// never confirmed. A `complete` row means the tarball exists and is a
+/// valid backup even if a later step (e.g. re-scaling the server) failed,
+/// so it is kept.
+async fn delete_pending_backup_row(state: &AppState, backup_id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM backups WHERE id = ? AND status = 'pending'")
         .bind(backup_id)
         .execute(&state.pool)
         .await
-        .context("deleting backup row")?;
+        .context("deleting pending backup row")?;
     Ok(())
 }
 
@@ -182,18 +188,15 @@ pub async fn insert_auto_backup_row_with_status(
     Ok(backup_id)
 }
 
-/// Updates the `status` of an auto-backup row. Callers use this to flip
+/// Updates the `status` of a backup row. Callers use this to flip
 /// `pending` rows to `complete` after the tar Job lands, or `failed` if it
-/// errored.
+/// errored. Used by both the auto (orchestrator / version-change) and
+/// manual backup paths.
 ///
 /// # Errors
 ///
 /// Returns the underlying `sqlx` error.
-pub async fn mark_auto_backup_status(
-    state: &AppState,
-    backup_id: &str,
-    status: &str,
-) -> Result<()> {
+pub async fn mark_backup_status(state: &AppState, backup_id: &str, status: &str) -> Result<()> {
     sqlx::query("UPDATE backups SET status = ? WHERE id = ?")
         .bind(status)
         .bind(backup_id)
@@ -203,44 +206,56 @@ pub async fn mark_auto_backup_status(
     Ok(())
 }
 
-/// Marks any auto-backup rows whose `status = 'pending'` and `created_at`
-/// is older than `older_than_secs` seconds ago as `'failed'`. Run from the
-/// auto-backup GC pass so a crashed orchestrator does not leave rows
-/// claiming "in progress" indefinitely.
+/// A backup row left `pending` longer than this is treated as a crashed
+/// Job and flipped to `failed` by the poller sweep. Comfortably above the
+/// longest legitimate backup (stop + 10-min tar Job + start ≈ 12 min), so
+/// a still-running backup is never reaped out from under itself.
+pub const STALE_PENDING_BACKUP_SECS: i64 = 30 * 60;
+
+/// Marks backup rows (auto or manual) whose `status = 'pending'` and
+/// `created_at` is older than `older_than_secs` ago as `'failed'`. Run at
+/// startup and each poller tick so a crashed orchestrator or backup task
+/// does not leave rows claiming "in progress" indefinitely.
 ///
 /// # Errors
 ///
 /// Returns the underlying `sqlx` error.
-pub async fn fail_stale_pending_auto_backups(state: &AppState, older_than_secs: i64) -> Result<()> {
+pub async fn fail_stale_pending_backups(state: &AppState, older_than_secs: i64) -> Result<()> {
     let cutoff = Utc::now().timestamp() - older_than_secs;
     sqlx::query(
         "UPDATE backups SET status = 'failed'
-         WHERE kind = 'auto' AND status = 'pending' AND created_at < ?",
+         WHERE status = 'pending' AND created_at < ?",
     )
     .bind(cutoff)
     .execute(&state.pool)
     .await
-    .context("failing stale pending auto backups")?;
+    .context("failing stale pending backups")?;
     Ok(())
 }
 
-/// Trims `auto`-kind backup rows for `server_id` to the newest `keep`,
-/// matching the inline `xargs -r rm -f` GC the backup Job's tar shell
-/// runs on the snapshots PVC. Run after the backup Job reports success
-/// so DB and disk stay in agreement.
+/// Trims `auto`-kind backup rows for `server_id` to the newest `keep`
+/// `complete` rows, matching the inline `xargs -r rm -f` GC the backup
+/// Job's tar shell runs on the snapshots PVC. Run after the backup Job
+/// reports success so DB and disk stay in agreement.
+///
+/// Only `complete` rows count toward `keep`; any `pending` / `failed` auto
+/// rows (crash artifacts with no tarball) are deleted unconditionally so
+/// they cannot evict a valid backup from the keep window.
 ///
 /// # Errors
 ///
 /// Returns the underlying `sqlx` error.
 pub async fn gc_auto_backup_rows(state: &AppState, server_id: &str, keep: usize) -> Result<()> {
     sqlx::query(
-        "DELETE FROM backups WHERE id IN (
+        "DELETE FROM backups
+         WHERE server_id = ? AND kind = 'auto' AND id NOT IN (
             SELECT id FROM backups
-            WHERE server_id = ? AND kind = 'auto'
+            WHERE server_id = ? AND kind = 'auto' AND status = 'complete'
             ORDER BY created_at DESC
-            LIMIT -1 OFFSET ?
+            LIMIT ?
         )",
     )
+    .bind(server_id)
     .bind(server_id)
     .bind(i64::try_from(keep).unwrap_or(i64::MAX))
     .execute(&state.pool)
@@ -356,7 +371,7 @@ pub async fn run_backup(
             set_update_error(&state, &server_id, err.to_string());
             record_terminal(&state, &server_id, UpdatePhase::Failed);
             guard.emit(UpdatePhase::Failed);
-            let _ = delete_backup_row(&state, &backup_id).await;
+            let _ = delete_pending_backup_row(&state, &backup_id).await;
             let _ = insert_audit(
                 &state.pool,
                 &server_id,
@@ -434,6 +449,19 @@ async fn run_backup_inner(
         BACKUP_JOB_TIMEOUT,
     )
     .await?;
+
+    // Tar landed — the archive exists, so the backup is valid regardless of
+    // whether the server re-scales cleanly below. Flip `pending` →
+    // `complete` so it surfaces in the list. Non-fatal: a failed flip leaves
+    // the row `pending` for the stale sweep to reconcile.
+    if let Err(e) = mark_backup_status(state, backup_id, "complete").await {
+        tracing::error!(
+            server.id = %server_id,
+            backup.id = %backup_id,
+            err = %e,
+            "could not mark manual backup complete; row left pending"
+        );
+    }
 
     if was_running {
         guard.emit(UpdatePhase::Starting);
@@ -571,7 +599,12 @@ async fn run_restore_inner(
     .await
     .context("reverting servers row to backup snapshot")?;
 
-    let env = build_runtime_env_from_snapshot(&snap, server_id)?;
+    let env = with_properties_env(
+        &state.pool,
+        server_id,
+        &build_runtime_env_from_snapshot(&snap, server_id)?,
+    )
+    .await?;
     if let Err(e) = patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &env).await {
         // Env patch failed but SQL already swapped to `snap`. Roll back the
         // SQL UPDATE so DB matches the env (which is still `pre`). /data is

@@ -116,16 +116,27 @@ export function CatalogSheet({
 		};
 	}, [isOpen, q, mode, loader, mc]);
 
-	const onPickHit = (hit: CatalogHit): void => {
-		setActiveHit(hit);
-		setVersions([]);
+	// Fetch versions for the active hit. Keyed on `activeHit` so picking a
+	// different result (or closing the sheet) aborts the in-flight request
+	// in cleanup — otherwise a slow earlier response could land last and
+	// overwrite the newly-picked hit's versions, installing the wrong one.
+	useEffect(() => {
+		if (activeHit === null) return undefined;
 		const ctrl = new AbortController();
 		const opts: { loader?: string; mc?: string } = {};
 		if (loader !== undefined) opts.loader = loader;
 		if (mc !== undefined) opts.mc = mc;
-		fetchCatalogVersions(hit.provider, hit.project_id, opts, ctrl.signal)
-			.then(setVersions)
+		fetchCatalogVersions(
+			activeHit.provider,
+			activeHit.project_id,
+			opts,
+			ctrl.signal,
+		)
+			.then((vs) => {
+				if (!ctrl.signal.aborted) setVersions(vs);
+			})
 			.catch((err: unknown) => {
+				if (err instanceof DOMException && err.name === "AbortError") return;
 				setError(
 					err instanceof ApiError
 						? `${err.code}: ${err.message}`
@@ -134,6 +145,15 @@ export function CatalogSheet({
 							: "version fetch failed",
 				);
 			});
+		return () => {
+			ctrl.abort();
+		};
+	}, [activeHit, loader, mc]);
+
+	const onPickHit = (hit: CatalogHit): void => {
+		setActiveHit(hit);
+		setVersions([]);
+		setError(null);
 	};
 
 	return (

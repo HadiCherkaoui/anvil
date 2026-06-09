@@ -4253,7 +4253,7 @@ export function ModsBody(): ReactElement {
             <Card>
                 <p className="font-mono text-[12px] text-text-muted">
                     paper plugin browsing arrives later. install plugins via
-                    FileBrowser at files.cherkaoui.ch for now.
+                    an external file manager for now.
                 </p>
             </Card>
         );
@@ -4267,7 +4267,7 @@ export function ModsBody(): ReactElement {
             <Card header={`bundled in ${detail.mc_version}`}>
                 <p className="font-mono text-[12px] text-text-muted">
                     pack-driven · changes get wiped at next pack update. view
-                    mods/ via FileBrowser at files.cherkaoui.ch for now.
+                    mods/ for now via an external file manager.
                 </p>
             </Card>
         );

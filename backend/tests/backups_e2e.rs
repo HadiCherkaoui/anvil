@@ -134,6 +134,30 @@ async fn seed_backup_row(state: &AppState, server_id: &str, backup_id: &str, nam
     .expect("seed backup");
 }
 
+async fn seed_backup_row_status(state: &AppState, server_id: &str, backup_id: &str, status: &str) {
+    sqlx::query(
+        "INSERT INTO backups
+            (id, server_id, name, created_at, snapshot_path, mc_version, memory_mi,
+             storage_size_gi, storage_class, exposure_mode, source_kind, source_config, status)
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(backup_id)
+    .bind(server_id)
+    .bind(1_700_000_000_i64)
+    .bind(format!("manual/{backup_id}.tgz"))
+    .bind("1.21.4")
+    .bind(4096_i64)
+    .bind(10_i64)
+    .bind(Option::<String>::None)
+    .bind("clusterip")
+    .bind("vanilla")
+    .bind("{}")
+    .bind(status)
+    .execute(&state.pool)
+    .await
+    .expect("seed backup with status");
+}
+
 fn json_request(method: Method, uri: &str, token: &str, body: &serde_json::Value) -> Request<Body> {
     Request::builder()
         .method(method)
@@ -359,4 +383,74 @@ async fn server_delete_cascade_drops_backup_rows() {
         .await
         .unwrap();
     assert_eq!(count.0, 0, "FK CASCADE should remove backup rows");
+}
+
+#[tokio::test]
+async fn list_backups_excludes_non_complete_rows() {
+    let state = test_state();
+    seed_vanilla_server(&state, "ts-bk", "smoke").await;
+    seed_backup_row_status(
+        &state,
+        "ts-bk",
+        "bk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "complete",
+    )
+    .await;
+    seed_backup_row_status(
+        &state,
+        "ts-bk",
+        "bk-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "pending",
+    )
+    .await;
+    seed_backup_row_status(
+        &state,
+        "ts-bk",
+        "bk-cccccccccccccccccccccccccccccccc",
+        "failed",
+    )
+    .await;
+    let token = token_for(&state, "u");
+    let app = anvil::router(state);
+    let resp = app
+        .oneshot(empty_request(
+            Method::GET,
+            "/api/servers/ts-bk/backups",
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "only complete backups should be listed");
+    assert_eq!(arr[0]["id"], "bk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+}
+
+#[tokio::test]
+async fn restore_pending_backup_409() {
+    let state = test_state();
+    seed_vanilla_server(&state, "ts-bk", "smoke").await;
+    seed_backup_row_status(
+        &state,
+        "ts-bk",
+        "bk-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "pending",
+    )
+    .await;
+    let token = token_for(&state, "u");
+    let app = anvil::router(state);
+    let resp = app
+        .oneshot(empty_request(
+            Method::POST,
+            "/api/servers/ts-bk/backups/bk-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/restore",
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["code"], "backup_not_restorable");
 }

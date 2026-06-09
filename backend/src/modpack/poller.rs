@@ -49,6 +49,24 @@ pub async fn run(state: AppState) {
     reason = "linear per-server fan-out: fetch latest, gate, upsert, optionally apply"
 )]
 async fn tick(state: &AppState) -> anyhow::Result<()> {
+    // Reap backup rows stranded `pending` by a crashed backup/orchestrator
+    // task so the restore list never offers a half-written archive. The
+    // first tick (~30s after boot) sweeps any crash artifacts from the
+    // previous run. Non-fatal: a sweep failure must not abort the poll.
+    if let Err(err) = crate::modpack::backups::fail_stale_pending_backups(
+        state,
+        crate::modpack::backups::STALE_PENDING_BACKUP_SECS,
+    )
+    .await
+    {
+        event!(
+            name: "anvil.backup.stale_sweep.error",
+            Level::WARN,
+            err = %err,
+            "failed to reap stale pending backups; continuing",
+        );
+    }
+
     let http = ModpackHttp {
         cf: state.cf_client.as_deref(),
         mr: state.mr_client.as_ref(),

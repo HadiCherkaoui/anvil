@@ -76,17 +76,29 @@ pub async fn handle(
             .await,
     )?;
 
-    // 2. Wait for the pod to be gone.
+    // 2. Wait for the pod to be gone. A pod stuck Terminating (e.g. a hung
+    //    CSI unmount) would otherwise strand the delete here forever — STS
+    //    gone but PVC / Services / Secret / row intact, and every retry hits
+    //    the same wall. On timeout, force-delete the pod (grace period 0) and
+    //    continue so the rest of the teardown still runs. The whole server is
+    //    being destroyed, so there is no data to protect from a hard kill.
     let deadline = tokio::time::Instant::now() + POD_TERMINATE_TIMEOUT;
     loop {
-        let still = pods.get_opt(&pod_name).await?.is_some();
-        if !still {
+        if pods.get_opt(&pod_name).await?.is_none() {
             break;
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(AppError::Internal(anyhow::anyhow!(
-                "pod {pod_name} did not terminate within {POD_TERMINATE_TIMEOUT:?}"
-            )));
+            tracing::warn!(
+                server.id = %id,
+                pod = %pod_name,
+                "pod did not terminate within {POD_TERMINATE_TIMEOUT:?}; force-deleting and continuing"
+            );
+            let force = DeleteParams {
+                grace_period_seconds: Some(0),
+                ..DeleteParams::default()
+            };
+            delete_tolerate_404(pods.delete(&pod_name, &force).await)?;
+            break;
         }
         tokio::time::sleep(POD_POLL_INTERVAL).await;
     }

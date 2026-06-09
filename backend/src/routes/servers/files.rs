@@ -23,8 +23,8 @@ use crate::files::{
     FileListResponse, LIST_SCRIPT, is_enotdir_sentinel, parse_list_output, parse_stat_size,
 };
 use crate::files_helper::{
-    pod_exec_capture, pod_exec_stream_in, pod_exec_stream_out, target_pod_for_files,
-    tear_down_helper,
+    pod_exec_capture, pod_exec_capture_long, pod_exec_stream_in, pod_exec_stream_out,
+    target_pod_for_files, tear_down_helper,
 };
 use crate::routes::servers::create::insert_audit;
 use crate::validation::validate_data_path_argv_only;
@@ -245,14 +245,20 @@ pub async fn upload(
     )
     .await?;
 
-    insert_audit(
+    // The file is already written and renamed into place; a failed audit
+    // insert must not make the client think the upload failed and re-send.
+    // Log and still return success.
+    if let Err(e) = insert_audit(
         &state.pool,
         &server_id,
         "files.upload",
         Some(json!({ "path": path, "bytes": bytes })),
         Utc::now().timestamp(),
     )
-    .await?;
+    .await
+    {
+        tracing::error!(error = ?e, server.id = %server_id, "files.upload audit insert failed");
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -388,7 +394,14 @@ async fn action_delete(
     } else {
         vec!["rm", &target]
     };
-    let r = pod_exec_capture(state, &state.mc_namespace, pod_name, &cmd).await?;
+    // A recursive delete of a multi-GB world dir easily exceeds the 5s
+    // capture cap; the long variant (5 min) avoids aborting mid-tree and
+    // leaving a partially deleted directory. A single-file rm is instant.
+    let r = if recursive {
+        pod_exec_capture_long(state, &state.mc_namespace, pod_name, &cmd).await?
+    } else {
+        pod_exec_capture(state, &state.mc_namespace, pod_name, &cmd).await?
+    };
     if r.exit_code != Some(0) {
         let stderr_lower = r.stderr.to_ascii_lowercase();
         if !recursive && stderr_lower.contains("is a directory") {

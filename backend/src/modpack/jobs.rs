@@ -334,6 +334,10 @@ fn job(
                     restart_policy: Some("Never".to_owned()),
                     containers: vec![container],
                     volumes: Some(volumes),
+                    // The sync container runs `curl` on a user-influenced URL;
+                    // don't mount the namespace default ServiceAccount token so
+                    // a file:// fetch can't exfiltrate cluster credentials.
+                    automount_service_account_token: Some(false),
                     ..PodSpec::default()
                 }),
             },

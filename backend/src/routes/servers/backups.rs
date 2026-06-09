@@ -119,9 +119,14 @@ pub async fn list(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<BackupListItem>>, AppError> {
+    // Only `complete` rows have a tarball on disk. `pending` (in-flight or
+    // crash-stranded) and `failed` rows are hidden so the UI never offers a
+    // restore against an archive that doesn't exist. Rows predating
+    // migration 0012 backfill to `complete` via DEFAULT.
     let rows: Vec<BackupListItem> = sqlx::query_as(
         "SELECT id, name, created_at, mc_version, size_bytes, kind, reason
-         FROM backups WHERE server_id = ? ORDER BY created_at DESC",
+         FROM backups WHERE server_id = ? AND status = 'complete'
+         ORDER BY created_at DESC",
     )
     .bind(&id)
     .fetch_all(&state.pool)
@@ -134,12 +139,30 @@ pub async fn list(
 /// # Errors
 ///
 /// - 404 if either the server or the backup row is missing.
+/// - 409 `backup_not_restorable` if the backup is not `complete` (still
+///   running or failed — its tarball may not exist).
 /// - 409 `update_in_progress` if another update / apply / backup is running.
 pub async fn restore(
     Path((id, backup_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<StartedResponse>), AppError> {
     backup_must_exist(&state, &id, &backup_id).await?;
+
+    // Restoring a non-`complete` backup would untar a missing archive and
+    // take the server down for nothing. The existence check above proves
+    // the row is present, so `fetch_one` is safe.
+    let (status,): (String,) =
+        sqlx::query_as("SELECT status FROM backups WHERE id = ? AND server_id = ?")
+            .bind(&backup_id)
+            .bind(&id)
+            .fetch_one(&state.pool)
+            .await?;
+    if status != "complete" {
+        return Err(AppError::Conflict {
+            code: "backup_not_restorable",
+            message: "backup is not complete".to_owned(),
+        });
+    }
 
     let Some(guard) = UpdateGuard::try_acquire(
         &id,

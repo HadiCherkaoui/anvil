@@ -107,9 +107,12 @@ async fn callback_inner(
     params: CallbackParams,
 ) -> Result<(PrivateCookieJar, CookieJar, Redirect), AppError> {
     if let Some(err) = params.error {
+        // Log the provider's error but don't reflect the raw query value
+        // back in the response body.
+        tracing::warn!(oidc.error = %err, "OIDC provider returned an error on callback");
         return Err(AppError::Forbidden {
             code: "oidc_provider_error",
-            message: err,
+            message: "the identity provider returned an error".to_owned(),
         });
     }
     let code = params.code.ok_or(AppError::Unauthorized)?;

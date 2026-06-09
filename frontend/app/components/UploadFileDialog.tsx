@@ -56,16 +56,15 @@ export function UploadFileDialog({
 
 	const send = (): void => {
 		if (file === null) return;
-		// Reject path-traversal characters and dotfiles outright. Stripping
-		// would silently rename the user's file; rejection is honest.
+		// Reject path-traversal characters. Stripping would silently rename
+		// the user's file; rejection is honest. Dotfiles (.fabric, .gitignore)
+		// are allowed — the backend path validator accepts them.
 		if (
 			file.name.includes("/") ||
 			file.name.includes("\\") ||
-			file.name.includes("\0") ||
-			file.name.startsWith(".")
+			file.name.includes("\0")
 		) {
-			const message =
-				"invalid filename · cannot contain '/', '\\', NUL, or start with '.'";
+			const message = "invalid filename · cannot contain '/', '\\', or NUL";
 			setError(message);
 			toast.push(message, "error");
 			return;

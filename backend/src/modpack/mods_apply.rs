@@ -254,41 +254,217 @@ fn compute_desired(raw: &str, target: SyncTarget) -> Result<Vec<ModEntry>> {
     }
 }
 
-/// Persists the post-sync state: the desired list becomes the committed
-/// list, and the pending field is cleared.
+/// Persists the post-sync state: the applied `desired` list becomes the
+/// committed list, and the pending entries we applied are cleared.
+///
+/// The sync Job runs for minutes, during which the user can stage more
+/// pending edits. Those must survive — so this re-reads the *current*
+/// `source_config` instead of trusting the pre-Job snapshot, writes under a
+/// compare-and-swap, and only clears pending when nothing changed meanwhile.
+/// `start_raw` is the pre-Job snapshot, used to identify which pending
+/// entries were the ones we just applied.
 async fn commit(
     pool: &SqlitePool,
     server_id: &str,
-    raw: &str,
+    start_raw: &str,
     target: SyncTarget,
     desired: Vec<ModEntry>,
 ) -> Result<usize> {
     let new_count = desired.len();
-    let new_raw = match target {
-        SyncTarget::Mods => {
-            let mut cfg: ModdedConfig =
-                serde_json::from_str(raw).context("source_config not modded JSON")?;
-            cfg.mods = desired;
-            cfg.pending = Vec::new();
-            serde_json::to_string(&cfg)?
+    for attempt in 0..2 {
+        let current_raw = fetch_source_config(pool, server_id).await?;
+        let new_raw = build_committed_config(&current_raw, start_raw, target, &desired)?;
+        let res =
+            sqlx::query("UPDATE servers SET source_config = ? WHERE id = ? AND source_config = ?")
+                .bind(&new_raw)
+                .bind(server_id)
+                .bind(&current_raw)
+                .execute(pool)
+                .await?;
+        if res.rows_affected() > 0 {
+            break;
         }
-        SyncTarget::Plugins => {
-            let mut cfg: PaperConfig =
-                serde_json::from_str(raw).context("source_config not paper JSON")?;
-            cfg.plugins = desired;
-            cfg.pending_plugins = Vec::new();
-            serde_json::to_string(&cfg)?
+        if attempt == 1 {
+            // Two writers in the millisecond window between this read and the
+            // CAS is astronomically unlikely on a single-user homelab. Fail
+            // loudly (pending is preserved in the DB) rather than clobber it;
+            // a re-apply re-syncs idempotently.
+            bail!("source_config changed concurrently while committing apply");
         }
-    };
-    sqlx::query("UPDATE servers SET source_config = ? WHERE id = ?")
-        .bind(&new_raw)
-        .bind(server_id)
-        .execute(pool)
-        .await?;
+    }
     sqlx::query("UPDATE servers SET last_started_at = ? WHERE id = ?")
         .bind(Utc::now().timestamp())
         .bind(server_id)
         .execute(pool)
         .await?;
     Ok(new_count)
+}
+
+/// Reads the live `source_config` JSON for `server_id`.
+async fn fetch_source_config(pool: &SqlitePool, server_id: &str) -> Result<String> {
+    let row: (String,) = sqlx::query_as("SELECT source_config FROM servers WHERE id = ?")
+        .bind(server_id)
+        .fetch_one(pool)
+        .await
+        .with_context(|| format!("re-reading source_config for {server_id}"))?;
+    Ok(row.0)
+}
+
+/// Builds the committed `source_config`: the applied `desired` list becomes
+/// the installed list, and pending is cleared *only* of what we applied.
+///
+/// When the config is byte-identical to the pre-Job snapshot
+/// (`current_raw == start_raw`), no edit landed during the Job, so pending is
+/// emptied wholesale. When it changed, the user staged more during the Job —
+/// keep those entries so the next apply installs them.
+fn build_committed_config(
+    current_raw: &str,
+    start_raw: &str,
+    target: SyncTarget,
+    desired: &[ModEntry],
+) -> Result<String> {
+    match target {
+        SyncTarget::Mods => {
+            let mut cfg: ModdedConfig =
+                serde_json::from_str(current_raw).context("source_config not modded JSON")?;
+            cfg.mods = desired.to_vec();
+            if current_raw == start_raw {
+                cfg.pending = Vec::new();
+            } else {
+                // Drop only the ops we applied; keep ones staged mid-Job.
+                let start_cfg: ModdedConfig = serde_json::from_str(start_raw)
+                    .context("pre-Job source_config not modded JSON")?;
+                cfg.pending.retain(|op| !start_cfg.pending.contains(op));
+            }
+            Ok(serde_json::to_string(&cfg)?)
+        }
+        SyncTarget::Plugins => {
+            let mut cfg: PaperConfig =
+                serde_json::from_str(current_raw).context("source_config not paper JSON")?;
+            cfg.plugins = desired.to_vec();
+            // pending_plugins is the full staged list; clear it only when
+            // nothing changed during the Job. If it did, the current
+            // pending_plugins is the newer desired list — keep it as pending.
+            if current_raw == start_raw {
+                cfg.pending_plugins = Vec::new();
+            }
+            Ok(serde_json::to_string(&cfg)?)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str) -> ModEntry {
+        ModEntry {
+            provider: "modrinth".to_owned(),
+            project_id: name.to_owned(),
+            project_slug: name.to_owned(),
+            project_name: name.to_owned(),
+            version_id: "v1".to_owned(),
+            version_name: "1.0".to_owned(),
+            filename: format!("{name}.jar"),
+            download_url: format!("https://cdn.modrinth.com/{name}.jar"),
+            sha512: None,
+        }
+    }
+
+    fn paper_raw(plugins: &[&str], pending: &[&str]) -> String {
+        let cfg = PaperConfig {
+            mc_version: "1.21.4".to_owned(),
+            paper_build: None,
+            plugins: plugins.iter().map(|n| entry(n)).collect(),
+            pending_plugins: pending.iter().map(|n| entry(n)).collect(),
+            auto_update_mode: crate::modpack::modded::AutoUpdateMode::default(),
+        };
+        serde_json::to_string(&cfg).unwrap()
+    }
+
+    async fn seed(pool: &SqlitePool, id: &str, source_config: &str) {
+        sqlx::query(
+            "INSERT INTO servers
+                (id, name, mc_version, memory_mi, source_kind, exposure_mode,
+                 storage_size_gi, source_config, created_at)
+             VALUES (?, ?, '1.21.4', 4096, 'paper', 'clusterip', 10, ?, 0)",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(source_config)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn commit_preserves_plugin_edits_staged_during_apply() {
+        let pool = crate::db::init("sqlite::memory:").await.unwrap();
+        // Pre-Job snapshot: "sodium" staged.
+        let start_raw = paper_raw(&[], &["sodium"]);
+        seed(&pool, "s1", &start_raw).await;
+        // During the Job the user stages "lithium" too.
+        let mid_raw = paper_raw(&[], &["sodium", "lithium"]);
+        sqlx::query("UPDATE servers SET source_config = ? WHERE id = ?")
+            .bind(&mid_raw)
+            .bind("s1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // commit() runs with the STALE snapshot + the desired computed from it.
+        commit(
+            &pool,
+            "s1",
+            &start_raw,
+            SyncTarget::Plugins,
+            vec![entry("sodium")],
+        )
+        .await
+        .unwrap();
+
+        let (raw,): (String,) = sqlx::query_as("SELECT source_config FROM servers WHERE id = ?")
+            .bind("s1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let cfg: PaperConfig = serde_json::from_str(&raw).unwrap();
+        assert_eq!(cfg.plugins.len(), 1, "sodium committed");
+        assert_eq!(cfg.plugins[0].filename, "sodium.jar");
+        assert!(
+            cfg.pending_plugins
+                .iter()
+                .any(|p| p.filename == "lithium.jar"),
+            "plugin staged during the apply must survive commit",
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_clears_pending_on_clean_apply() {
+        let pool = crate::db::init("sqlite::memory:").await.unwrap();
+        let start_raw = paper_raw(&[], &["sodium"]);
+        seed(&pool, "s1", &start_raw).await;
+
+        commit(
+            &pool,
+            "s1",
+            &start_raw,
+            SyncTarget::Plugins,
+            vec![entry("sodium")],
+        )
+        .await
+        .unwrap();
+
+        let (raw,): (String,) = sqlx::query_as("SELECT source_config FROM servers WHERE id = ?")
+            .bind("s1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let cfg: PaperConfig = serde_json::from_str(&raw).unwrap();
+        assert_eq!(cfg.plugins.len(), 1);
+        assert!(
+            cfg.pending_plugins.is_empty(),
+            "pending cleared when nothing changed during the apply",
+        );
+    }
 }

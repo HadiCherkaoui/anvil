@@ -24,8 +24,11 @@ export function useMcVersions(): McVersionsResponse | undefined {
 				if (alive) setValue(v);
 			})
 			.catch(() => {
-				// Best-effort — leave value undefined; callers fall back to a
-				// minimal hardcoded list (the create / settings pages do this).
+				// Reset the shared promise so a later mount retries instead of
+				// re-attaching to this rejected one for the rest of the session
+				// (which left the version dropdown permanently empty). Callers
+				// fall back to a minimal hardcoded list until a retry succeeds.
+				inflight = undefined;
 			});
 		return () => {
 			alive = false;

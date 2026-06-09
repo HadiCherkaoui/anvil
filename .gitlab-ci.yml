@@ -89,6 +89,17 @@ rust-test:
 docker-build:
   stage: image
   image: docker:27
+  # Explicit gate: never build the image if a Rust check that ran in this
+  # pipeline failed (don't rely on stage ordering, which a *skipped* job
+  # silently slips past). `optional` keeps Dockerfile-/deploy-only commits —
+  # where the Rust jobs don't run because the code is unchanged — buildable.
+  needs:
+    - job: rust-fmt
+      optional: true
+    - job: rust-clippy
+      optional: true
+    - job: rust-test
+      optional: true
   services:
     - name: docker:27-dind
       alias: docker

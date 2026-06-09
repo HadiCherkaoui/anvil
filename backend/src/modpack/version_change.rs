@@ -17,7 +17,7 @@ use serde_json::json;
 use tracing::{Level, event};
 
 use crate::AppState;
-use crate::k8s_patches::patch_statefulset_env;
+use crate::k8s_patches::{patch_statefulset_env, with_properties_env};
 use crate::modpack::guard::{UpdateGuard, record_terminal, set_update_error};
 use crate::modpack::jobs::{BACKUP_KEEP_COUNT, build_backup_job, build_restore_job};
 use crate::modpack::orchestrator::{
@@ -261,9 +261,7 @@ async fn run_inner(
         } else {
             "failed"
         };
-        if let Err(e) =
-            crate::modpack::backups::mark_auto_backup_status(state, id, new_status).await
-        {
+        if let Err(e) = crate::modpack::backups::mark_backup_status(state, id, new_status).await {
             tracing::error!(
                 server.id = %server_id,
                 err = %e,
@@ -337,33 +335,43 @@ async fn run_inner(
         return Err(FsmError::Post(ctx, e));
     }
 
-    // ─── Phase 7: persist + audit ────────────────────────────────────────
-    // last_started_at + audit row commit together so a stale audit_log
-    // entry can't outlive a failed last_started_at write (or vice versa).
+    // ─── Phase 7: persist + audit (best-effort) ──────────────────────────
+    // The swap already committed `mc_version` (Phase 4) and the pod booted on
+    // it (Phase 6), so the update HAS succeeded. A failure of this final
+    // bookkeeping must NOT flip the result to Failed (which would mislead the
+    // UI and, on retry, recompute from now-correct state) — at worst it
+    // leaves last_started_at / the success audit stale. Log and return Ok.
+    // The two writes still share a transaction so they land atomically.
     let now_end = Utc::now().timestamp();
-    let mut tx = state
-        .pool
-        .begin()
-        .await
-        .map_err(|e| FsmError::Pre(e.into()))?;
-    sqlx::query("UPDATE servers SET last_started_at = ? WHERE id = ?")
+    let bookkeeping: anyhow::Result<()> = async {
+        let mut tx = state.pool.begin().await?;
+        sqlx::query("UPDATE servers SET last_started_at = ? WHERE id = ?")
+            .bind(now_end)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await?;
+        let details_text = json!({"new_mc": new_mc, "new_loader": new_loader}).to_string();
+        sqlx::query(
+            "INSERT INTO audit_log (ts, server_id, action, details, actor)
+             VALUES (?, ?, 'version_change_succeeded', ?, NULL)",
+        )
         .bind(now_end)
         .bind(server_id)
+        .bind(details_text)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| FsmError::Pre(e.into()))?;
-    let details_text = json!({"new_mc": new_mc, "new_loader": new_loader}).to_string();
-    sqlx::query(
-        "INSERT INTO audit_log (ts, server_id, action, details, actor)
-         VALUES (?, ?, 'version_change_succeeded', ?, NULL)",
-    )
-    .bind(now_end)
-    .bind(server_id)
-    .bind(details_text)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| FsmError::Pre(e.into()))?;
-    tx.commit().await.map_err(|e| FsmError::Pre(e.into()))?;
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    if let Err(e) = bookkeeping {
+        tracing::error!(
+            server.id = %server_id,
+            err = %e,
+            "version change succeeded but final bookkeeping write failed; \
+             last_started_at / success audit may be stale"
+        );
+    }
     Ok(())
 }
 
@@ -478,6 +486,7 @@ async fn apply_swap(
         .execute(&state.pool)
         .await?;
 
+    let new_env = with_properties_env(&state.pool, server_id, &new_env).await?;
     patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &new_env).await?;
     Ok(boot_timeout)
 }
@@ -524,7 +533,10 @@ async fn rollback(state: &AppState, server_id: &str, ctx: &RollbackContext) -> R
     .await?;
 
     // Revert env on the StatefulSet to the snapshot we took before swap.
-    patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &ctx.old_env).await?;
+    // Re-merge server.properties so the rollback apply doesn't strip the
+    // user's overrides (SSA owns the env list by entry name).
+    let old_env = with_properties_env(&state.pool, server_id, &ctx.old_env).await?;
+    patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &old_env).await?;
 
     // Revert SQLite row.
     sqlx::query("UPDATE servers SET mc_version = ?, source_config = ? WHERE id = ?")

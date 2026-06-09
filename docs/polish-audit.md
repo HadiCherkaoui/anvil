@@ -218,9 +218,9 @@ user to run if they want to validate any item live.
    scope per spec, but it's a small handler. Decision needed: include or
    defer to M6?
 
-6. **A "FileBrowser" deep-link from the detail page.** Listed as
-   "deferred" in milestones.md; trivial once the URL pattern is locked
-   down. Worth deciding.
+6. **An integrated file browser from the detail page.** Was listed as
+   "deferred" in milestones.md; delivered in v2 as an in-panel browser
+   over each server's data PVC (the Files tab).
 
 7. **A consistent "loading skeleton" pattern.** Today the home page
    shows `loading servers…` text, the detail page shows `loading…`,

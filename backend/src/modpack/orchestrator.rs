@@ -30,7 +30,7 @@ use tokio::time::{Instant, sleep, timeout};
 use tracing::{Level, event};
 
 use crate::AppState;
-use crate::k8s_patches::patch_statefulset_env;
+use crate::k8s_patches::{patch_statefulset_env, with_properties_env};
 use crate::k8s_status::RCON_PORT;
 use crate::modpack::guard::{UpdateGuard, record_terminal, set_update_error};
 use crate::modpack::jobs::{BACKUP_KEEP_COUNT, build_backup_job, build_restore_job};
@@ -282,9 +282,7 @@ async fn run_inner(
         } else {
             "failed"
         };
-        if let Err(e) =
-            crate::modpack::backups::mark_auto_backup_status(state, id, new_status).await
-        {
+        if let Err(e) = crate::modpack::backups::mark_backup_status(state, id, new_status).await {
             event!(
                 name: "anvil.update.backup_row_status_update_failed",
                 Level::ERROR,
@@ -313,10 +311,15 @@ async fn run_inner(
     guard.emit(UpdatePhase::Swapping);
     let memory_mi = fetch_memory_mi(&state.pool, server_id).await?;
     let new_provider = build_provider_for_version(&source_kind, &source_config, &version)?;
-    let new_env = new_provider.extra_env(&ProviderContext {
+    let new_env = with_properties_env(
+        &state.pool,
         server_id,
-        memory_mi,
-    });
+        &new_provider.extra_env(&ProviderContext {
+            server_id,
+            memory_mi,
+        }),
+    )
+    .await?;
     patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &new_env).await?;
     insert_audit(
         &state.pool,
@@ -864,10 +867,15 @@ async fn rollback(
     let old_provider = from_db(&source_kind, &source_config)
         .with_context(|| format!("rebuilding pre-update provider for {server_id}"))?;
     let memory_mi = fetch_memory_mi(&state.pool, server_id).await?;
-    let old_env = old_provider.extra_env(&ProviderContext {
+    let old_env = with_properties_env(
+        &state.pool,
         server_id,
-        memory_mi,
-    });
+        &old_provider.extra_env(&ProviderContext {
+            server_id,
+            memory_mi,
+        }),
+    )
+    .await?;
     patch_statefulset_env(&state.kube, &state.mc_namespace, server_id, &old_env).await?;
 
     let jobs: Api<Job> = Api::namespaced(state.kube.clone(), &state.mc_namespace);

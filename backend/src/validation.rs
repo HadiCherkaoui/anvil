@@ -283,6 +283,72 @@ pub fn validate_mod_filename(name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// CDN domains the mod/plugin sync Job is allowed to download from.
+///
+/// A `ModEntry.download_url` is fetched verbatim by `curl` inside an
+/// in-cluster Job, so an unrestricted value is an SSRF vector (`file://`,
+/// `http://169.254.169.254`, internal Services). Modrinth serves files from
+/// `cdn.modrinth.com` and `CurseForge` from `*.forgecdn.net`; nothing else is
+/// a legitimate provider URL.
+const KNOWN_DOWNLOAD_DOMAINS: &[&str] = &["modrinth.com", "forgecdn.net"];
+
+/// Validates a mod/plugin `download_url`: must be `https` and point at a
+/// known provider CDN ([`KNOWN_DOWNLOAD_DOMAINS`]).
+///
+/// Keeps the sync Job's `curl` from being aimed at `file://` or an
+/// in-cluster Service. The user-supplied value originates from a catalog
+/// pick, which always resolves to a provider CDN, so a rejection means the
+/// value was tampered with.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "download_url_invalid"`.
+pub fn validate_download_url(raw: &str) -> Result<(), AppError> {
+    let url = url::Url::parse(raw).map_err(|_| download_url_invalid())?;
+    if url.scheme() != "https" {
+        return Err(download_url_invalid());
+    }
+    let Some(host) = url.host_str() else {
+        return Err(download_url_invalid());
+    };
+    let allowed = KNOWN_DOWNLOAD_DOMAINS
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")));
+    if !allowed {
+        return Err(download_url_invalid());
+    }
+    Ok(())
+}
+
+fn download_url_invalid() -> AppError {
+    AppError::BadRequest {
+        code: "download_url_invalid",
+        message: "download_url must be https on a known provider CDN".to_owned(),
+    }
+}
+
+/// Validates an optional SHA-512 digest: `None` is accepted (`CurseForge`
+/// omits it); when present it must be exactly 128 hex digits.
+///
+/// Beyond integrity, the hex constraint blocks newline/tab injection into
+/// the sync Job's tab-delimited `DESIRED_URLS` env var, where a crafted
+/// digest could otherwise inject an extra download line.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] with `code = "sha512_invalid"`.
+pub fn validate_sha512_opt(sha: Option<&str>) -> Result<(), AppError> {
+    let Some(s) = sha else { return Ok(()) };
+    if s.len() == 128 && s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest {
+            code: "sha512_invalid",
+            message: "sha512 must be 128 hex digits".to_owned(),
+        })
+    }
+}
+
 /// Validates that `mode` is in [`KNOWN_EXPOSURE_MODES`].
 ///
 /// # Errors
@@ -623,6 +689,48 @@ mod tests {
         assert!(validate_mod_filename("sodium.zip").is_err());
         assert!(validate_mod_filename("").is_err());
         assert!(validate_mod_filename(&format!("{}.jar", "a".repeat(200))).is_err());
+    }
+
+    #[test]
+    fn download_url_accepts_provider_cdns() {
+        assert!(
+            validate_download_url("https://cdn.modrinth.com/data/AANobbMI/versions/x/sodium.jar")
+                .is_ok()
+        );
+        assert!(
+            validate_download_url("https://mediafilez.forgecdn.net/files/123/456/mod.jar").is_ok()
+        );
+        assert!(validate_download_url("https://edge.forgecdn.net/files/1/2/a.jar").is_ok());
+    }
+
+    #[test]
+    fn download_url_rejects_ssrf_and_spoofed_hosts() {
+        for bad in [
+            "file:///var/run/secrets/kubernetes.io/serviceaccount/token",
+            "http://cdn.modrinth.com/x.jar", // not https
+            "https://169.254.169.254/latest/meta-data",
+            "https://10.0.0.5/internal",
+            "https://evil.com/x.jar",
+            "https://cdn.modrinth.com.attacker.com/x.jar",
+            "https://notmodrinth.com/x.jar",
+            "not a url",
+        ] {
+            assert!(
+                validate_download_url(bad).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn sha512_opt_validator() {
+        let valid = "a".repeat(128);
+        assert!(validate_sha512_opt(None).is_ok());
+        assert!(validate_sha512_opt(Some(&valid)).is_ok());
+        // Injection vectors and wrong shapes.
+        assert!(validate_sha512_opt(Some("abc")).is_err());
+        assert!(validate_sha512_opt(Some(&format!("{valid}\nmod.jar\thttp://x"))).is_err());
+        assert!(validate_sha512_opt(Some(&"g".repeat(128))).is_err());
     }
 
     #[test]

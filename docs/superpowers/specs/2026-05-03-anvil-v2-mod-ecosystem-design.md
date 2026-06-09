@@ -423,13 +423,12 @@ Branches on `detail.source_kind`:
 - `vanilla` — should not render (parent hides the tab); defensive
   placeholder in case of stale routing.
 - `paper` — Card with copy: `plugin browsing arrives with the v2.2
-  paper toolkit. install plugins via FileBrowser at
-  files.cherkaoui.ch for now.`
+  paper toolkit. install plugins via an external file manager for now.`
 - `curseforge` / `modrinth` — read-only inventory list. Title:
   `bundled in {pack name}`. Subtitle: `pack-driven — changes get
   wiped at next pack update`. For B's scope, render
   `currentVersionName` + a `mod inventory listing v2.2 — view mods/
-  via FileBrowser` placeholder. Live `.mrpack` manifest read deferred
+  via an external file manager` placeholder. Live `.mrpack` manifest read deferred
   to B.1.
 
 - `modded` — full UX:
@@ -573,7 +572,7 @@ Genuinely unresolved; rest are design decisions captured above.
    are concretely shaped.
 3. **Modpack-inventory live read in B?** — for B we ship the Mods
    tab on `curseforge`/`modrinth` rows as a stub showing the pack
-   name + `view mods/ via FileBrowser` copy. A live `.mrpack`
+   name + `view mods/ via an external file manager` copy. A live `.mrpack`
    manifest read (Modrinth) and a `manifest.json` read inside the
    already-downloaded ServerFiles zip (CF) would surface the full
    bundled mod list, but pulls a non-trivial new path into B. Defer

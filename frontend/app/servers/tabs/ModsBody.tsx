@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useState, type ReactElement } from "react";
 
 import {
 	ApiError,
@@ -43,6 +43,16 @@ export function ModsBody(): ReactElement {
 	const [browseOpen, setBrowseOpen] = useState(false);
 	const [applyOpen, setApplyOpen] = useState(false);
 
+	// Stable identity so PaperPluginsBody's load effect (keyed on serverId +
+	// onToast) doesn't re-fire — and re-fetch the plugin list — on every
+	// 5s detail poll, which re-renders this component.
+	const onToast = useCallback(
+		(msg: string, kind: "success" | "error") => {
+			toast.push(msg, kind);
+		},
+		[toast],
+	);
+
 	if (detail.source_kind === "vanilla") {
 		return (
 			<Card>
@@ -64,9 +74,7 @@ export function ModsBody(): ReactElement {
 				applyOpen={applyOpen}
 				setApplyOpen={setApplyOpen}
 				onMutated={refresh}
-				onToast={(msg, kind) => {
-					toast.push(msg, kind);
-				}}
+				onToast={onToast}
 			/>
 		);
 	}
@@ -107,7 +115,10 @@ export function ModsBody(): ReactElement {
 		addPendingMod(detail.id, op)
 			.then((res) => {
 				refresh();
-				toast.push(addedToastMessage(entry.project_name, res.added_count), "success");
+				toast.push(
+					addedToastMessage(entry.project_name, res.added_count),
+					"success",
+				);
 			})
 			.catch((err: unknown) => {
 				toast.push(
@@ -142,10 +153,14 @@ export function ModsBody(): ReactElement {
 		latestVersionId: string,
 	): Promise<void> => {
 		try {
-			const versions = await fetchCatalogVersions(mod.provider, mod.project_id, {
-				mc: cfg.mc_version,
-				loader: cfg.runtime,
-			});
+			const versions = await fetchCatalogVersions(
+				mod.provider,
+				mod.project_id,
+				{
+					mc: cfg.mc_version,
+					loader: cfg.runtime,
+				},
+			);
 			const v = versions.find((x) => x.version_id === latestVersionId);
 			if (!v) {
 				toast.push(`bump failed · target version not in upstream`, "error");
@@ -529,7 +544,10 @@ function PaperPluginsBody({
 		};
 		addServerPlugin(serverId, entry)
 			.then((res) => {
-				onToast(addedToastMessage(entry.project_name, res.added_count), "success");
+				onToast(
+					addedToastMessage(entry.project_name, res.added_count),
+					"success",
+				);
 				refresh();
 				onMutated();
 			})

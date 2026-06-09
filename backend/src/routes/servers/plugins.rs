@@ -35,7 +35,7 @@ use crate::modpack::orchestrator::UpdatePhase;
 use crate::modpack::paper::Config as PaperConfig;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
-use crate::validation::validate_mod_filename;
+use crate::validation::{validate_download_url, validate_mod_filename, validate_sha512_opt};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 
@@ -88,21 +88,34 @@ pub async fn add_pending(
     Json(entry): Json<ModEntry>,
 ) -> Result<Json<AddResponse>, AppError> {
     validate_mod_filename(&entry.filename)?;
+    // download_url / sha512 are fetched verbatim by the sync Job's curl —
+    // gate them against file:// / internal-Service SSRF and line injection.
+    validate_download_url(&entry.download_url)?;
+    validate_sha512_opt(entry.sha512.as_deref())?;
 
-    let mut cfg = load_paper_cfg(&state, &id).await?;
-    if cfg.pending_plugins.is_empty() {
-        cfg.pending_plugins.clone_from(&cfg.plugins);
-    }
-
-    let extra = resolve_for_add(&state, &cfg, &entry).await;
-
-    cfg.pending_plugins.retain(|p| p.filename != entry.filename);
-    cfg.pending_plugins.push(entry.clone());
-    for dep in &extra {
-        cfg.pending_plugins.retain(|p| p.filename != dep.filename);
-        cfg.pending_plugins.push(dep.clone());
-    }
-    save_paper_cfg(&state, &id, &cfg).await?;
+    // Optimistic-locking retry mirrors the mods path: read source_config,
+    // stage the edit, conditional UPDATE keyed on the original raw JSON. A
+    // concurrent writer that landed in between flips our rows-affected to 0;
+    // re-read once and retry before surfacing a conflict.
+    let (cfg_after, extra) = {
+        let (mut cfg, raw_before) = load_paper_cfg_raw(&state, &id).await?;
+        let extra = stage_add(&state, &mut cfg, &entry).await;
+        let rows = save_paper_cfg_cas(&state, &id, &cfg, &raw_before).await?;
+        if rows == 0 {
+            let (mut cfg2, raw2) = load_paper_cfg_raw(&state, &id).await?;
+            let extra2 = stage_add(&state, &mut cfg2, &entry).await;
+            let rows2 = save_paper_cfg_cas(&state, &id, &cfg2, &raw2).await?;
+            if rows2 == 0 {
+                return Err(AppError::Conflict {
+                    code: "source_config_conflict",
+                    message: "concurrent plugin write; retry".to_owned(),
+                });
+            }
+            (cfg2, extra2)
+        } else {
+            (cfg, extra)
+        }
+    };
 
     let added_count = 1 + extra.len();
     let now = Utc::now().timestamp();
@@ -111,7 +124,7 @@ pub async fn add_pending(
         &id,
         "plugins_pending_add",
         Some(json!({
-            "pending_count": cfg.pending_plugins.len(),
+            "pending_count": cfg_after.pending_plugins.len(),
             "added_count": added_count,
         })),
         now,
@@ -159,6 +172,37 @@ async fn resolve_for_add(state: &AppState, cfg: &PaperConfig, seed: &ModEntry) -
     }
 }
 
+/// Stages an add into `cfg.pending_plugins`: seeds the draft from the live
+/// list on the first edit since the last apply, resolves required deps from
+/// upstream, then upserts the seed + deps by filename. Returns the extras.
+/// Re-run as-is on a CAS retry.
+async fn stage_add(state: &AppState, cfg: &mut PaperConfig, entry: &ModEntry) -> Vec<ModEntry> {
+    if cfg.pending_plugins.is_empty() {
+        cfg.pending_plugins.clone_from(&cfg.plugins);
+    }
+    let extra = resolve_for_add(state, cfg, entry).await;
+    cfg.pending_plugins.retain(|p| p.filename != entry.filename);
+    cfg.pending_plugins.push(entry.clone());
+    for dep in &extra {
+        cfg.pending_plugins.retain(|p| p.filename != dep.filename);
+        cfg.pending_plugins.push(dep.clone());
+    }
+    extra
+}
+
+/// Stages a removal from `cfg.pending_plugins`: seeds the draft on the first
+/// edit, drops the entry by filename, and collapses the draft back to empty
+/// when it matches the live list ("no pending changes"). Re-run on retry.
+fn stage_remove(cfg: &mut PaperConfig, filename: &str) {
+    if cfg.pending_plugins.is_empty() {
+        cfg.pending_plugins.clone_from(&cfg.plugins);
+    }
+    cfg.pending_plugins.retain(|p| p.filename != filename);
+    if cfg.pending_plugins == cfg.plugins {
+        cfg.pending_plugins = Vec::new();
+    }
+}
+
 /// `DELETE /api/servers/{id}/plugins/{filename}` — stage removing a plugin.
 ///
 /// Initialises `pending_plugins` from `plugins` if needed, then drops the
@@ -176,22 +220,34 @@ pub async fn remove_pending(
 ) -> Result<StatusCode, AppError> {
     validate_mod_filename(&filename)?;
 
-    let mut cfg = load_paper_cfg(&state, &id).await?;
-    if cfg.pending_plugins.is_empty() {
-        cfg.pending_plugins.clone_from(&cfg.plugins);
-    }
-    cfg.pending_plugins.retain(|p| p.filename != filename);
-    if cfg.pending_plugins == cfg.plugins {
-        cfg.pending_plugins = Vec::new();
-    }
-    save_paper_cfg(&state, &id, &cfg).await?;
+    // CAS retry mirrors the mods path so a concurrent edit can't silently
+    // clobber this removal (lost update).
+    let cfg_after = {
+        let (mut cfg, raw_before) = load_paper_cfg_raw(&state, &id).await?;
+        stage_remove(&mut cfg, &filename);
+        let rows = save_paper_cfg_cas(&state, &id, &cfg, &raw_before).await?;
+        if rows == 0 {
+            let (mut cfg2, raw2) = load_paper_cfg_raw(&state, &id).await?;
+            stage_remove(&mut cfg2, &filename);
+            let rows2 = save_paper_cfg_cas(&state, &id, &cfg2, &raw2).await?;
+            if rows2 == 0 {
+                return Err(AppError::Conflict {
+                    code: "source_config_conflict",
+                    message: "concurrent plugin write; retry".to_owned(),
+                });
+            }
+            cfg2
+        } else {
+            cfg
+        }
+    };
 
     let now = Utc::now().timestamp();
     if let Err(e) = insert_audit(
         &state.pool,
         &id,
         "plugins_pending_remove",
-        Some(json!({"filename": filename, "pending_count": cfg.pending_plugins.len()})),
+        Some(json!({"filename": filename, "pending_count": cfg_after.pending_plugins.len()})),
         now,
     )
     .await
@@ -276,6 +332,13 @@ pub async fn apply_stream(
 }
 
 async fn load_paper_cfg(state: &AppState, id: &str) -> Result<PaperConfig, AppError> {
+    Ok(load_paper_cfg_raw(state, id).await?.0)
+}
+
+/// Loads the paper config alongside the raw `source_config` JSON, which the
+/// mutating handlers use as the compare-and-swap key for
+/// [`save_paper_cfg_cas`].
+async fn load_paper_cfg_raw(state: &AppState, id: &str) -> Result<(PaperConfig, String), AppError> {
     let row: Option<(String, String)> =
         sqlx::query_as("SELECT source_kind, source_config FROM servers WHERE id = ?")
             .bind(id)
@@ -288,18 +351,29 @@ async fn load_paper_cfg(state: &AppState, id: &str) -> Result<PaperConfig, AppEr
             message: "plugin endpoints only apply to paper servers".to_owned(),
         });
     }
-    serde_json::from_str(&raw)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("source_config not paper JSON: {e}")))
+    let cfg = serde_json::from_str(&raw)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("source_config not paper JSON: {e}")))?;
+    Ok((cfg, raw))
 }
 
-async fn save_paper_cfg(state: &AppState, id: &str, cfg: &PaperConfig) -> Result<(), AppError> {
+/// Compare-and-swap save: writes `cfg` only while `source_config` still
+/// equals `raw_before`. Returns rows affected — 0 means a concurrent writer
+/// landed first, so the caller re-reads and retries.
+async fn save_paper_cfg_cas(
+    state: &AppState,
+    id: &str,
+    cfg: &PaperConfig,
+    raw_before: &str,
+) -> Result<u64, AppError> {
     let raw = serde_json::to_string(cfg).map_err(|e| AppError::Internal(e.into()))?;
-    sqlx::query("UPDATE servers SET source_config = ? WHERE id = ?")
-        .bind(&raw)
-        .bind(id)
-        .execute(&state.pool)
-        .await?;
-    Ok(())
+    let res =
+        sqlx::query("UPDATE servers SET source_config = ? WHERE id = ? AND source_config = ?")
+            .bind(&raw)
+            .bind(id)
+            .bind(raw_before)
+            .execute(&state.pool)
+            .await?;
+    Ok(res.rows_affected())
 }
 
 #[derive(Debug, Serialize)]

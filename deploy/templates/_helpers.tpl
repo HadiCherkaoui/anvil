@@ -42,9 +42,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
-{{/* Container image reference: defaults image.tag to .Chart.AppVersion. */}}
+{{/* Container image reference. Defaults image.tag to `latest` — the tag CI
+     actually publishes alongside :<commit-sha>. (Chart.appVersion is not
+     pushed as an image tag, so using it here yields ImagePullBackOff.)
+     Pin image.tag to a commit SHA in production for rollback. */}}
 {{- define "anvil.image" -}}
-{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
+{{- $tag := default "latest" .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repo $tag -}}
 {{- end -}}
 

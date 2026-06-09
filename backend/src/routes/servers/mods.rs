@@ -34,7 +34,7 @@ use crate::modpack::mods_apply::{self, SyncTarget};
 use crate::modpack::orchestrator::UpdatePhase;
 use crate::routes::servers::create::insert_audit;
 use crate::routes::servers::get::fetch_server_row;
-use crate::validation::validate_mod_filename;
+use crate::validation::{validate_download_url, validate_mod_filename, validate_sha512_opt};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 
@@ -107,15 +107,26 @@ pub async fn add_pending(
     Json(req): Json<PendingOpRequest>,
 ) -> Result<Json<AddResponse>, AppError> {
     match &req {
-        PendingOpRequest::Add { mod_entry } => validate_mod_filename(&mod_entry.filename)?,
+        PendingOpRequest::Add { mod_entry } => {
+            validate_mod_filename(&mod_entry.filename)?;
+            // download_url / sha512 are fetched verbatim by the sync Job's
+            // curl — gate them so an attacker can't point it at file:// or an
+            // internal Service, or inject extra download lines.
+            validate_download_url(&mod_entry.download_url)?;
+            validate_sha512_opt(mod_entry.sha512.as_deref())?;
+        }
         PendingOpRequest::Remove { filename } => validate_mod_filename(filename)?,
         PendingOpRequest::Bump {
             filename,
             to_filename,
+            to_download_url,
+            to_sha512,
             ..
         } => {
             validate_mod_filename(filename)?;
             validate_mod_filename(to_filename)?;
+            validate_download_url(to_download_url)?;
+            validate_sha512_opt(to_sha512.as_deref())?;
         }
     }
 

@@ -103,11 +103,12 @@ archive, RCON over TLS / port-forward fallback (we trust the cluster network).
 
 ---
 
-## (deferred) FileBrowser deep-link per server
+## (delivered in v2) Integrated file browser per server
 
-A "Files" link from the detail page to FileBrowser at `files.cherkaoui.ch`. Trivial
-once the URL pattern is locked down. Skipped from M2/M3 because the brief never
-specified the host pattern.
+Shipped as an in-panel browser over each server's data PVC (list / upload /
+download / rename / delete via a helper Pod) — see the Files tab. The earlier
+idea of deep-linking to an external file manager was dropped in favour of the
+built-in browser.
 
 ---
 

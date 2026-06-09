@@ -68,7 +68,7 @@ Full route, **not a modal**. Crafty Controller-style multi-tabbed surface.
 | Players  |          | Online player list. Requires RCON or query protocol — **stretch for M5; M3 ships the tab hidden or shows a "requires RCON, M5+" placeholder.**                                                                                                                                                                                    |
 | Settings |          | Editable: **`memory_mb`, `mc_version`** only — applies on next start (i.e., next stop→start cycle). `storage_class` and `service_type` are **immutable post-create** because changing them requires PVC/Service recreation (destructive). To change either, delete and recreate the server. Submit → `PATCH /api/servers/{name}`. |
 
-**File browsing is intentionally not a tab.** Deferred decision (TBD): integrated mini-browser served by anvil over the PVC sub-path, or external `FileBrowser` deep-link. **Not in v1.** No Files button in the header until decided.
+**File browsing is intentionally not a tab.** Deferred decision (TBD): integrated mini-browser served by anvil over the PVC sub-path. **Not in v1.** No Files button in the header until decided.
 
 ### 1.4 Auth
 
@@ -434,7 +434,7 @@ M4 (auth) and M5 (modpacks/RCON) follow `docs/milestones.md`.
 
 ## 8. Out of v1 (explicit list)
 
-- File browsing (deferred decision: integrated mini-browser vs FileBrowser; revisit in M3 close-out).
+- File browsing (deferred decision: integrated mini-browser over the PVC; revisit in M3 close-out).
 - Players tab content (RCON-dependent; M5 stretch).
 - Console command-input field (RCON-dependent; M5 stretch).
 - Per-user ACLs (Authentik group membership is the only access control).

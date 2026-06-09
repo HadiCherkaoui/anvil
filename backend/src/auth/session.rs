@@ -3,6 +3,13 @@
 use crate::auth::types::SessionClaims;
 use crate::error::AppError;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use serde::Serialize;
+
+/// Issuer + audience stamped on every session JWT and required on verify.
+/// Binds the token to this panel so a session key accidentally reused by
+/// another HS256 service can't mint tokens this panel will accept.
+const SESSION_ISS: &str = "anvil";
+const SESSION_AUD: &str = "anvil";
 
 /// Cookie name for the session JWT.
 pub const SESSION_COOKIE: &str = "anvil_session";
@@ -23,8 +30,26 @@ pub const OIDC_STATE_TTL_SECS: i64 = 10 * 60;
 /// Returns [`AppError::Internal`] if `jsonwebtoken` fails to encode (extremely
 /// unlikely; would indicate a serializer bug).
 pub fn mint(key: &[u8], claims: &SessionClaims) -> Result<String, AppError> {
-    encode(&Header::default(), claims, &EncodingKey::from_secret(key))
+    // Wrap the user claims with `iss`/`aud` so verify can bind the token to
+    // this panel. SessionClaims itself stays free of registered claims.
+    let stored = StoredClaims {
+        inner: claims,
+        iss: SESSION_ISS,
+        aud: SESSION_AUD,
+    };
+    encode(&Header::default(), &stored, &EncodingKey::from_secret(key))
         .map_err(|e| AppError::Internal(anyhow::anyhow!("jwt encode: {e}")))
+}
+
+/// Encode-only view that flattens [`SessionClaims`] and stamps the panel's
+/// issuer + audience. Decode reads [`SessionClaims`] directly (the extra
+/// `iss`/`aud` claims are validated by `jsonwebtoken`, then ignored by serde).
+#[derive(Serialize)]
+struct StoredClaims<'a> {
+    #[serde(flatten)]
+    inner: &'a SessionClaims,
+    iss: &'static str,
+    aud: &'static str,
 }
 
 /// Verifies an HS256-signed session JWT and returns the embedded claims.
@@ -36,8 +61,10 @@ pub fn mint(key: &[u8], claims: &SessionClaims) -> Result<String, AppError> {
 /// this into a 401.
 pub fn verify(key: &[u8], token: &str) -> Result<SessionClaims, AppError> {
     let mut validation = Validation::new(Algorithm::HS256);
-    validation.set_required_spec_claims(&["exp"]);
+    validation.set_required_spec_claims(&["exp", "iss", "aud"]);
     validation.validate_nbf = true;
+    validation.set_issuer(&[SESSION_ISS]);
+    validation.set_audience(&[SESSION_AUD]);
     let data = decode::<SessionClaims>(token, &DecodingKey::from_secret(key), &validation)
         .map_err(|_| AppError::Unauthorized)?;
     // Reject tokens issued in the future (clock-skew tolerance: 60s). A
@@ -95,6 +122,20 @@ mod tests {
         let key = vec![0x42_u8; 32];
         let token = mint(&key, &fixture(-3600)).unwrap();
         assert!(matches!(verify(&key, &token), Err(AppError::Unauthorized)));
+    }
+
+    #[test]
+    fn token_without_issuer_audience_is_rejected() {
+        // A token carrying only SessionClaims (no iss/aud) — the shape a
+        // foreign HS256 service sharing the key might mint — must fail.
+        let key = vec![0x42_u8; 32];
+        let bare = encode(
+            &Header::default(),
+            &fixture(60),
+            &EncodingKey::from_secret(&key),
+        )
+        .unwrap();
+        assert!(matches!(verify(&key, &bare), Err(AppError::Unauthorized)));
     }
 
     #[test]

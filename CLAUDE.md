@@ -16,7 +16,7 @@ accordingly.
 
 | Layer       | Technology                                                       |
 |-------------|------------------------------------------------------------------|
-| Backend     | Rust 1.83+ · axum 0.8 · kube-rs · sqlx (SQLite, offline mode)    |
+| Backend     | Rust 1.83+ · axum 0.8 · kube-rs · sqlx (SQLite, offline migrations) |
 | Frontend    | Next.js 14+ (App Router, `output: 'export'`) · TypeScript · Tailwind |
 | Build       | Frontend: `pnpm build` → `./frontend/out/` consumed by axum      |
 | Serve       | Dev: `tower-http::services::ServeDir`. Release: `rust-embed`. Cargo feature-gated. |
@@ -174,7 +174,6 @@ docker run --rm -p 8080:8080 anvil:dev
 
 | Capability       | Why not                                | Where it lives              |
 |------------------|----------------------------------------|-----------------------------|
-| File management  | Already have FileBrowser               | files.cherkaoui.ch          |
 | Auth UI / signup | Authentik handles it                   | Authentik (M4)              |
 | Backups          | VolumeSnapshot CronJob (cluster infra) | Cluster ops, not in Anvil   |
 | Multi-namespace  | One namespace is enough                | hardcoded `mc`, env-overridable |
