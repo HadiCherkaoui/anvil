@@ -1,0 +1,27 @@
+# cargo-fuzz crate for anvil. Kept OUT of the backend workspace (own
+# [workspace] table below) so its nightly-only, sanitizer-instrumented build
+# never perturbs `cargo build`/`cargo test` in the main crate.
+[package]
+name = "anvil-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.anvil]
+path = ".."
+
+[workspace]
+
+[[bin]]
+name = "server_properties"
+path = "fuzz_targets/server_properties.rs"
+test = false
+doc = false
+bench = false
