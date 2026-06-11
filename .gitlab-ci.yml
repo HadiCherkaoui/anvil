@@ -14,8 +14,12 @@
 # Path filters keep feature branches cheap: only the relevant jobs run when
 # the matching subtree changes.
 
+include:
+  - template: Coverage-Fuzzing.gitlab-ci.yml
+
 stages:
   - test
+  - fuzz
   - image
 
 # ----------------------------------------------------------------------------
@@ -79,6 +83,35 @@ rust-test:
   script:
     - set -euo pipefail
     - cd backend && cargo test --features serve-dir --locked
+
+# ----------------------------------------------------------------------------
+# fuzz stage — coverage-guided fuzzing (cargo-fuzz + libFuzzer)
+# ----------------------------------------------------------------------------
+# Feeds arbitrary bytes through the user-editable server.properties JSON path
+# (deserialize -> validate -> to_env). `allow_failure` keeps a fresh crash
+# from blocking merges; triage it from the job artifact instead.
+#
+# NOTE: cargo-fuzz needs a nightly toolchain + clang/lld, hence the dedicated
+# image. Validate this job once on your runner — the gitlab-cov-fuzz wrapper
+# call is the version-sensitive bit.
+fuzz-server-properties:
+  extends: .fuzz_base
+  stage: fuzz
+  image: rustlang/rust:nightly-bookworm
+  variables:
+    # Bounded so a CI run finishes quickly; raise for deeper local campaigns.
+    COVFUZZ_ADDITIONAL_ARGS: '-max_total_time=120'
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends clang lld
+    - cargo install cargo-fuzz --locked
+    - cd backend
+    - cargo +nightly fuzz build server_properties
+    - "$CI_PROJECT_DIR/gitlab-cov-fuzz" run --regression="$REGRESSION" -- cargo +nightly fuzz run server_properties
+  rules:
+    - changes:
+        - backend/**/*
+        - .gitlab-ci.yml
+  allow_failure: true
 
 # Frontend typecheck + lint run locally pre-commit; the Dockerfile's
 # pnpm-build stage will fail the image build if the bundle doesn't compile.
