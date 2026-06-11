@@ -1,146 +1,169 @@
-# anvil CI/CD pipeline.
-#
-# Two stages: test (parallel rust lint + tests) and image (docker push +
-# helm chart push). The Dockerfile is multi-stage so it owns the
-# pnpm-build / cargo-build-release flow internally — splitting them into
-# CI jobs duplicated work and added zero coverage. No deploy stage —
-# Flux pulls from the registry on its own cadence.
-#
-# Reproducibility:
-#   - cargo: --locked on every invocation
-#   - pnpm:  --frozen-lockfile inside the Dockerfile
-#   - base images: pinned to a major (rust:1, docker:27) — bump deliberately
-#
-# Path filters keep feature branches cheap: only the relevant jobs run when
-# the matching subtree changes.
+# You can override the included template(s) by including variable overrides
+# SAST customization: https://docs.gitlab.com/user/application_security/sast/#available-cicd-variables
+# Secret Detection customization: https://docs.gitlab.com/user/application_security/secret_detection/pipeline/configure/
+# Dependency Scanning customization: https://docs.gitlab.com/user/application_security/dependency_scanning/dependency_scanning_sbom/#customizing-analyzer-behavior
+# Container Scanning customization: https://docs.gitlab.com/user/application_security/container_scanning/#customizing-analyzer-behavior
+# Note that environment variables can be set in several places
+# See https://docs.gitlab.com/ci/variables/#cicd-variable-precedence
 
+# container_scanning:
+#   variables:
+#     DOCKER_IMAGE: ...
+#     DOCKER_USER: ...
+#     DOCKER_PASSWORD: ...
 stages:
-  - test
-  - image
-
-# ----------------------------------------------------------------------------
-# Cargo cache (anchor reused by every Rust job)
-# ----------------------------------------------------------------------------
-.rust_cache: &rust_cache
+- test
+- image
+".rust_cache":
   key:
     files:
-      - backend/Cargo.lock
+    - backend/Cargo.lock
   paths:
-    - backend/.cargo/registry/
-    - backend/.cargo/git/
+  - backend/.cargo/registry/
+  - backend/.cargo/git/
   policy: pull-push
-
-.rust_defaults: &rust_defaults
+".rust_defaults":
   image: rust:1-bookworm
   variables:
-    CARGO_HOME: $CI_PROJECT_DIR/backend/.cargo
+    CARGO_HOME: "$CI_PROJECT_DIR/backend/.cargo"
   cache:
-    <<: *rust_cache
+    key:
+      files:
+      - backend/Cargo.lock
+    paths:
+    - backend/.cargo/registry/
+    - backend/.cargo/git/
+    policy: pull-push
   before_script:
-    - rustc --version && cargo --version
-    # `rust:1-bookworm` no longer ships rustfmt/clippy in the toolchain since
-    # the 1.95 base bump (cargo fmt/clippy fail otherwise). Idempotent.
-    - rustup component add rustfmt clippy
+  - rustc --version && cargo --version
+  - rustup component add rustfmt clippy
   rules:
-    - changes:
-        - backend/**/*
-        - .gitlab-ci.yml
-
-# ----------------------------------------------------------------------------
-# test stage — parallel
-# ----------------------------------------------------------------------------
+  - changes:
+    - backend/**/*
+    - ".gitlab-ci.yml"
 rust-fmt:
-  <<: *rust_defaults
+  image: rust:1-bookworm
+  variables:
+    CARGO_HOME: "$CI_PROJECT_DIR/backend/.cargo"
+  cache:
+    key:
+      files:
+      - backend/Cargo.lock
+    paths:
+    - backend/.cargo/registry/
+    - backend/.cargo/git/
+    policy: pull-push
+  before_script:
+  - rustc --version && cargo --version
+  - rustup component add rustfmt clippy
+  rules:
+  - changes:
+    - backend/**/*
+    - ".gitlab-ci.yml"
   stage: test
   script:
-    - set -euo pipefail
-    - cd backend && cargo fmt --all -- --check
-
+  - set -euo pipefail
+  - cd backend && cargo fmt --all -- --check
 rust-clippy:
-  <<: *rust_defaults
+  image: rust:1-bookworm
+  variables:
+    CARGO_HOME: "$CI_PROJECT_DIR/backend/.cargo"
+  cache:
+    key:
+      files:
+      - backend/Cargo.lock
+    paths:
+    - backend/.cargo/registry/
+    - backend/.cargo/git/
+    policy: pull-push
+  before_script:
+  - rustc --version && cargo --version
+  - rustup component add rustfmt clippy
+  rules:
+  - changes:
+    - backend/**/*
+    - ".gitlab-ci.yml"
   stage: test
   script:
-    - set -euo pipefail
-    - cd backend
-    # Both feature flavours need to be linted independently — `--all-features`
-    # would activate `serve-dir` *and* `embed`, which is a hard
-    # `compile_error!` (mutex). Two passes keep both code paths honest.
-    - cargo clippy --all-targets --features serve-dir --locked -- -D warnings
-    # `embed` reads ../frontend/out/ at compile time via rust-embed's derive.
-    # Plant an empty placeholder — the derive expands to an `Assets` impl
-    # with zero bundled files but the `get` method is still in scope, which
-    # is all the lints need.
-    - mkdir -p ../frontend/out
-    - cargo clippy --all-targets --features embed --locked -- -D warnings
-
+  - set -euo pipefail
+  - cd backend
+  - cargo clippy --all-targets --features serve-dir --locked -- -D warnings
+  - mkdir -p ../frontend/out
+  - cargo clippy --all-targets --features embed --locked -- -D warnings
 rust-test:
-  <<: *rust_defaults
+  image: rust:1-bookworm
+  variables:
+    CARGO_HOME: "$CI_PROJECT_DIR/backend/.cargo"
+  cache:
+    key:
+      files:
+      - backend/Cargo.lock
+    paths:
+    - backend/.cargo/registry/
+    - backend/.cargo/git/
+    policy: pull-push
+  before_script:
+  - rustc --version && cargo --version
+  - rustup component add rustfmt clippy
+  rules:
+  - changes:
+    - backend/**/*
+    - ".gitlab-ci.yml"
   stage: test
   script:
-    - set -euo pipefail
-    - cd backend && cargo test --features serve-dir --locked
-
-# Frontend typecheck + lint run locally pre-commit; the Dockerfile's
-# pnpm-build stage will fail the image build if the bundle doesn't compile.
-
-# ----------------------------------------------------------------------------
-# image stage — pushes :<sha> + :latest to the GitLab project registry
-# ----------------------------------------------------------------------------
+  - set -euo pipefail
+  - cd backend && cargo test --features serve-dir --locked
 docker-build:
   stage: image
   image: docker:27
-  # Explicit gate: never build the image if a Rust check that ran in this
-  # pipeline failed (don't rely on stage ordering, which a *skipped* job
-  # silently slips past). `optional` keeps Dockerfile-/deploy-only commits —
-  # where the Rust jobs don't run because the code is unchanged — buildable.
   needs:
-    - job: rust-fmt
-      optional: true
-    - job: rust-clippy
-      optional: true
-    - job: rust-test
-      optional: true
+  - job: rust-fmt
+    optional: true
+  - job: rust-clippy
+    optional: true
+  - job: rust-test
+    optional: true
   services:
-    - name: docker:27-dind
-      alias: docker
-      command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock", "--tls=false"]
+  - name: docker:27-dind
+    alias: docker
+    command:
+    - dockerd
+    - "--host=tcp://0.0.0.0:2375"
+    - "--host=unix:///var/run/docker.sock"
+    - "--tls=false"
   variables:
-    DOCKER_BUILDKIT: "1"
+    DOCKER_BUILDKIT: '1'
     DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
+    DOCKER_TLS_CERTDIR: ''
   before_script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin
+    "$CI_REGISTRY"
   script:
-    - set -euo pipefail
-    - docker build
-        --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-        --tag "$CI_REGISTRY_IMAGE:latest"
-        .
-    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-    - docker push "$CI_REGISTRY_IMAGE:latest"
+  - set -euo pipefail
+  - docker build --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" --tag "$CI_REGISTRY_IMAGE:latest"
+    .
+  - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+  - docker push "$CI_REGISTRY_IMAGE:latest"
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      changes:
-        - backend/**/*
-        - frontend/**/*
-        - Dockerfile
-        - .gitlab-ci.yml
-
-# Publish the Helm chart as an OCI artifact in the project's container
-# registry. Flux's HelmRepository (kind: oci) then pulls it without needing
-# a git source. Chart version comes from deploy/Chart.yaml — bump that
-# field on each release.
+  - if: $CI_COMMIT_BRANCH == "main"
+    changes:
+    - backend/**/*
+    - frontend/**/*
+    - Dockerfile
+    - ".gitlab-ci.yml"
 helm-publish:
   stage: image
   image: alpine/helm:3
   before_script:
-    - helm registry login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  - helm registry login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
-    - set -euo pipefail
-    - helm package deploy/ --destination /tmp/
-    - helm push /tmp/anvil-*.tgz "oci://$CI_REGISTRY_IMAGE"
+  - set -euo pipefail
+  - helm package deploy/ --destination /tmp/
+  - helm push /tmp/anvil-*.tgz "oci://$CI_REGISTRY_IMAGE"
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      changes:
-        - deploy/**/*
-        - .gitlab-ci.yml
+  - if: $CI_COMMIT_BRANCH == "main"
+    changes:
+    - deploy/**/*
+    - ".gitlab-ci.yml"
+include:
+- template: Jobs/Container-Scanning.gitlab-ci.yml
