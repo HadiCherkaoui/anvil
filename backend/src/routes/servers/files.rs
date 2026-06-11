@@ -14,7 +14,7 @@ use chrono::Utc;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::Pod;
 use kube::Api;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::AppState;
@@ -79,6 +79,21 @@ fn classify_exec_failure(op: &'static str, stderr: &str) -> AppError {
 /// `BadRequest` for path validation failures; `NotFound` if the path
 /// does not exist or is not a directory; `Conflict` if the server's
 /// data PVC has not been initialised.
+#[utoipa::path(
+    get,
+    path = "/api/servers/{id}/files",
+    params(
+        ("id" = String, Path, description = "server UUID"),
+        ("path" = Option<String>, Query, description = "data-relative path, defaults to /")
+    ),
+    responses(
+        (status = 200, description = "Directory listing", body = FileListResponse),
+        (status = 400, description = "Invalid path"),
+        (status = 404, description = "Path not found or not a directory"),
+        (status = 409, description = "Data PVC not initialised")
+    ),
+    tag = "servers"
+)]
 pub async fn list(
     State(state): State<AppState>,
     Path(server_id): Path<String>,
@@ -264,7 +279,7 @@ pub async fn upload(
 }
 
 /// Discriminated body for `POST /api/servers/{id}/files/action`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum FileAction {
     Mkdir { path: String },
@@ -279,6 +294,18 @@ pub enum FileAction {
 /// Path-validation `BadRequest`s; `BadRequest("recursive_required")`
 /// when deleting a directory without `recursive=true`; `Internal` on
 /// unexpected exec failure.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/files/action",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = FileAction,
+    responses(
+        (status = 204, description = "Action completed"),
+        (status = 400, description = "Invalid path or recursive flag missing"),
+        (status = 404, description = "Target not found")
+    ),
+    tag = "servers"
+)]
 pub async fn action(
     State(state): State<AppState>,
     Path(server_id): Path<String>,
@@ -423,6 +450,13 @@ async fn action_delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Response body for `DELETE /api/servers/{id}/files/helper` when the helper
+/// pod was already absent before the request arrived.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct KillHelperAlreadyGone {
+    pub already_gone: bool,
+}
+
 /// `DELETE /api/servers/{id}/files/helper` — manual file-helper teardown.
 ///
 /// The helper Pod (`mc-{id}-files`) auto-tears-down on server start; this
@@ -436,6 +470,18 @@ async fn action_delete(
 ///   meaning the MC server is (or is about to be) running and the helper
 ///   may have files mid-write.
 /// - 500 — kube transport / wait timeout.
+#[utoipa::path(
+    delete,
+    path = "/api/servers/{id}/files/helper",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 204, description = "Helper pod deleted"),
+        (status = 200, description = "Helper pod was already gone", body = KillHelperAlreadyGone),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Server is running; stop it first")
+    ),
+    tag = "servers"
+)]
 pub async fn kill_helper(
     State(state): State<AppState>,
     Path(server_id): Path<String>,

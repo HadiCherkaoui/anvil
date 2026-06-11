@@ -36,7 +36,7 @@ pub struct SearchParams {
 }
 
 /// One row in the merged catalog response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CatalogHit {
     pub provider: &'static str,
     pub project_id: String,
@@ -54,7 +54,7 @@ pub struct CatalogHit {
 }
 
 /// Response body for `GET /api/catalog/search`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SearchResponse {
     pub results: Vec<CatalogHit>,
 }
@@ -66,6 +66,23 @@ pub struct SearchResponse {
 /// - 400 `catalog_type_invalid` if `type` is not `mod`, `modpack`, or `plugin`.
 /// - 400 `search_query_invalid` if `q` is blank or too long.
 /// - 400 `runtime_invalid` if `loader` is set to an unknown value.
+#[utoipa::path(
+    get,
+    path = "/api/catalog/search",
+    params(
+        ("type" = String, Query, description = "Project type: mod | modpack | plugin"),
+        ("q" = String, Query, description = "Search query string"),
+        ("loader" = Option<String>, Query, description = "Filter by loader (e.g. fabric, forge)"),
+        ("mc" = Option<String>, Query, description = "Filter by Minecraft version"),
+        ("limit" = Option<u32>, Query, description = "Max results (1–50, default 20)"),
+        ("offset" = Option<u32>, Query, description = "Pagination offset (default 0)")
+    ),
+    responses(
+        (status = 200, description = "Merged catalog search results", body = SearchResponse),
+        (status = 400, description = "Invalid query parameters")
+    ),
+    tag = "catalog"
+)]
 pub async fn search(
     State(state): State<AppState>,
     Query(p): Query<SearchParams>,
@@ -131,7 +148,7 @@ pub struct VersionsParams {
 }
 
 /// One version row in the catalog response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CatalogVersion {
     pub version_id: String,
     pub version_name: String,
@@ -145,7 +162,7 @@ pub struct CatalogVersion {
 }
 
 /// Response body for the versions endpoint.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct VersionsResponse {
     pub versions: Vec<CatalogVersion>,
 }
@@ -159,6 +176,21 @@ pub struct VersionsResponse {
 /// - 400 `cf_id_invalid` if the CF id is not numeric.
 /// - 400 `cf_disabled` if a CF query lands while CF is disabled.
 /// - 400 `modrinth_unavailable` / `cf_unavailable` on upstream errors.
+#[utoipa::path(
+    get,
+    path = "/api/catalog/projects/{provider}/{id}/versions",
+    params(
+        ("provider" = String, Path, description = "Catalog provider: modrinth | curseforge"),
+        ("id" = String, Path, description = "Project id or slug"),
+        ("loader" = Option<String>, Query, description = "Filter by loader"),
+        ("mc" = Option<String>, Query, description = "Filter by Minecraft version")
+    ),
+    responses(
+        (status = 200, description = "Installable versions for the project", body = VersionsResponse),
+        (status = 400, description = "Invalid provider, id, or upstream error")
+    ),
+    tag = "catalog"
+)]
 pub async fn versions(
     State(state): State<AppState>,
     Path((provider, id)): Path<(String, String)>,

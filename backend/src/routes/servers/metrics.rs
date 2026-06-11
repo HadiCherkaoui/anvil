@@ -14,7 +14,7 @@ use crate::AppState;
 use crate::error::AppError;
 
 /// Body of `GET /api/servers/{id}/metrics`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ServerMetrics {
     /// Sum of container CPU usage, expressed in millicores. `None` when the
     /// metrics API is unreachable or has no data for this pod yet.
@@ -30,6 +30,16 @@ pub struct ServerMetrics {
 ///
 /// Returns `AppError::Internal` if the metrics request fails for a reason
 /// other than the API not being installed or the pod not being scraped yet.
+#[utoipa::path(
+    get,
+    path = "/api/servers/{id}/metrics",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 200, description = "Live CPU and memory usage", body = ServerMetrics),
+        (status = 500, description = "Metrics request failed")
+    ),
+    tag = "metrics"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,

@@ -20,7 +20,7 @@ use crate::routes::cluster::current_caps;
 use crate::validation::validate_storage_size_gi;
 
 /// Request body for `PATCH /api/servers/:id/storage`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ResizeRequest {
     /// Target size in gibibytes. Must be strictly greater than the
     /// current size — shrinking is not supported.
@@ -28,7 +28,7 @@ pub struct ResizeRequest {
 }
 
 /// Response body for `PATCH /api/servers/:id/storage`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ResizeResponse {
     /// The new requested size, echoed back. Filesystem expansion is async;
     /// the next detail fetch reflects the live PVC value.
@@ -44,6 +44,19 @@ pub struct ResizeResponse {
 /// - 409 `expansion_unsupported` — server's SC is not in
 ///   [`crate::routes::cluster::ClusterCapabilities::expandable_storage_classes`].
 /// - 500 `internal` — PVC patch or DB update failed.
+#[utoipa::path(
+    patch,
+    path = "/api/servers/{id}/storage",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = ResizeRequest,
+    responses(
+        (status = 200, description = "Storage resized", body = ResizeResponse),
+        (status = 400, description = "Shrink not supported"),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Storage class does not support expansion")
+    ),
+    tag = "servers"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 
 /// Vanilla Minecraft world difficulty.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Difficulty {
     Peaceful,
@@ -37,7 +37,7 @@ impl Difficulty {
 }
 
 /// Vanilla Minecraft default gamemode for new players.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Gamemode {
     Survival,
@@ -67,7 +67,7 @@ impl Gamemode {
 ///
 /// The companion [`ServerProperties::to_env`] always emits every entry,
 /// matching itzg's `KEY=VALUE` overlay convention.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(default, deny_unknown_fields)]
 #[allow(
     clippy::struct_excessive_bools,

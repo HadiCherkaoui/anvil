@@ -40,7 +40,7 @@ struct ProjectResponse {
 }
 
 /// Response body for `GET /api/papermc/versions`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PaperVersionsResponse {
     /// Paper-supported MC versions, newest first (Paper ships back to 1.8).
     pub versions: Vec<String>,
@@ -127,6 +127,14 @@ pub async fn is_supported(cache: &PaperVersionsCache, mc_version: &str) -> bool 
 ///
 /// Never errors — upstream failures degrade to stale cache, then to the
 /// hardcoded fallback list, both with HTTP 200.
+#[utoipa::path(
+    get,
+    path = "/api/papermc/versions",
+    responses(
+        (status = 200, description = "Paper-supported Minecraft versions", body = PaperVersionsResponse)
+    ),
+    tag = "papermc"
+)]
 pub async fn handle(
     State(state): State<AppState>,
 ) -> Result<Json<PaperVersionsResponse>, AppError> {

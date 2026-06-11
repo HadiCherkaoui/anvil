@@ -21,6 +21,16 @@ use crate::routes::servers::get::{ServerDetail, fetch_detail, fetch_server_row};
 ///
 /// - 404 if the server does not exist.
 /// - 500 on DB or k8s failure.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/stop",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 200, description = "Server stopped; returns updated server detail", body = ServerDetail),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "servers"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,

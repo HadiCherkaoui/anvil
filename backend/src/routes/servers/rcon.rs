@@ -39,7 +39,7 @@ const MAX_CMD_LEN: usize = 1024;
 const RCON_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Request body for `POST /api/servers/{id}/rcon`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RconRequest {
     /// The command to send, as the user would type it in-game (without the
     /// leading `/`). Whitespace is trimmed.
@@ -47,7 +47,7 @@ pub struct RconRequest {
 }
 
 /// Response body for `POST /api/servers/{id}/rcon`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RconResponse {
     /// Server-side response. May be empty (e.g. `say` produces no output).
     pub output: String,
@@ -200,6 +200,19 @@ pub async fn run_rcon_one(
 ///   pod is not in `Running` state.
 /// - 500 on any other failure (k8s, DB, auth, I/O, timeout). The RCON
 ///   password is never echoed in the error message.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/rcon",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = RconRequest,
+    responses(
+        (status = 200, description = "RCON command output", body = RconResponse),
+        (status = 400, description = "Invalid command"),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Server not running")
+    ),
+    tag = "servers"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,

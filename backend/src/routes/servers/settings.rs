@@ -20,10 +20,12 @@ use crate::server_properties::ServerProperties;
 use crate::validation::{validate_memory_mi, validate_version_skip};
 
 /// Request body — every field optional, only present fields update.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct SettingsRequest {
     /// Memory budget (MiB). Applies on next start.
     pub memory_mi: Option<i64>,
+    /// Auto-update behavior: `"never"`, `"notify"`, or `"apply"`.
+    #[schema(value_type = Option<String>)]
     pub auto_update_mode: Option<AutoUpdateMode>,
     pub version_skip: Option<Vec<String>>,
     /// Full-replacement when present. Validated and written verbatim to
@@ -39,6 +41,18 @@ pub struct SettingsRequest {
 /// - 404 if the server doesn't exist.
 /// - 400 `not_modded` if a modpack-specific field is set on a vanilla server.
 /// - 400 `memory_invalid` on out-of-range memory.
+#[utoipa::path(
+    patch,
+    path = "/api/servers/{id}/settings",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = SettingsRequest,
+    responses(
+        (status = 204, description = "Settings updated"),
+        (status = 400, description = "Invalid settings or modpack field on vanilla server"),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "servers"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,

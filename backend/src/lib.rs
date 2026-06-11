@@ -33,6 +33,7 @@ pub mod k8s_builders;
 pub mod k8s_patches;
 pub mod k8s_status;
 pub mod modpack;
+pub mod openapi;
 pub mod players;
 pub mod routes;
 pub mod server_properties;

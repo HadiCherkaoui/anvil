@@ -35,6 +35,17 @@ const POD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// - 404 if the server does not exist.
 /// - 409 `must_be_stopped` if the `StatefulSet` still has replicas >= 1.
 /// - 500 on k8s or DB failure (other than the tolerated 404s).
+#[utoipa::path(
+    delete,
+    path = "/api/servers/{id}",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 204, description = "Server deleted"),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Server must be stopped before deleting")
+    ),
+    tag = "servers"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,

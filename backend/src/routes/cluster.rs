@@ -22,7 +22,7 @@ use crate::error::AppError;
 pub const CAPABILITIES_TTL: Duration = Duration::from_mins(5);
 
 /// Cluster capabilities response shape.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ClusterCapabilities {
     /// Whether the create handler will accept `exposure_mode=loadbalancer`.
     pub loadbalancer: bool,
@@ -56,6 +56,15 @@ pub fn new_cache() -> CapabilitiesCache {
 ///
 /// Returns [`AppError::KubeUnavailable`] if listing `StorageClass`es
 /// fails. Cached responses never error.
+#[utoipa::path(
+    get,
+    path = "/api/cluster/capabilities",
+    responses(
+        (status = 200, description = "Cluster capabilities", body = ClusterCapabilities),
+        (status = 503, description = "Kubernetes API unavailable")
+    ),
+    tag = "cluster"
+)]
 pub async fn handle(State(state): State<AppState>) -> Result<Json<ClusterCapabilities>, AppError> {
     Ok(Json(current_caps(&state).await?))
 }

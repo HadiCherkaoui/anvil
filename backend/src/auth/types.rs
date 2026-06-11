@@ -20,7 +20,7 @@ pub struct SessionClaims {
 }
 
 /// Wire shape of `GET /api/auth/me`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MeResponse {
     pub sub: String,
     pub name: String,

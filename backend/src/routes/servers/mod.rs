@@ -43,7 +43,7 @@ use crate::k8s::{LABEL_SERVER, MANAGED_BY_LABEL, MANAGED_BY_VALUE, ServerStatus,
 use crate::k8s_status::{derive_endpoint, derive_status};
 
 /// Body of `GET /api/servers` (spec §2.2).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ServersBody {
     pub servers: Vec<ServerSummary>,
 }
@@ -65,6 +65,14 @@ pub struct ServersBody {
 ///
 /// Panics if the `update_locks` Mutex is poisoned (recoverable only by
 /// restarting the panel).
+#[utoipa::path(
+    get,
+    path = "/api/servers",
+    responses(
+        (status = 200, description = "List of managed servers", body = ServersBody)
+    ),
+    tag = "servers"
+)]
 pub async fn list(State(state): State<AppState>) -> Result<Json<ServersBody>, AppError> {
     let rows = fetch_summary_rows(&state.pool).await?;
 

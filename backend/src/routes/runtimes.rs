@@ -20,7 +20,7 @@ use crate::AppState;
 use crate::error::AppError;
 
 /// Parsed loader-version listing returned by the endpoint.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct LoaderVersions {
     /// MC versions known to have at least one loader release, newest first.
     pub mc_versions: Vec<String>,
@@ -116,6 +116,19 @@ fn write_cache(cache: &LoaderVersionCache, key: &'static str, v: &LoaderVersions
 /// - 503 `loader_versions_unreachable` if the upstream maven is down AND the
 ///   cache is empty. A populated-but-stale cache is served as a graceful
 ///   fallback so a transient outage doesn't break the create form.
+#[utoipa::path(
+    get,
+    path = "/api/runtimes/{runtime}/versions",
+    params(
+        ("runtime" = String, Path, description = "Loader runtime: forge | neoforge")
+    ),
+    responses(
+        (status = 200, description = "Loader versions grouped by Minecraft version", body = LoaderVersions),
+        (status = 404, description = "Unknown runtime"),
+        (status = 503, description = "Upstream Maven unavailable and cache empty")
+    ),
+    tag = "runtimes"
+)]
 pub async fn handle_versions(
     Path(runtime): Path<String>,
     State(state): State<AppState>,

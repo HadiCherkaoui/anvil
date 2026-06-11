@@ -47,7 +47,7 @@ struct ManifestVersion {
 }
 
 /// Response body for `GET /api/cluster/mc-versions`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct McVersionsResponse {
     /// Release versions, most recent first (every release Mojang lists).
     pub versions: Vec<String>,
@@ -112,6 +112,14 @@ async fn fetch_and_store(cache: &McVersionsCache) -> anyhow::Result<Vec<String>>
 /// # Errors
 ///
 /// Never errors — Mojang failures degrade to the fallback list with HTTP 200.
+#[utoipa::path(
+    get,
+    path = "/api/cluster/mc-versions",
+    responses(
+        (status = 200, description = "Mojang release version list", body = McVersionsResponse)
+    ),
+    tag = "cluster"
+)]
 pub async fn handle(State(state): State<AppState>) -> Result<Json<McVersionsResponse>, AppError> {
     if let Some(cached) = cached(&state.mc_versions_cache).await {
         return Ok(Json(McVersionsResponse {
