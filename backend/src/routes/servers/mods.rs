@@ -39,7 +39,7 @@ use crate::validation::{validate_download_url, validate_mod_filename, validate_s
 const HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// Request body for `POST /api/servers/{id}/mods`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum PendingOpRequest {
     Add {
@@ -88,7 +88,7 @@ impl From<PendingOpRequest> for PendingOp {
 /// `added` lists every mod that was added by this call — for an Add op
 /// that resolves required deps, this is the seed plus the resolved deps.
 /// For Remove and Bump ops, `added` is empty.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AddResponse {
     pub added: Vec<ModEntry>,
     pub added_count: usize,
@@ -101,6 +101,18 @@ pub struct AddResponse {
 /// - 404 if the server doesn't exist.
 /// - 400 `not_modded` if the server isn't a modded source kind.
 /// - 400 `mod_filename_invalid` if any filename fails validation.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/mods",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = PendingOpRequest,
+    responses(
+        (status = 200, description = "Pending op appended", body = AddResponse),
+        (status = 400, description = "Validation error or not a modded server"),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "mods"
+)]
 pub async fn add_pending(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -229,6 +241,20 @@ async fn resolve_for_add(
 ///
 /// - 404 if the server doesn't exist or `idx` is out of range.
 /// - 400 `not_modded` if the server isn't a modded source kind.
+#[utoipa::path(
+    delete,
+    path = "/api/servers/{id}/mods/pending/{idx}",
+    params(
+        ("id" = String, Path, description = "server UUID"),
+        ("idx" = usize, Path, description = "zero-based index into the pending op list")
+    ),
+    responses(
+        (status = 204, description = "Pending op removed"),
+        (status = 400, description = "Not a modded server"),
+        (status = 404, description = "Server not found or index out of range")
+    ),
+    tag = "mods"
+)]
 pub async fn remove_pending(
     Path((id, idx)): Path<(String, usize)>,
     State(state): State<AppState>,
@@ -256,7 +282,7 @@ pub async fn remove_pending(
 }
 
 /// Response body for `POST /api/servers/{id}/mods/apply`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApplyResponse {
     pub status: &'static str,
     pub server_id: String,
@@ -271,6 +297,18 @@ pub struct ApplyResponse {
 /// - 400 `not_modded` if the server isn't a modded source kind.
 /// - 409 `nothing_pending` if there are no pending ops.
 /// - 409 `apply_in_progress` if another update/apply is already running.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/mods/apply",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 202, description = "Mod-sync FSM started", body = ApplyResponse),
+        (status = 400, description = "Not a modded server"),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Nothing pending or apply already in progress")
+    ),
+    tag = "mods"
+)]
 pub async fn apply(
     Path(id): Path<String>,
     State(state): State<AppState>,

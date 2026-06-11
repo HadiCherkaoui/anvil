@@ -18,7 +18,7 @@ use crate::routes::servers::get::fetch_server_row;
 const LOG_TAIL_LINES: i64 = 200;
 
 /// Body for `GET /api/servers/:id/logs`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LogsBody {
     pub lines: Vec<String>,
 }
@@ -29,6 +29,16 @@ pub struct LogsBody {
 ///
 /// - 404 if the server does not exist.
 /// - 500 on kube failures other than the pod simply not existing yet.
+#[utoipa::path(
+    get,
+    path = "/api/servers/{id}/logs",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 200, description = "Last 200 log lines", body = LogsBody),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "servers"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,

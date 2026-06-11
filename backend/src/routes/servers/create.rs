@@ -66,7 +66,7 @@ const SOURCE_KIND_MODDED: &str = "modded";
 const SOURCE_KIND_PAPER: &str = "paper";
 
 /// Request body for `POST /api/servers`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateRequest {
     /// User-facing name (DNS-1123 label).
     pub name: String,
@@ -112,7 +112,7 @@ pub struct CreateRequest {
 }
 
 /// Sub-form fields for the Paper plugin pre-pick path.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PaperCreateConfig {
     /// Initial plugin selection picked at create-time. Required deps are
     /// resolved upstream and appended to `pending_plugins`.
@@ -121,7 +121,7 @@ pub struct PaperCreateConfig {
 }
 
 /// Sub-form fields for the Modrinth modpack path.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ModrinthCreateConfig {
     /// Modrinth project id (8-char base62) or slug.
     pub project_id: String,
@@ -129,7 +129,7 @@ pub struct ModrinthCreateConfig {
 }
 
 /// Sub-form fields for the modded (runtime + manual modlist) path.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ModdedCreateConfig {
     /// `fabric` | `forge` | `neoforge`.
     pub runtime: String,
@@ -144,7 +144,7 @@ pub struct ModdedCreateConfig {
 }
 
 /// Sub-form fields for the `CurseForge` path.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CurseForgeCreateConfig {
     /// `CurseForge` project id (picked via the catalog browse sheet).
     pub project_id: u32,
@@ -153,7 +153,7 @@ pub struct CurseForgeCreateConfig {
 }
 
 /// Response body for `POST /api/servers`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CreateResponse {
     pub id: String,
     pub name: String,
@@ -171,6 +171,17 @@ pub struct CreateResponse {
 /// - 409 `name_taken` if the user-facing name is already in use
 /// - 409 `nodeport_range_exhausted` if all 100 `NodePorts` are allocated
 /// - 500 on k8s or DB failure
+#[utoipa::path(
+    post,
+    path = "/api/servers",
+    request_body = CreateRequest,
+    responses(
+        (status = 202, description = "Server created", body = CreateResponse),
+        (status = 400, description = "Validation error"),
+        (status = 409, description = "Name taken or NodePort exhausted")
+    ),
+    tag = "servers"
+)]
 #[allow(
     clippy::too_many_lines,
     reason = "linear orchestration: validate -> reserve -> persist -> create k8s; splitting it up adds noise"

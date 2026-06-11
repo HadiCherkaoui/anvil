@@ -40,7 +40,7 @@ use crate::validation::{validate_download_url, validate_mod_filename, validate_s
 const HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// Response body for `GET /api/servers/{id}/plugins`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ListResponse {
     pub plugins: Vec<ModEntry>,
     pub pending_plugins: Vec<ModEntry>,
@@ -52,6 +52,17 @@ pub struct ListResponse {
 ///
 /// - 404 if the server doesn't exist.
 /// - 400 `not_paper` if the server isn't a Paper source kind.
+#[utoipa::path(
+    get,
+    path = "/api/servers/{id}/plugins",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 200, description = "Current and pending plugin lists", body = ListResponse),
+        (status = 400, description = "Not a Paper server"),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "plugins"
+)]
 pub async fn list(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -64,7 +75,7 @@ pub async fn list(
 }
 
 /// Response body for `POST /api/servers/{id}/plugins`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AddResponse {
     pub added: Vec<ModEntry>,
     pub added_count: usize,
@@ -82,6 +93,18 @@ pub struct AddResponse {
 /// - 404 if the server doesn't exist.
 /// - 400 `not_paper` if the server isn't a Paper source kind.
 /// - 400 `mod_filename_invalid` if the filename fails validation.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/plugins",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = ModEntry,
+    responses(
+        (status = 200, description = "Plugin staged for next apply", body = AddResponse),
+        (status = 400, description = "Validation error or not a Paper server"),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "plugins"
+)]
 pub async fn add_pending(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -214,6 +237,20 @@ fn stage_remove(cfg: &mut PaperConfig, filename: &str) {
 /// - 404 if the server doesn't exist.
 /// - 400 `not_paper` if the server isn't a Paper source kind.
 /// - 400 `mod_filename_invalid` if the filename fails validation.
+#[utoipa::path(
+    delete,
+    path = "/api/servers/{id}/plugins/{filename}",
+    params(
+        ("id" = String, Path, description = "server UUID"),
+        ("filename" = String, Path, description = "plugin filename to stage for removal")
+    ),
+    responses(
+        (status = 204, description = "Plugin staged for removal"),
+        (status = 400, description = "Validation error or not a Paper server"),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "plugins"
+)]
 pub async fn remove_pending(
     Path((id, filename)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -258,7 +295,7 @@ pub async fn remove_pending(
 }
 
 /// Response body for `POST /api/servers/{id}/plugins/apply`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApplyResponse {
     pub status: &'static str,
     pub server_id: String,
@@ -273,6 +310,18 @@ pub struct ApplyResponse {
 /// - 400 `not_paper` if the server isn't a Paper source kind.
 /// - 409 `nothing_pending` if `pending_plugins` is empty.
 /// - 409 `apply_in_progress` if another update/apply is already running.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/plugins/apply",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 202, description = "Plugin-sync FSM started", body = ApplyResponse),
+        (status = 400, description = "Not a Paper server"),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Nothing pending or apply already in progress")
+    ),
+    tag = "plugins"
+)]
 pub async fn apply(
     Path(id): Path<String>,
     State(state): State<AppState>,

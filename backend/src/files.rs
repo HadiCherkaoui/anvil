@@ -6,7 +6,7 @@
 use serde::Serialize;
 
 /// Discriminator for [`FileEntry`].
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum FileEntryType {
     F,
@@ -16,7 +16,7 @@ pub enum FileEntryType {
 }
 
 /// One row of a directory listing.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct FileEntry {
     pub name: String,
     #[serde(rename = "type")]
@@ -26,7 +26,7 @@ pub struct FileEntry {
 }
 
 /// Bulk-read response shape for `GET /api/servers/{id}/files`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FileListResponse {
     pub path: String,
     pub entries: Vec<FileEntry>,

@@ -18,20 +18,20 @@ use crate::modpack::backups;
 use crate::modpack::guard::UpdateGuard;
 
 /// Body of `POST /api/servers/:id/backups`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateRequest {
     pub name: Option<String>,
 }
 
 /// 202 body of `POST /api/servers/:id/backups`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CreateResponse {
     pub status: &'static str,
     pub backup_id: String,
 }
 
 /// One row of `GET /api/servers/:id/backups`.
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct BackupListItem {
     pub id: String,
     pub name: Option<String>,
@@ -48,7 +48,7 @@ pub struct BackupListItem {
 }
 
 /// 202 body shared by restore.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StartedResponse {
     pub status: &'static str,
 }
@@ -65,6 +65,19 @@ const DELETE_JOB_TIMEOUT: Duration = Duration::from_mins(1);
 /// - 404 if the server does not exist.
 /// - 400 `invalid_name` when `name` exceeds 64 chars or contains a newline.
 /// - 409 `update_in_progress` if another update / apply / backup is running.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/backups",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = CreateRequest,
+    responses(
+        (status = 202, description = "Backup started", body = CreateResponse),
+        (status = 400, description = "Invalid name"),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Update in progress")
+    ),
+    tag = "backups"
+)]
 pub async fn create(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -115,6 +128,16 @@ pub async fn create(
 /// # Errors
 ///
 /// Returns [`AppError::DbUnavailable`] if `SQLite` is unreachable.
+#[utoipa::path(
+    get,
+    path = "/api/servers/{id}/backups",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 200, description = "List of complete backups", body = Vec<BackupListItem>),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "backups"
+)]
 pub async fn list(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -142,6 +165,20 @@ pub async fn list(
 /// - 409 `backup_not_restorable` if the backup is not `complete` (still
 ///   running or failed — its tarball may not exist).
 /// - 409 `update_in_progress` if another update / apply / backup is running.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/backups/{backup_id}/restore",
+    params(
+        ("id" = String, Path, description = "server UUID"),
+        ("backup_id" = String, Path, description = "backup ID (bk- prefix)")
+    ),
+    responses(
+        (status = 202, description = "Restore started", body = StartedResponse),
+        (status = 404, description = "Server or backup not found"),
+        (status = 409, description = "Backup not restorable or update in progress")
+    ),
+    tag = "backups"
+)]
 pub async fn restore(
     Path((id, backup_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -196,6 +233,19 @@ pub async fn restore(
 /// # Errors
 ///
 /// - 404 if the backup does not exist (idempotent: re-deleting returns 404).
+#[utoipa::path(
+    delete,
+    path = "/api/servers/{id}/backups/{backup_id}",
+    params(
+        ("id" = String, Path, description = "server UUID"),
+        ("backup_id" = String, Path, description = "backup ID (bk- prefix)")
+    ),
+    responses(
+        (status = 204, description = "Backup deleted"),
+        (status = 404, description = "Backup not found")
+    ),
+    tag = "backups"
+)]
 pub async fn delete(
     Path((id, backup_id)): Path<(String, String)>,
     State(state): State<AppState>,

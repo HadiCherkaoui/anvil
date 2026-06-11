@@ -29,7 +29,7 @@ use crate::validation::{
 // --- bulk-read response shapes ------------------------------------------------
 
 /// Online-player snapshot for the wire response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct OnlinePlayersDto {
     pub count: u32,
     pub max: u32,
@@ -37,28 +37,28 @@ pub struct OnlinePlayersDto {
 }
 
 /// One banned-player entry for the wire response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BanEntryDto {
     pub name: String,
     pub reason: String,
 }
 
 /// One banned-IP entry for the wire response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BanIpEntryDto {
     pub ip: String,
     pub reason: String,
 }
 
 /// Banlist (players + IPs) for the wire response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BanlistDto {
     pub players: Vec<BanEntryDto>,
     pub ips: Vec<BanIpEntryDto>,
 }
 
 /// One join/leave event for the wire response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PlayerEventDto {
     pub kind: &'static str,
     pub player: String,
@@ -66,7 +66,7 @@ pub struct PlayerEventDto {
 }
 
 /// Full response body for `GET /api/servers/{id}/players`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PlayersResponse {
     pub online: OnlinePlayersDto,
     pub whitelist: Vec<String>,
@@ -121,7 +121,7 @@ impl From<PlayerEvent> for PlayerEventDto {
 // --- action enum --------------------------------------------------------------
 
 /// Body of `POST /api/servers/{id}/players/action`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum PlayerAction {
     Kick {
@@ -165,7 +165,7 @@ pub enum PlayerAction {
 }
 
 /// Body of `POST /api/servers/{id}/players/broadcast`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct BroadcastRequest {
     pub message: String,
 }
@@ -329,6 +329,18 @@ fn build_action(
 /// - 409 `server_not_running` if the `StatefulSet` is scaled down or the
 ///   pod is not Running.
 /// - 500 on RCON / k8s failures.
+#[utoipa::path(
+    get,
+    path = "/api/servers/{id}/players",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 200, description = "Player list, whitelist, banlist, and recent history", body = PlayersResponse),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Server not running"),
+        (status = 500, description = "RCON or k8s failure")
+    ),
+    tag = "players"
+)]
 pub async fn handle_get(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -415,6 +427,20 @@ async fn scrape_history(state: &AppState, id: &str) -> Vec<PlayerEventDto> {
 ///
 /// - 400 with the validator's specific code (e.g. `username_invalid`).
 /// - 404 / 409 / 500 from RCON failures (see [`run_rcon_one`]).
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/players/action",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = PlayerAction,
+    responses(
+        (status = 204, description = "Action applied"),
+        (status = 400, description = "Validation error"),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Server not running"),
+        (status = 500, description = "RCON or k8s failure")
+    ),
+    tag = "players"
+)]
 pub async fn handle_action(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -439,6 +465,20 @@ pub async fn handle_action(
 ///
 /// - 400 `message_too_long` / `message_has_control_char`.
 /// - 404 / 409 / 500 from RCON failures.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/players/broadcast",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = BroadcastRequest,
+    responses(
+        (status = 204, description = "Broadcast sent"),
+        (status = 400, description = "Message validation error"),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Server not running"),
+        (status = 500, description = "RCON or k8s failure")
+    ),
+    tag = "players"
+)]
 pub async fn handle_broadcast(
     Path(id): Path<String>,
     State(state): State<AppState>,

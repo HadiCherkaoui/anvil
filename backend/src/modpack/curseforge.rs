@@ -71,7 +71,7 @@ const CF_API_KEY_SECRET_FIELD: &str = "CF_API_KEY";
 const CF_BOOT_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Release channel filter applied when picking the latest server-pack file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
     Release,

@@ -35,7 +35,7 @@ pub const ANNOTATION_SERVER_NAME: &str = "app.anvil.io/server-name";
 pub const ANNOTATION_CREATED_AT: &str = "app.anvil.io/created-at";
 
 /// Live runtime status of a managed Minecraft server (spec §2.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerStatus {
     /// Pod is running and ready.
@@ -52,7 +52,7 @@ pub enum ServerStatus {
 }
 
 /// Connection endpoint for a managed Minecraft server.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct Endpoint {
     /// Hostname or IP the client connects to.
     pub host: String,
@@ -61,7 +61,7 @@ pub struct Endpoint {
 }
 
 /// One entry in the response of `GET /api/servers` (spec §2.2).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ServerSummary {
     /// Server UUID (URL identifier).
     pub id: String,

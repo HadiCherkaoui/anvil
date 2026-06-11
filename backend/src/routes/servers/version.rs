@@ -17,7 +17,7 @@ use crate::modpack::version_change;
 use crate::validation::validate_mc_version;
 
 /// Request body for `PATCH /api/servers/:id/version`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct VersionRequest {
     /// New Minecraft version (e.g. `"1.21.5"`).
     pub mc_version: String,
@@ -29,7 +29,7 @@ pub struct VersionRequest {
 
 /// Response body for `PATCH /api/servers/:id/version` (matches the modpack
 /// update route's shape so the frontend can reuse the same poll/stream code).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct VersionResponse {
     pub status: &'static str,
     pub server_id: String,
@@ -46,6 +46,19 @@ pub struct VersionResponse {
 ///   forge/neoforge, and `loader_version` is missing or empty.
 /// - 400 `nothing_to_change` if the requested mc + loader match the current row.
 /// - 409 `update_in_progress` if another update / apply already holds the lock.
+#[utoipa::path(
+    patch,
+    path = "/api/servers/{id}/version",
+    params(("id" = String, Path, description = "server UUID")),
+    request_body = VersionRequest,
+    responses(
+        (status = 202, description = "Version change started", body = VersionResponse),
+        (status = 400, description = "Invalid version or missing loader version"),
+        (status = 404, description = "Server not found"),
+        (status = 409, description = "Version change unsupported or update already in progress")
+    ),
+    tag = "servers"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,

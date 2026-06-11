@@ -20,7 +20,7 @@ use crate::k8s_status::{derive_endpoint, derive_status};
 use crate::server_properties::ServerProperties;
 
 /// Detail body for `GET /api/servers/:id`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ServerDetail {
     pub id: String,
     pub name: String,
@@ -37,6 +37,7 @@ pub struct ServerDetail {
     /// Provider discriminator (`vanilla` | `curseforge` | `modrinth` | `modded` | `paper`).
     pub source_kind: String,
     /// Provider config JSON (parsed). `null` for vanilla.
+    #[schema(value_type = Object)]
     pub source_config: serde_json::Value,
     /// `true` when a newer modpack version is cached.
     pub update_available: bool,
@@ -64,7 +65,7 @@ pub struct ServerDetail {
 }
 
 /// One row of `mod_updates` surfaced on the server detail.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ModUpdateInfo {
     pub provider: String,
     pub project_id: String,
@@ -75,7 +76,7 @@ pub struct ModUpdateInfo {
 
 /// Latest published Forge / `NeoForge` loader version for the server's
 /// MC version, surfaced when it differs from the current pin.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LoaderUpdateInfo {
     pub current_loader: String,
     pub latest_loader: String,
@@ -87,6 +88,16 @@ pub struct LoaderUpdateInfo {
 ///
 /// - 404 if the `SQLite` row is missing.
 /// - 500 on DB or k8s failure.
+#[utoipa::path(
+    get,
+    path = "/api/servers/{id}",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 200, description = "Server detail", body = ServerDetail),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "servers"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -104,6 +115,16 @@ pub async fn handle(
 ///
 /// - 404 if no server with that name exists.
 /// - 500 on DB or k8s failure.
+#[utoipa::path(
+    get,
+    path = "/api/servers/by-name/{name}",
+    params(("name" = String, Path, description = "server name")),
+    responses(
+        (status = 200, description = "Server detail", body = ServerDetail),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "servers"
+)]
 pub async fn handle_by_name(
     Path(name): Path<String>,
     State(state): State<AppState>,

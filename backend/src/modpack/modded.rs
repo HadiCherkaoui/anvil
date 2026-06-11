@@ -18,7 +18,7 @@ use super::{ModpackHttp, ModpackProvider, ProviderContext, VersionInfo};
 const MODDED_BOOT_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// One installed mod (persisted in `source_config.mods`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ModEntry {
     pub provider: String,
     pub project_id: String,

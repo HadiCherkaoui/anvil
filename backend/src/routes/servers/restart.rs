@@ -37,6 +37,16 @@ const POD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// # Errors
 ///
 /// - 404 if the server does not exist.
+#[utoipa::path(
+    post,
+    path = "/api/servers/{id}/restart",
+    params(("id" = String, Path, description = "server UUID")),
+    responses(
+        (status = 202, description = "Restart accepted; poll GET /api/servers/{id} for status", body = Object),
+        (status = 404, description = "Server not found")
+    ),
+    tag = "servers"
+)]
 pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,

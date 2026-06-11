@@ -11,7 +11,7 @@ use axum::extract::{Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::{Cookie, CookieJar, PrivateCookieJar, SameSite};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
 
@@ -163,7 +163,24 @@ fn attach_state_removal(mut resp: Response) -> Response {
     resp
 }
 
+/// Response body for `POST /api/auth/logout`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct LogoutResponse {
+    /// Authentik end-session URL the frontend should navigate to.
+    #[serde(rename = "logoutUrl")]
+    pub logout_url: String,
+}
+
 /// `GET /api/auth/me` — current user from the request extension.
+#[utoipa::path(
+    get,
+    path = "/api/auth/me",
+    responses(
+        (status = 200, description = "Current session user", body = MeResponse),
+        (status = 401, description = "Not authenticated")
+    ),
+    tag = "auth"
+)]
 #[allow(clippy::unused_async, reason = "axum handlers are uniformly async")]
 pub async fn me(Extension(claims): Extension<SessionClaims>) -> Json<MeResponse> {
     Json(MeResponse::from(&claims))
@@ -176,6 +193,15 @@ pub async fn me(Extension(claims): Extension<SessionClaims>) -> Json<MeResponse>
 ///
 /// Returns [`AppError`] if Authentik discovery fails (so we can't surface the
 /// end-session endpoint).
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    responses(
+        (status = 200, description = "Session cleared; follow logoutUrl", body = LogoutResponse),
+        (status = 500, description = "OIDC discovery failure")
+    ),
+    tag = "auth"
+)]
 pub async fn logout(
     State(state): State<AppState>,
     public_jar: CookieJar,

@@ -16,6 +16,7 @@
 
 include:
   - template: Coverage-Fuzzing.gitlab-ci.yml
+  - template: Security/API-Fuzzing.gitlab-ci.yml
 
 stages:
   - test
@@ -112,6 +113,26 @@ fuzz-server-properties:
         - backend/**/*
         - .gitlab-ci.yml
   allow_failure: true
+
+# ----------------------------------------------------------------------------
+# API fuzzing (MANUAL, opt-in) — fuzzes the documented /api surface using the
+# OpenAPI spec utoipa now generates at GET /api/openapi.json.
+# ----------------------------------------------------------------------------
+# WARNING: anvil's API is a STATEFUL CRUD panel — it creates/deletes real
+# Minecraft servers and is OIDC-session-gated. NEVER point this at production.
+# Before triggering:
+#   - set ANVIL_FUZZ_TARGET_URL (CI/CD variable) to a THROWAWAY/staging anvil
+#   - provide session auth via FUZZAPI_OVERRIDES_* (cookie/JWT)
+#   - consider excluding mutating operations or running on a disposable cluster
+# Manual + allow_failure by design — it must never auto-run or gate a pipeline.
+apifuzzer_fuzz:
+  stage: fuzz
+  rules:
+    - when: manual
+      allow_failure: true
+  variables:
+    FUZZAPI_TARGET_URL: $ANVIL_FUZZ_TARGET_URL
+    FUZZAPI_OPENAPI: $ANVIL_FUZZ_TARGET_URL/api/openapi.json
 
 # Frontend typecheck + lint run locally pre-commit; the Dockerfile's
 # pnpm-build stage will fail the image build if the bundle doesn't compile.
