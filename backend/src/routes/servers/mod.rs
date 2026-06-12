@@ -3,7 +3,7 @@
 //! Submodules host one HTTP handler each (create / get / start / stop /
 //! restart / delete / logs). The list handler in this `mod.rs` JOINs
 //! `SQLite` metadata with the live `StatefulSet` / `Pod` / `Service`
-//! triples, returning the M2 wire shape.
+//! triples.
 
 pub mod backups;
 pub mod create;
@@ -140,13 +140,7 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<ServersBody>, Ap
                 &resource_name,
                 &state.mc_namespace,
             );
-            // The poller keeps `modpack_versions` rows only when an update
-            // is actually available (see poller.rs:139 — it deletes the row
-            // when current == latest, mode is "never", or the version is
-            // skipped). So the presence of `latest_version_name` already
-            // implies update_available; the prior `current_version_id` vs
-            // `latest_id` comparison was redundant and broke for Modrinth
-            // (string ids) and post-upgrade CF rows (stringified ids).
+            // See get.rs: the poller is the source of truth for modpack_versions rows.
             let update_available = row.latest_version_name.is_some();
             let update_in_progress = state
                 .update_locks

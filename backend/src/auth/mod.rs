@@ -1,4 +1,4 @@
-//! OIDC authentication wiring (M4).
+//! OIDC authentication wiring.
 //!
 //! Login is Authorization-Code-with-PKCE against Authentik; the session
 //! cookie carries an HS256 JWT signed with `ANVIL_SESSION_KEY`.

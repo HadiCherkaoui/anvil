@@ -1,13 +1,8 @@
 //! Sync FSM for `modded` mods and Paper plugins.
 //!
-//! Both flows share an identical scale → Job → scale → verify dance —
-//! only the `source_config` field that is read/written and the
-//! data-relative `target_dir` differ. [`SyncTarget::Mods`] reads
-//! `modded.pending` and commits to `modded.mods`;
+//! [`SyncTarget::Mods`] reads `modded.pending` and commits to `modded.mods`;
 //! [`SyncTarget::Plugins`] reads `paper.pending_plugins` and commits to
-//! `paper.plugins`. Both reuse [`UpdateGuard`] + `snapshot_pvc_lock` +
-//! the WS-bus pattern. No backup; the synced dir is recoverable by
-//! clicking apply again.
+//! `paper.plugins`. No backup — the synced dir is recoverable by re-applying.
 
 use std::time::Duration;
 
@@ -140,8 +135,7 @@ async fn run_inner(
     let was_running = current_replicas(&state.kube, &state.mc_namespace, server_id).await? >= 1;
 
     // Acquire the global Job lock. Sync only mounts the data PVC, but
-    // serializing all panel-spawned Jobs keeps the cluster gentle and
-    // matches the M5 update FSM's pattern.
+    // serializing all panel-spawned Jobs keeps the cluster gentle.
     let permit = state.snapshot_pvc_lock.lock().await;
 
     // Stop. No-op when already stopped — the wait_pod_gone returns
@@ -157,8 +151,7 @@ async fn run_inner(
     )
     .await?;
 
-    // Sync. UpdatePhase::Swapping is reused as the sync phase so the
-    // existing UpdateSheet phase list keeps working unchanged.
+    // Swapping doubles as the sync phase.
     guard.emit(UpdatePhase::Swapping);
     let keep: Vec<&str> = desired.iter().map(|m| m.filename.as_str()).collect();
     let urls: Vec<(&str, &str, Option<&str>)> = desired
@@ -203,15 +196,17 @@ async fn run_inner(
 
     drop(permit);
 
-    // Restore prior replica count. Sync has no rollback (re-applying
-    // re-syncs), no backup, and no boot-marker to verify against —
-    // mirroring `run_backup`, we only restart if the server was running
-    // at the start. A manual-create + initial-mod-install path leaves
-    // the server stopped so the user's first Start click is the explicit
-    // boot trigger.
+    // No rollback: re-applying re-syncs. Only restart if the server was
+    // running at the start — a stopped server stays stopped so the user's
+    // first Start click is the explicit boot trigger.
     if was_running {
         guard.emit(UpdatePhase::Starting);
         scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
+        sqlx::query("UPDATE servers SET last_started_at = ? WHERE id = ?")
+            .bind(Utc::now().timestamp())
+            .bind(server_id)
+            .execute(&state.pool)
+            .await?;
     }
 
     // Persist: replace committed list, clear pending.
@@ -292,11 +287,6 @@ async fn commit(
             bail!("source_config changed concurrently while committing apply");
         }
     }
-    sqlx::query("UPDATE servers SET last_started_at = ? WHERE id = ?")
-        .bind(Utc::now().timestamp())
-        .bind(server_id)
-        .execute(pool)
-        .await?;
     Ok(new_count)
 }
 

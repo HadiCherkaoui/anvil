@@ -94,17 +94,16 @@ export function useModApplyStream(
 			setState((s) => ({ ...s, status: "connecting" }));
 			ws = new WebSocket(url);
 
-			ws.onopen = (): void => {
-				backoff = BACKOFF_INITIAL_MS;
-				setState((s) => ({ ...s, status: "live" }));
-			};
-
 			ws.onmessage = (ev: MessageEvent<unknown>): void => {
 				if (typeof ev.data !== "string") return;
 				const frame = parseFrame(ev.data);
 				if (frame === null) return;
 				switch (frame.type) {
+					// "live" + backoff reset only on hello (not onopen) — a
+					// socket that opens but never sends hello isn't attached;
+					// matches useLogsStream / useUpdateStream semantics.
 					case "hello": {
+						backoff = BACKOFF_INITIAL_MS;
 						setState((s) => ({
 							...s,
 							status: "live",

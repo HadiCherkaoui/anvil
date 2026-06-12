@@ -8,7 +8,7 @@
 //! the previous LATEST-everywhere flow installed-failed silently).
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -171,7 +171,9 @@ pub async fn handle_versions(
 }
 
 async fn fetch_and_parse(url: &str, runtime: &str) -> Result<LoaderVersions> {
-    let xml = reqwest::Client::new()
+    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+    let xml = HTTP
+        .get_or_init(reqwest::Client::new)
         .get(url)
         .timeout(FETCH_TIMEOUT)
         .send()
@@ -229,7 +231,7 @@ pub fn parse_neoforge(xml: &str) -> Result<LoaderVersions> {
             continue;
         }
         let parts: Vec<&str> = raw.splitn(3, '.').collect();
-        if parts.len() < 2 {
+        if parts.len() < 2 || parts[0].parse::<u32>().is_err() || parts[1].parse::<u32>().is_err() {
             continue;
         }
         let mc = format!("1.{}.{}", parts[0], parts[1]);
@@ -238,7 +240,7 @@ pub fn parse_neoforge(xml: &str) -> Result<LoaderVersions> {
     let mut mc_versions: Vec<String> = by_mc.keys().cloned().collect();
     sort_mc_desc(&mut mc_versions);
     for v in by_mc.values_mut() {
-        v.sort_by(|a, b| b.cmp(a));
+        sort_loader_versions_desc(v);
     }
     Ok(LoaderVersions { mc_versions, by_mc })
 }
@@ -265,7 +267,7 @@ pub fn parse_forge(xml: &str) -> Result<LoaderVersions> {
     let mut mc_versions: Vec<String> = by_mc.keys().cloned().collect();
     sort_mc_desc(&mut mc_versions);
     for v in by_mc.values_mut() {
-        v.sort_by(|a, b| b.cmp(a));
+        sort_loader_versions_desc(v);
     }
     Ok(LoaderVersions { mc_versions, by_mc })
 }
@@ -276,6 +278,19 @@ fn sort_mc_desc(v: &mut [String]) {
         let pb: Vec<u32> = b.split('.').filter_map(|s| s.parse().ok()).collect();
         pb.cmp(&pa)
     });
+}
+
+/// Sorts loader versions newest-first, comparing numeric segments
+/// numerically — plain string sort puts `54.0.9` above `54.0.10`.
+/// Handles both `NeoForge` (`21.4.81`) and Forge (`1.21.4-54.1.0`) shapes
+/// by splitting on `.` and `-`; ties fall back to string order.
+fn sort_loader_versions_desc(v: &mut [String]) {
+    fn key(s: &str) -> Vec<u64> {
+        s.split(['.', '-'])
+            .map(|seg| seg.parse().unwrap_or(0))
+            .collect()
+    }
+    v.sort_by(|a, b| key(b).cmp(&key(a)).then_with(|| b.cmp(a)));
 }
 
 #[cfg(test)]
@@ -324,5 +339,29 @@ mod tests {
             v.by_mc.get("1.21.4").unwrap(),
             &vec!["1.21.4-54.1.0".to_owned(), "1.21.4-54.0.50".to_owned()]
         );
+    }
+
+    #[test]
+    fn loader_sort_compares_segments_numerically() {
+        let mut neo = vec!["21.1.9".to_owned(), "21.1.100".to_owned()];
+        sort_loader_versions_desc(&mut neo);
+        assert_eq!(neo, vec!["21.1.100".to_owned(), "21.1.9".to_owned()]);
+
+        let mut forge = vec!["1.21.4-54.0.9".to_owned(), "1.21.4-54.0.10".to_owned()];
+        sort_loader_versions_desc(&mut forge);
+        assert_eq!(
+            forge,
+            vec!["1.21.4-54.0.10".to_owned(), "1.21.4-54.0.9".to_owned()]
+        );
+    }
+
+    #[test]
+    fn parse_neoforge_skips_non_numeric_versions() {
+        let xml = r"<metadata><versioning><versions>
+            <version>21.4.81</version>
+            <version>junk.data.123</version>
+        </versions></versioning></metadata>";
+        let v = parse_neoforge(xml).expect("parse");
+        assert_eq!(v.mc_versions, vec!["1.21.4".to_owned()]);
     }
 }

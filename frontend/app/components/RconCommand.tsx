@@ -31,7 +31,7 @@ export function RconCommand({
 			if (cmd.trim().length === 0) return;
 			setBusy(true);
 			setError(null);
-			sendRconCommand(serverId, cmd)
+			void sendRconCommand(serverId, cmd)
 				.then(({ output: text }) => {
 					setOutput(text);
 				})

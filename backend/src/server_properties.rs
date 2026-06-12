@@ -98,8 +98,6 @@ pub struct ServerProperties {
 
 impl Default for ServerProperties {
     fn default() -> Self {
-        // Defaults mirror vanilla MC's shipped server.properties (verified
-        // against the wiki: minecraft.wiki/w/Server.properties).
         Self {
             difficulty: Difficulty::Normal,
             hardcore: false,
@@ -163,7 +161,7 @@ impl ServerProperties {
         if self.seed.len() > 256 {
             return Err(AppError::BadRequest {
                 code: "properties_seed_invalid",
-                message: "seed must be ≤ 256 characters".to_owned(),
+                message: "seed must be ≤ 256 bytes".to_owned(),
             });
         }
         if self

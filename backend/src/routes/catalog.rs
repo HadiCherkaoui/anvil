@@ -345,12 +345,19 @@ fn cf_file_to_catalog(f: &CfFile) -> CatalogVersion {
         2 => "beta",
         _ => "alpha",
     };
+    // CF interleaves loader labels and MC versions in one array — split
+    // them so the UI chips match the Modrinth shape (lowercase loaders).
+    let (loaders, game_versions): (Vec<String>, Vec<String>) = f
+        .game_versions
+        .iter()
+        .cloned()
+        .partition(|v| matches!(v.as_str(), "Forge" | "Fabric" | "NeoForge" | "Quilt"));
     CatalogVersion {
         version_id: f.id.to_string(),
         version_name: f.display_name.clone(),
         channel: channel.to_owned(),
-        loaders: vec![],
-        game_versions: vec![],
+        loaders: loaders.into_iter().map(|l| l.to_lowercase()).collect(),
+        game_versions,
         date_published: f.file_date.clone(),
         primary_filename: f.display_name.clone(),
         primary_url: f.download_url.clone().unwrap_or_default(),

@@ -51,13 +51,11 @@ export function OverviewBody(): ReactElement {
 	};
 
 	useEffect(() => {
-		// Render-time guards already gate display on `isRunning`; the effect
-		// only owns the live polling loop while the server is up.
 		if (!isRunning) return undefined;
 		const ctrl = new AbortController();
 		let timer: number | null = null;
 		const tick = (): void => {
-			fetchServerMetrics(detail.id, ctrl.signal)
+			void fetchServerMetrics(detail.id, ctrl.signal)
 				.then((m) => {
 					setMetrics(m);
 					setMetricsError(null);
@@ -71,8 +69,14 @@ export function OverviewBody(): ReactElement {
 								? err.message
 								: "unknown error";
 					setMetricsError(message);
+				})
+				.finally(() => {
+					// Schedule only after the fetch settles — a reply slower
+					// than the interval must not overlap the next tick.
+					if (!ctrl.signal.aborted) {
+						timer = window.setTimeout(tick, METRICS_POLL_MS);
+					}
 				});
-			timer = window.setTimeout(tick, METRICS_POLL_MS);
 		};
 		tick();
 		return () => {

@@ -1,8 +1,7 @@
 //! `SQLite` pool with embedded migrations.
 //!
 //! Migrations live in `backend/migrations/` and are baked into the binary at
-//! compile time via `sqlx::migrate!()`. The pool itself uses
-//! `sqlx::sqlite::SqlitePool` over the configured `database_url`.
+//! compile time via `sqlx::migrate!()`.
 
 use anyhow::{Context as _, Result};
 use sqlx::SqlitePool;
@@ -23,9 +22,6 @@ pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 /// Returns an error if the URL is malformed, the file cannot be created, or
 /// a migration fails.
 pub async fn init(database_url: &str) -> Result<SqlitePool> {
-    // `mode=rwc` (the default in `Config::DEFAULT_DATABASE_URL`) lets SQLX
-    // create the DB file on first run; production overrides set the path
-    // inside the mounted PVC.
     let options = SqliteConnectOptions::from_str(database_url)
         .with_context(|| format!("invalid ANVIL_DATABASE_URL={database_url:?}"))?
         .create_if_missing(true)

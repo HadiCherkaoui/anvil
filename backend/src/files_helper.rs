@@ -1,6 +1,6 @@
 //! Helper-Pod lifecycle (`mc-{id}-files`) and the generic `pods/exec`
-//! primitives sub-project D uses for file ops. Pure plumbing — handler
-//! logic lives in `routes/servers/files.rs`.
+//! primitives for file ops. Pure plumbing — handler logic lives in
+//! `routes/servers/files.rs`.
 
 use std::time::Duration;
 
@@ -34,8 +34,7 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_LONG_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Runs `cmd` in `pod_name`, capturing stdout / stderr / exit code.
-/// 5-second end-to-end timeout. Used for: list (`LIST_SCRIPT`), stat
-/// pre-flights, mkdir.
+/// 5-second end-to-end timeout.
 ///
 /// For potentially long-running operations (`rm -rf` of a large world,
 /// rename across directories) use [`pod_exec_capture_long`].

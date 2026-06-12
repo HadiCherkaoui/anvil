@@ -1,22 +1,13 @@
-# anvil Helm chart values.
-#
-# Defaults below are derived from docs/cluster-profile.md at the time of
-# writing. Override per-deployment in your Helm release values; legal values
-# are documented in docs/cluster-profile.md and ADR 0004.
+# anvil Helm chart values. Override per-deployment; legal values documented in docs/cluster-profile.md and ADR 0004.
 
 image:
-  # Container registry path. The default points at the GitLab project's
-  # container registry; CI publishes :<commit-sha> and :latest there.
   repo: gitlab.cherkaoui.ch/hadicherkaoui/anvil
-  # Empty string falls back to `latest` (which CI publishes) in the
-  # deployment template. Pin a `:<commit-sha>` here in production for
-  # rollback — CI publishes that tag too.
+  # Empty string falls back to `latest`. Pin a `:<commit-sha>` here in production for rollback.
   tag: ""
   pullPolicy: IfNotPresent
 
 # Traefik IngressRoute for the panel. Disabled by default — turn on once
-# DNS for `host` resolves to the cluster's traefik LoadBalancer IP. Mirrors
-# the IngressRoute pattern in homelab-k8s-fluxcd/apps/{uptime-kuma,...}/.
+# DNS for `host` resolves to the cluster's traefik LoadBalancer IP.
 ingress:
   enabled: false
   # Traefik entryPoint name. The homelab traefik install uses "websecure"
@@ -39,15 +30,13 @@ ingress:
 # the chart does NOT include a Namespace template.
 mcNamespace: mc
 
-# Defaults applied to *new* managed Minecraft servers at create time (M2).
-# Surfaced now so the chart contract is stable through M2.
 mcDefaults:
   # REQUIRED. The Helm template fails to render if unset, forcing the
   # operator to confirm the right StorageClass for their cluster. Homelab
   # default per cluster-profile.md: `tank` (zfs.csi.openebs.io).
   storageClassName: ""
   # Cluster-wide default for managed-server Services. Overridable per-server
-  # in the panel UI (M2). On the homelab cluster, LoadBalancer is fulfilled
+  # in the panel UI. On the homelab cluster, LoadBalancer is fulfilled
   # by Cilium LB IPAM (default-pool, see cluster-profile.md).
   serviceType: LoadBalancer
   # External hostname or IP of any cluster node, used by the panel to
@@ -60,11 +49,9 @@ mcDefaults:
   # Homelab default per cluster-profile.md: true.
   loadbalancerSupported: true
   # Alpine image used by the per-server file-browser helper Pod
-  # (sub-project D — `sleep infinity`, mounts the data PVC for pods/exec)
-  # and by the modpack mod-sync Job (M5 — `apk add curl` then download).
-  # Pin by digest, not tag — both workloads mount per-server data, so a
-  # tag-mutation supply-chain attack must not be able to swap the image
-  # out from under us. Default is alpine:3.20 from public.ecr.aws.
+  # and by the modpack mod-sync Job. Pin by digest, not tag — both
+  # workloads mount per-server data, so a tag-mutation supply-chain
+  # attack must not be able to swap the image out from under us.
   alpineImage: "alpine:3.20"
   # IANA timezone applied as the TZ env var on every managed MC pod. Sets
   # log-timestamp locale for Minecraft + JVM + mc-image-helper. Etc/UTC
@@ -88,7 +75,6 @@ persistence:
   storageClassName: ""
   size: 1Gi
 
-# Pod resource budget. M1 is light; bump in M2/M3 as the workload grows.
 resources:
   requests:
     cpu: 100m
@@ -97,9 +83,6 @@ resources:
     cpu: 500m
     memory: 512Mi
 
-# RBAC for kube-rs to manipulate the managed Minecraft resources in
-# `mcNamespace`. Verbs are M2-ready (create/update/patch/delete) — surfaced
-# now to avoid re-deploying the Role/RoleBinding when M2 lands.
 rbac:
   create: true
   # Empty string => the chart generates a SA named after the release.
@@ -109,14 +92,16 @@ rbac:
 # Examples: "info" (default), "debug", "info,kube=warn".
 logLevel: info
 
-# Authentik OIDC (M4). The backend REQUIRES auth — it refuses to start
-# without the OIDC env vars — so this defaults on. When `enabled`, the chart
-# also REQUIRES `ingress.tls.enabled` (the cookie security flags are
-# pointless without HTTPS) and the issuer/client/redirect/secret/session
+# Authentik OIDC. The backend REQUIRES auth — it refuses to start without
+# the OIDC env vars — so this defaults on. When `enabled`, the chart also
+# REQUIRES `ingress.tls.enabled` and the issuer/client/redirect/secret/session
 # values below; missing ones fail `helm install` at render with a clear
 # message (see `requireOidc` in _helpers.tpl). See docs/authentik-setup.md
 # for the manual Provider/Application setup.
 oidc:
+  # Must stay true — the backend refuses to start without OIDC, so the
+  # chart fails at render when set false (instead of shipping a
+  # crash-looping pod).
   enabled: true
   # Authentik issuer URL — the full provider page, e.g.
   # https://authentik.cherkaoui.ch/application/o/anvil/
@@ -143,7 +128,7 @@ oidc:
   # so Helm rollbacks don't reset secrets.
   existingSecret: ""
 
-# CurseForge modpack support (M5). When `secrets.cfApiKey` (or
+# CurseForge modpack support. When `secrets.cfApiKey` (or
 # `secrets.cfApiKeyExistingSecret`) is set, the backend enables the
 # CurseForge provider, the hourly version poller, and the update
 # orchestrator. The poller writes `modpack_versions` rows the frontend
@@ -176,9 +161,9 @@ modpack:
   # comfortable; CurseForge rate-limits at much higher rates.
   pollIntervalMinutes: 60
   # Shared snapshots PVC for the tar-based backup / mod-sync path. The
-  # backend REQUIRES it (Modrinth is always-on and modded servers both need
-  # it), so this defaults on; the startup fails closed otherwise. Tune
-  # `size` for your server/backup count.
+  # backend REQUIRES a PVC named `mc-snapshots` in mcNamespace. `enabled`
+  # gates only the chart-managed PVC resource — set it false ONLY when you
+  # provision that PVC out-of-band (the env var is emitted either way).
   snapshotsPvc:
     enabled: true
     # StorageClass for the snapshots PVC. Defaults to the cluster's

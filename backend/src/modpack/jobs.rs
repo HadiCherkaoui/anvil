@@ -4,11 +4,6 @@
 //! restore additionally mount the shared `mc-snapshots` PVC. Each Job has
 //! `backoffLimit: 0` so failures surface immediately to the orchestrator
 //! (we own retry semantics — the Job's job is to run once and report).
-//!
-//! M5: the modpack swap step migrated from a Job here to an in-orchestrator
-//! `StatefulSet` env patch (CF and Modrinth both run on the same itzg image
-//! which redownloads when `CF_FILE_ID` / `MODRINTH_VERSION` changes). The
-//! restore + backup Jobs remain — rollback still needs a snapshot.
 
 use std::collections::BTreeMap;
 
@@ -29,8 +24,8 @@ const JOB_TTL_SECONDS: i32 = 600;
 /// keeps per server.
 ///
 /// 3 fits ATM-11's ~5–10 GB-per-archive footprint into a 100 GiB shared
-/// PVC across ~5 servers. Manual backups (Spec 5) opt out of GC entirely
-/// by passing `gc_keep = None`.
+/// PVC across ~5 servers. Manual backups opt out of GC entirely by passing
+/// `gc_keep = None`.
 pub const BACKUP_KEEP_COUNT: usize = 3;
 
 /// Max chars of `archive_id` we splice into a Job name. Job names propagate
@@ -114,7 +109,7 @@ pub fn build_backup_job(
 ///
 /// Wipes `/data/*`, then untars `/snap/mc-{id}/{subdir}/{archive_id}.tgz`
 /// back into `/data`. Use cases: orchestrator rollback (`subdir = "auto"`)
-/// and Spec 5 manual restore (`subdir = "manual"`).
+/// and manual restore (`subdir = "manual"`).
 #[must_use]
 pub fn build_restore_job(
     server_id: &str,

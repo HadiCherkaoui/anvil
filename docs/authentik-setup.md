@@ -147,4 +147,4 @@ curl -sI https://<anvil-host>/api/servers
 | 401 on every request after a successful login | `ANVIL_SESSION_KEY` rotated since the cookie was minted. Log in again.                                         |
 | 403 with `code: sub_not_allowed`             | Your subject UUID is not in `oidc.allowedSubs`. Either add it, or set `allowedSubs: ""`.                        |
 | 502 from `/api/auth/callback`                | Backend can't reach Authentik for token exchange. Check pod egress + DNS for `<authentik-host>`.               |
-| Helm template fails with `oidc.enabled requires ingress.tls.enabled` | Turn TLS on, or turn OIDC off. The two are gated together by design. |
+| Helm template fails with `oidc.enabled requires ingress.tls.enabled` | Turn TLS on. OIDC is mandatory (the backend refuses to start without it), so disabling it is not an option. |

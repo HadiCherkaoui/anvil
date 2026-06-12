@@ -22,13 +22,9 @@ pub const LABEL_SERVER: &str = "app.anvil.io/server";
 pub const ANNOTATION_MC_VERSION: &str = "app.anvil.io/mc-version";
 
 /// Annotation key for the memory budget (MiB).
-///
-/// Renamed from `memory-mb` in M1 — the value was always MiB despite the
-/// name. M1 had no production data so the rename is safe.
 pub const ANNOTATION_MEMORY_MI: &str = "app.anvil.io/memory-mi";
 
-/// Annotation key for the user-facing server name (the `servers.name`
-/// column in `SQLite`). Stable across renames is not required in M2.
+/// Annotation key for the user-facing server name (the `servers.name` column in `SQLite`).
 pub const ANNOTATION_SERVER_NAME: &str = "app.anvil.io/server-name";
 
 /// Annotation key for the unix-second creation timestamp.

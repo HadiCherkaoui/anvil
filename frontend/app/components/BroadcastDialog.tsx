@@ -77,9 +77,7 @@ export function BroadcastDialog({
 					<textarea
 						value={msg}
 						onChange={(e) => {
-							// Strip newlines — the broadcast endpoint rejects control chars,
-							// and /say is single-line by nature. Pressing Enter shouldn't
-							// produce a confusing validation error.
+							// Strip newlines — broadcast endpoint rejects control chars; /say is single-line.
 							setMsg(e.target.value.replace(/[\n\r]/g, ""));
 						}}
 						autoFocus

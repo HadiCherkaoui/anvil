@@ -1,4 +1,4 @@
-//! `/api/servers/:id/backups` — manual backup CRUD + restore (Spec 5).
+//! `/api/servers/:id/backups` — manual backup CRUD + restore.
 //!
 //! Create + restore spawn the matching FSM (announce → stop → tar → start →
 //! verify) and return 202 with the backup id. List is a plain `SQLite`
@@ -142,6 +142,7 @@ pub async fn list(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<BackupListItem>>, AppError> {
+    server_must_exist(&state, &id).await?;
     // Only `complete` rows have a tarball on disk. `pending` (in-flight or
     // crash-stranded) and `failed` rows are hidden so the UI never offers a
     // restore against an archive that doesn't exist. Rows predating

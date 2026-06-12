@@ -1,4 +1,4 @@
-//! File-browser handlers for sub-project D.
+//! File-browser handlers.
 //!
 //! All four endpoints share the same shape: route → fetch server row →
 //! pick target pod via `files_helper::target_pod_for_files` → validate
@@ -27,9 +27,10 @@ use crate::files_helper::{
     target_pod_for_files, tear_down_helper,
 };
 use crate::routes::servers::create::insert_audit;
+use crate::routes::servers::get::fetch_server_row;
 use crate::validation::validate_data_path_argv_only;
 
-/// 100 MiB upload cap (sub-project D scope) as bytes.
+/// 100 MiB upload cap as bytes.
 pub const UPLOAD_CAP_BYTES: u64 = 100 * 1024 * 1024;
 /// Same cap typed as `usize` for the `DefaultBodyLimit` layer.
 pub const UPLOAD_CAP_USIZE: usize = 100 * 1024 * 1024;
@@ -187,9 +188,13 @@ pub async fn download(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),
     );
+    // `"` passes path validation but would terminate the quoted-string
+    // early; escape per RFC 6266. `\` itself can't appear (validation
+    // rejects it), so the escape is unambiguous.
+    let escaped = basename.replace('"', "\\\"");
     headers.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("attachment; filename=\"{basename}\""))
+        HeaderValue::from_str(&format!("attachment; filename=\"{escaped}\""))
             .expect("validated basename produces valid header value"),
     );
 
@@ -246,8 +251,7 @@ pub async fn upload(
     }
 
     let body_stream = request.into_body().into_data_stream();
-    // Atomic write: stream into "$1.tmp" then rename. Caller can re-issue
-    // the upload safely if the connection drops mid-stream.
+    // Caller can re-issue the upload safely if the connection drops mid-stream.
     let upload_script = "cat > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"";
 
     let bytes = pod_exec_stream_in(
@@ -486,6 +490,7 @@ pub async fn kill_helper(
     State(state): State<AppState>,
     Path(server_id): Path<String>,
 ) -> Result<Response, AppError> {
+    fetch_server_row(&state.pool, &server_id).await?;
     let ss_api: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
     let ss = ss_api
         .get_opt(&format!("mc-{server_id}"))

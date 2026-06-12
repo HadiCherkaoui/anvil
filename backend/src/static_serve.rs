@@ -36,7 +36,7 @@ fn is_api_path(path: &str) -> bool {
 fn api_not_found(path: &str) -> axum::response::Response {
     use axum::http::{StatusCode, header};
     use axum::response::IntoResponse as _;
-    let body = serde_json::json!({ "error": "not_found", "path": path });
+    let body = serde_json::json!({ "error": "path not found", "code": "not_found", "path": path });
     (
         StatusCode::NOT_FOUND,
         [(header::CONTENT_TYPE, "application/json")],
@@ -54,10 +54,6 @@ mod serve_dir_impl {
     use tower::util::ServiceExt as _;
     use tower_http::services::{ServeDir, ServeFile};
 
-    /// Filesystem path used in the dev `serve-dir` mode.
-    ///
-    /// Resolved relative to the process working directory. `cargo run` from
-    /// `backend/` lands in `<repo>/frontend/out` — see ADR 0003.
     const FRONTEND_OUT: &str = "../frontend/out";
 
     /// Returns a router whose only job is to serve the static frontend

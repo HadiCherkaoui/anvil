@@ -2,12 +2,10 @@
 //! response.
 //!
 //! This module also exposes [`run_rcon_batch`] and [`run_rcon_one`] for
-//! reuse by other handlers (notably the Players bulk-read endpoint, which
-//! issues four commands on a single auth'd connection). Both helpers
-//! open a fresh TCP+RCON session, run the requested commands in order
-//! under a single timeout, and close. There is no connection pool —
-//! RCON traffic from the panel is rare and the open/close overhead is
-//! dwarfed by the Minecraft server's command handling latency.
+//! reuse by other handlers. Both helpers open a fresh TCP+RCON session,
+//! run the requested commands in order under a single timeout, and
+//! close. There is no connection pool — RCON traffic is rare and the
+//! open/close overhead is dwarfed by MC's command handling latency.
 
 use std::time::Duration;
 

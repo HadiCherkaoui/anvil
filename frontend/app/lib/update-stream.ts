@@ -1,6 +1,4 @@
-// Hook for /api/servers/:id/update/stream — typed frames, reconnect with
-// exponential backoff. Mirrors useLogsStream's onopen/hello semantics so
-// the two WS hooks share lifecycle shape (audit §6.2).
+// Hook for /api/servers/:id/update/stream — typed frames, reconnect with exponential backoff.
 
 "use client";
 
@@ -30,7 +28,9 @@ const frameSchema = z.discriminatedUnion("type", [
 	z.object({
 		type: z.literal("done"),
 		result: resultSchema,
-		error: z.string().nullable().optional(),
+		// Backend omits the key when there's no error (skip_serializing_if),
+		// never sends null — `.optional()` alone keeps the validator honest.
+		error: z.string().optional(),
 	}),
 	z.object({ type: z.literal("end"), reason: z.string() }),
 ]);
@@ -84,8 +84,6 @@ export function useUpdateStream(serverId: string | null): UpdateStreamState {
 		let ws: WebSocket | null = null;
 		let backoff = BACKOFF_INITIAL_MS;
 		let reconnectTimer: number | null = null;
-		// Mirrors `state.status === "ended"` but read synchronously inside
-		// onclose so we never call setState as a side effect of a state updater.
 		let terminal = false;
 
 		const url = new URL(
@@ -151,10 +149,8 @@ export function useUpdateStream(serverId: string | null): UpdateStreamState {
 			ws.onclose = (): void => {
 				ws = null;
 				if (cancelled) return;
-				// If the FSM ended cleanly we don't reconnect — `done`/`end`
-				// is the terminal event for an update. Decide outside the
-				// state updater so StrictMode's double-invocation can't fire
-				// `scheduleReconnect` twice.
+				// Decide outside the state updater so StrictMode's double-invocation
+				// can't fire `scheduleReconnect` twice.
 				if (terminal) return;
 				scheduleReconnect();
 			};

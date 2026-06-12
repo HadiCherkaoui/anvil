@@ -6,11 +6,10 @@
 //! through the [`UpdateGuard`]'s watch sender so the WS at
 //! `/api/servers/:id/update/stream` can stream them to the frontend.
 //!
-//! M5 swap step: CF + Modrinth both run on the same itzg image, which
-//! redownloads its pack when `CF_FILE_ID` / `MODRINTH_VERSION` changes.
-//! The Swapping phase is therefore a `StatefulSet` env patch — no separate
-//! Job, no manual unzip, no `WIPE_LIST` / `PRESERVE_LIST` script. Backup
-//! still runs as a tar Job because rollback needs a snapshot.
+//! CF + Modrinth both run on the same itzg image, which redownloads its pack
+//! when `CF_FILE_ID` / `MODRINTH_VERSION` changes. The Swapping phase is
+//! therefore a `StatefulSet` env patch — no separate Job, no manual unzip.
+//! Backup still runs as a tar Job because rollback needs a snapshot.
 
 use std::time::Duration;
 
@@ -49,14 +48,13 @@ pub enum UpdatePhase {
     Starting,
     Verifying,
     Succeeded,
-    /// Spec 5 manual restore: untarring the snapshot back into /data.
+    /// Untars a snapshot back into /data.
     Restoring,
     RollingBack,
     RolledBack,
     Failed,
 }
 
-/// Pod terminate timeout (M2 uses 90 s for the same wait).
 pub(crate) const POD_TERMINATE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Backup Job ceiling — ATM-11 ~5–10 GB on ZFS finishes in well under a
 /// minute; 10 absorbs the cold-pod / pull-image cases.
@@ -83,10 +81,9 @@ pub async fn run(
     target_version_id: String,
     guard: UpdateGuard,
 ) {
-    // run_inner records the auto-backup ts here once Phase 3 starts so
-    // rollback can pinpoint the exact tarball to restore — no more
-    // `ls -t | head -n 1` race when concurrent backups land in the same
-    // directory.
+    // Records the auto-backup ts once Phase 3 starts so rollback can
+    // pinpoint the exact tarball — no more `ls -t | head -n 1` race when
+    // concurrent backups land in the same directory.
     let mut backup_ts: Option<i64> = None;
     let outcome = run_inner(
         &state,
@@ -115,10 +112,7 @@ pub async fn run(
                 err = %err,
                 "update failed; attempting rollback",
             );
-            // Stash the original FSM error before rollback runs — the WS
-            // emits whichever terminal phase comes next, and on RolledBack
-            // the user wants to know why the update failed (not just that
-            // it was reverted). Overwritten below if rollback also errors.
+            // Overwritten below if rollback also errors.
             set_update_error(&state, &server_id, err.to_string());
             guard.emit(UpdatePhase::RollingBack);
             match rollback(&state, &server_id, &guard, backup_ts).await {
@@ -229,13 +223,9 @@ async fn run_inner(
     // ─── Phase 3: backup ─────────────────────────────────────────────────
     guard.emit(UpdatePhase::BackingUp);
     let backup_ts = Utc::now().timestamp();
-    // Publish the ts so a subsequent rollback knows exactly which archive
-    // to restore (the orchestrator created /snap/<sid>/auto/<ts>.tgz here).
     *backup_ts_out = Some(backup_ts);
-    // Insert the backup row as `pending` BEFORE the tar Job so the UI
-    // surfaces "backup in progress" and the row exists even if the
-    // orchestrator panics mid-Job. We flip it to `complete` after the
-    // Job succeeds, or `failed` if it doesn't.
+    // Insert the backup row as `pending` BEFORE the tar Job — a crash
+    // leaves a reapable row rather than a missing one.
     let reason = format!("modpack-update:{}", version.name);
     let backup_row_id = match crate::modpack::backups::insert_auto_backup_row_with_status(
         state, server_id, backup_ts, &reason, "pending",
@@ -276,6 +266,12 @@ async fn run_inner(
         BACKUP_JOB_TIMEOUT,
     )
     .await;
+    if backup_outcome.is_err() {
+        // On timeout the Job pod may still be running with /data mounted —
+        // delete it so the rollback's restore Job isn't blocked on the RWO PVC.
+        let jobs: Api<Job> = Api::namespaced(state.kube.clone(), &state.mc_namespace);
+        let _ = delete_job_and_wait(&jobs, &backup_name, Duration::from_secs(30)).await;
+    }
     if let Some(id) = backup_row_id.as_deref() {
         let new_status = if backup_outcome.is_ok() {
             "complete"
@@ -293,7 +289,6 @@ async fn run_inner(
         }
     }
     backup_outcome?;
-    // Mirror the file-side keep-N GC the tar Job did into the DB.
     let _ = crate::modpack::backups::gc_auto_backup_rows(state, server_id, BACKUP_KEEP_COUNT).await;
     insert_audit(
         &state.pool,
@@ -306,8 +301,7 @@ async fn run_inner(
 
     // ─── Phase 4: swap ───────────────────────────────────────────────────
     // Patch the StatefulSet's container env so itzg picks up the new
-    // CF_FILE_ID / MODRINTH_VERSION on next boot and reinstalls. No Job
-    // needed — itzg handles the download + install on the MC pod itself.
+    // CF_FILE_ID / MODRINTH_VERSION on next boot and reinstalls.
     guard.emit(UpdatePhase::Swapping);
     let memory_mi = fetch_memory_mi(&state.pool, server_id).await?;
     let new_provider = build_provider_for_version(&source_kind, &source_config, &version)?;
@@ -346,9 +340,8 @@ async fn run_inner(
         POD_RUNNING_TIMEOUT,
     )
     .await?;
-    // Boot the new version's pack — use the *new* provider's timeout, not
-    // the pre-swap one. ATM-11 takes minutes to first-boot; vanilla
-    // doesn't. Mismatched timeouts fail the verify spuriously.
+    // Use the *new* provider's boot timeout — mismatched timeouts fail verify
+    // spuriously (ATM-11 takes minutes; vanilla doesn't).
     wait_for_done_marker(
         &state.kube,
         &state.mc_namespace,
@@ -358,9 +351,7 @@ async fn run_inner(
     .await?;
 
     // ─── Phase 7: persist + audit ────────────────────────────────────────
-    // All four writes (source_config swap, last_started_at, audit, drop
-    // modpack_versions) commit as one transaction. If the audit insert
-    // fails the whole block rolls back so a half-applied DB never
+    // All four writes commit as one transaction so a half-applied DB never
     // contradicts the live StatefulSet env (which is already swapped).
     let now_end = Utc::now().timestamp();
     let mut tx = state
@@ -440,7 +431,6 @@ async fn persist_new_version_tx(
         .bind(server_id)
         .execute(&mut **tx)
         .await?;
-    let _ = provider;
     Ok(())
 }
 
@@ -826,9 +816,6 @@ pub(crate) async fn wait_for_done_marker(
         .map_err(|_| anyhow!("boot verification timed out after {timeout_dur:?}"))?
 }
 
-// `persist_new_version` was inlined into the Phase 7 transaction in
-// `run_inner`; see [`persist_new_version_tx`].
-
 /// Rolls back to the auto-backup the orchestrator just created.
 ///
 /// `backup_ts` is the timestamp recorded during Phase 3; passing it through
@@ -941,14 +928,11 @@ async fn rollback(
     .await?;
     // Best-effort boot verification — use 15min default; we don't know the
     // provider here without re-reading. Vanilla updates don't reach this code.
-    let _ = timeout(
+    let _ = wait_for_done_marker(
+        &state.kube,
+        &state.mc_namespace,
+        server_id,
         Duration::from_mins(15),
-        wait_for_done_marker(
-            &state.kube,
-            &state.mc_namespace,
-            server_id,
-            Duration::from_mins(15),
-        ),
     )
     .await;
     Ok(())
@@ -956,14 +940,8 @@ async fn rollback(
 
 #[cfg(test)]
 mod tests {
-    //! Persist round-trip tests for the modpack orchestrator.
-    //!
-    //! These exist to catch Bug 1: `persist_new_version_tx` previously used
-    //! `json!(version.id)` on a `String`, which wrote `current_version_id`
-    //! as a JSON string. `CurseForge`'s `Config` declares the field as
-    //! `u32`, so the next deserialization (poller, detail handler, anywhere
-    //! via `from_db`) rejected the row and silently disabled all background
-    //! checks for that server.
+    //! Persist round-trip tests: verify `source_config` fields keep their correct
+    //! JSON types after a version swap so `from_db` can always deserialize them.
 
     use super::*;
 
@@ -1048,8 +1026,7 @@ mod tests {
         );
         assert_eq!(id.as_u64(), Some(8_066_228));
 
-        // Round-trip through from_db — this is what the poller does every
-        // tick and what regressed in Bug 1.
+        // Round-trip through from_db — what the poller does every tick.
         let reloaded = from_db("curseforge", &cfg).expect("from_db after persist");
         assert_eq!(reloaded.kind(), "curseforge");
     }

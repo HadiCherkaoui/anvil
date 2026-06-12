@@ -1,6 +1,6 @@
 "use client";
 
-import type { ChangeEvent, ReactElement } from "react";
+import { useId, type ChangeEvent, type ReactElement } from "react";
 
 import { cn } from "../lib/cn";
 
@@ -27,13 +27,17 @@ export function RangeSlider({
 	ticks,
 	className,
 }: RangeSliderProps): ReactElement {
+	const inputId = useId();
 	const handle = (event: ChangeEvent<HTMLInputElement>): void => {
 		onChange(Number(event.target.value));
 	};
 	return (
 		<div className={cn("flex flex-col gap-2", className)}>
 			<div className="flex items-baseline justify-between">
-				<label className="font-mono text-[11px] uppercase tracking-wider text-text-muted">
+				<label
+					htmlFor={inputId}
+					className="font-mono text-[11px] uppercase tracking-wider text-text-muted"
+				>
 					{label}
 				</label>
 				<span className="font-mono text-[12px] text-text-body">
@@ -44,6 +48,7 @@ export function RangeSlider({
 				</span>
 			</div>
 			<input
+				id={inputId}
 				type="range"
 				min={min}
 				max={max}

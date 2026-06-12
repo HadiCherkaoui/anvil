@@ -4,8 +4,6 @@ import { CommandBar } from "./components/CommandBar";
 import { ToastProvider } from "./components/Toast";
 import "./globals.css";
 
-// next/font self-hosts the Google Fonts at build time, so the static export
-// has no external network dependency at request time.
 const firaSans = Fira_Sans({
 	subsets: ["latin"],
 	weight: ["400", "500", "600"],

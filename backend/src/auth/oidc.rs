@@ -251,9 +251,6 @@ impl OidcState {
 }
 
 fn extract_identity(claims: &CoreIdTokenClaims) -> ExchangedIdentity {
-    // The openidconnect newtype wrappers `Deref` to `String` but do not
-    // implement `Display`; round-trip via `as_str()` to materialise an owned
-    // `String` without taking a hard dep on the Deref trait being in scope.
     let sub = claims.subject().as_str().to_owned();
     let email = claims
         .email()

@@ -14,7 +14,7 @@ import { Button } from "./Button";
 import { Modal } from "./Modal";
 import { useToast } from "./Toast";
 
-/// The variant determines which input (if any) the dialog renders.
+// The variant determines which input (if any) the dialog renders.
 export type PlayerActionVariant =
 	| { kind: "kick"; player: string }
 	| { kind: "ban"; player: string }

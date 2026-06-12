@@ -10,7 +10,6 @@ import {
 	applyServerPlugins,
 	fetchCatalogVersions,
 	fetchFileList,
-	listServerPlugins,
 	moddedConfigSchema,
 	paperConfigSchema,
 	removePendingMod,
@@ -325,7 +324,11 @@ export function ModsBody(): ReactElement {
 						<ul className="mt-2 flex flex-col">
 							{cfg.pending.map((op, i) => (
 								<li
-									key={`${op.op}-${i.toString()}`}
+									key={
+										op.op === "add"
+											? `add:${op.mod_entry.version_id}`
+											: `${op.op}:${op.filename}`
+									}
 									className="group flex items-center justify-between border-b border-border-soft py-2 font-mono text-[12px]"
 								>
 									<PendingLabel op={op} />
@@ -464,12 +467,12 @@ function PaperPluginsBody({
 		cfgParse.success ? cfgParse.data.mc_version : "",
 	);
 
-	// Re-sync local state when the parent's polling refreshes
-	// `sourceConfig`. Without this, an initial-create + auto-apply
-	// commits an empty `pending_plugins` in the DB but the UI keeps
-	// showing the original pending list because the local state was
-	// only initialised on mount. Done via the "store + compare in
-	// render" pattern (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes)
+	// `sourceConfig` (parent detail poll) is the single source of truth —
+	// the backend plugins `list` endpoint re-serves the same data, so a
+	// local fetch path would just race this sync (a stale response landing
+	// after a sync would stick until the next config change). Re-sync via
+	// the "store + compare in render" pattern
+	// (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes)
 	// so we don't trip `react-hooks/set-state-in-effect`.
 	const sourceConfigKey = cfgParse.success
 		? `${JSON.stringify(cfgParse.data.plugins)}|${JSON.stringify(cfgParse.data.pending_plugins)}`
@@ -483,25 +486,6 @@ function PaperPluginsBody({
 		}
 	}
 
-	useEffect(() => {
-		const ctrl = new AbortController();
-		listServerPlugins(serverId, ctrl.signal)
-			.then((r) => {
-				setPlugins(r.plugins);
-				setPending(r.pending_plugins);
-			})
-			.catch((err: unknown) => {
-				if (err instanceof DOMException && err.name === "AbortError") return;
-				onToast(
-					`load failed · ${err instanceof ApiError ? err.code : "unknown"}`,
-					"error",
-				);
-			});
-		return () => {
-			ctrl.abort();
-		};
-	}, [serverId, onToast]);
-
 	if (!cfgParse.success) {
 		return (
 			<Card>
@@ -513,22 +497,6 @@ function PaperPluginsBody({
 	}
 
 	const changes = diffPending(plugins, pending);
-
-	const refresh = (): void => {
-		const ctrl = new AbortController();
-		listServerPlugins(serverId, ctrl.signal)
-			.then((r) => {
-				setPlugins(r.plugins);
-				setPending(r.pending_plugins);
-			})
-			.catch((err: unknown) => {
-				if (err instanceof DOMException && err.name === "AbortError") return;
-				onToast(
-					`refresh failed · ${err instanceof ApiError ? err.code : "unknown"}`,
-					"error",
-				);
-			});
-	};
 
 	const onPick = (pick: CatalogPick): void => {
 		const entry: ModEntry = {
@@ -542,13 +510,12 @@ function PaperPluginsBody({
 			download_url: pick.version.primary_url,
 			sha512: pick.version.primary_sha512,
 		};
-		addServerPlugin(serverId, entry)
+		void addServerPlugin(serverId, entry)
 			.then((res) => {
 				onToast(
 					addedToastMessage(entry.project_name, res.added_count),
 					"success",
 				);
-				refresh();
 				onMutated();
 			})
 			.catch((err: unknown) => {
@@ -560,10 +527,9 @@ function PaperPluginsBody({
 	};
 
 	const removeInstalled = (filename: string): void => {
-		removeServerPlugin(serverId, filename)
+		void removeServerPlugin(serverId, filename)
 			.then(() => {
 				onToast(`queued removal · ${filename}`, "success");
-				refresh();
 				onMutated();
 			})
 			.catch((err: unknown) => {
@@ -576,10 +542,9 @@ function PaperPluginsBody({
 
 	const discardChange = (change: PendingPluginChange): void => {
 		if (change.kind === "add") {
-			removeServerPlugin(serverId, change.filename)
+			void removeServerPlugin(serverId, change.filename)
 				.then(() => {
 					onToast("discarded", "success");
-					refresh();
 					onMutated();
 				})
 				.catch((err: unknown) => {
@@ -594,10 +559,9 @@ function PaperPluginsBody({
 		}
 		const original = plugins.find((p) => p.filename === change.filename);
 		if (!original) return;
-		addServerPlugin(serverId, original)
+		void addServerPlugin(serverId, original)
 			.then(() => {
 				onToast("discarded", "success");
-				refresh();
 				onMutated();
 			})
 			.catch((err: unknown) => {
@@ -656,7 +620,6 @@ function PaperPluginsBody({
 			await removeServerPlugin(serverId, p.filename);
 			await addServerPlugin(serverId, newEntry);
 			onToast(`queued bump · ${p.project_name}`, "success");
-			refresh();
 			onMutated();
 		} catch (err: unknown) {
 			onToast(
@@ -859,8 +822,6 @@ function formatJarSize(bytes: number): string {
 	return `${bytes.toString()} B`;
 }
 
-// Strips `.jar` and tries to peel off a trailing version suffix so the
-// list reads like "JEI 15.3.0.4" instead of "jei-1.20.1-15.3.0.4.jar".
 function prettifyJarName(filename: string): { name: string; version: string } {
 	const stem = filename.replace(/\.jar$/i, "");
 	const versionMatch = /^(.*?)[-_]([0-9].*)$/.exec(stem);
@@ -875,8 +836,6 @@ function PackModsBody({ serverId, status }: PackModsBodyProps): ReactElement {
 	const [state, setState] = useState<PackModsState>({ kind: "loading" });
 
 	useEffect(() => {
-		// Render-time gate: while the server is in a transient/error state, the
-		// effect bails and the card shows the reason directly.
 		if (transientReason !== null) return undefined;
 		const ctrl = new AbortController();
 		fetchFileList(serverId, "/mods", ctrl.signal)

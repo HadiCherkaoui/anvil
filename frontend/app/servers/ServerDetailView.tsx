@@ -235,8 +235,7 @@ export function ServerDetailView(): ReactElement {
 		fn()
 			.then(() => {
 				toast.push(`${detail.name} · ${label} ok`, "success");
-				// Refetch immediately so the badge flips to starting/stopping
-				// rather than waiting up to 5 s for the next poll tick.
+				// Avoids waiting up to 5 s for the next poll tick to flip the badge.
 				refresh();
 			})
 			.catch((err: unknown) => {

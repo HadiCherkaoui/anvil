@@ -211,7 +211,6 @@ impl ModpackProvider for ModdedRuntime {
     }
 
     async fn latest(&self, _http: &ModpackHttp<'_>) -> Result<Option<VersionInfo>> {
-        // mods are pinned; per-mod update polling is a follow-up.
         Ok(None)
     }
 

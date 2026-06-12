@@ -80,9 +80,6 @@ rust-test:
     - set -euo pipefail
     - cd backend && cargo test --features serve-dir --locked
 
-# Frontend typecheck + lint run locally pre-commit; the Dockerfile's
-# pnpm-build stage will fail the image build if the bundle doesn't compile.
-
 # ----------------------------------------------------------------------------
 # image stage — pushes :<sha> + :latest to the GitLab project registry
 # ----------------------------------------------------------------------------

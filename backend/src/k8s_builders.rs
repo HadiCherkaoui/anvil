@@ -2,9 +2,7 @@
 //!
 //! These functions take a [`BuildParams`] and return typed kube-rs
 //! objects ready to hand to `Api::create()`. No I/O, no allocation
-//! beyond what the resulting structs need. Unit tests verify the
-//! resulting shapes — there is no integration test against a kube
-//! API in M2.
+//! beyond what the resulting structs need.
 
 use std::collections::BTreeMap;
 
@@ -35,7 +33,7 @@ const RCON_PASSWORD_LEN: usize = 24;
 
 /// Inputs needed to construct the StatefulSet/Service/Secret triple.
 ///
-/// M5: `image`, `command`, and `extra_env` are now provider-supplied so the
+/// `image`, `command`, and `extra_env` are provider-supplied so the
 /// `CurseForge` path can launch its own bash entrypoint with custom JVM env.
 #[derive(Debug, Clone)]
 pub struct BuildParams<'a> {
@@ -250,24 +248,17 @@ pub fn build_statefulset(p: &BuildParams<'_>) -> StatefulSet {
     }
 }
 
-/// Builds the data PVC (`data-mc-{id}-0`) the `StatefulSet`'s
-/// `volumeClaimTemplate` would otherwise create on first scale-up.
-///
-/// Pre-creating lets us run Jobs that mount `/data` (e.g. the create-time
-/// mod/plugin sync) before the `StatefulSet` has ever scaled to 1 — k8s
-/// only materialises template-backed PVCs when the corresponding pod is
-/// scheduled, so a fresh server has no `data-mc-{id}-0` to bind to. The
-/// `StatefulSet` controller adopts an existing PVC matching the
-/// template's `<name>-<sts>-<ord>` shape rather than creating a new one,
-/// so this pre-creation is benign.
+/// Builds the data PVC (`data-mc-{id}-0`) ahead of first scale-up so
+/// Jobs can mount `/data` before the `StatefulSet` ever schedules a pod.
+/// The `StatefulSet` controller adopts an existing PVC matching the
+/// template's `<name>-<sts>-<ord>` shape, so this pre-creation is benign.
 ///
 /// **No `ownerReference` is set on this PVC by design.** k8s does not GC
-/// `StatefulSet`-template PVCs when the `StatefulSet` is deleted (the
-/// retention default is to keep the data) — and Anvil mirrors that
-/// guarantee for the pre-created PVC. The server-delete handler in
-/// `routes/servers/delete.rs` is responsible for explicitly deleting the
-/// PVC after the user confirms data loss; relying on owner-ref GC would
-/// turn `kubectl delete sts` into accidental data loss.
+/// `StatefulSet`-template PVCs when the `StatefulSet` is deleted — and
+/// Anvil mirrors that guarantee. The server-delete handler is responsible
+/// for explicitly deleting the PVC after the user confirms data loss;
+/// relying on owner-ref GC would turn `kubectl delete sts` into accidental
+/// data loss.
 #[must_use]
 pub fn build_data_pvc(p: &BuildParams<'_>) -> PersistentVolumeClaim {
     let pvc_name = format!("data-mc-{}-0", p.id);
@@ -302,11 +293,6 @@ pub fn build_data_pvc(p: &BuildParams<'_>) -> PersistentVolumeClaim {
 /// Builds the Service for a managed server. Type comes from
 /// `exposure_mode`; for `NodePort` the assigned port is set from
 /// `params.nodeport`.
-///
-/// **Signature change (was `-> Service`)**: now returns `Result` because
-/// the previous `.expect(...)` on missing `nodeport` panicked the worker
-/// thread inside the handler instead of returning a 500. The create
-/// handler in `routes/servers/create.rs` must call this with `?`.
 ///
 /// # Errors
 ///

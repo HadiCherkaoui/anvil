@@ -74,10 +74,9 @@ spec:
             capabilities:
               drop:
                 - ALL
-          # /var/lib/anvil is always mounted writable: the root FS is
-          # read-only and ANVIL_DATABASE_URL points here, so SQLite needs a
-          # writable volume. PVC when persistence is on; ephemeral emptyDir
-          # otherwise (DB resets on restart — for throwaway/test installs).
+          # The root FS is read-only; SQLite needs a writable volume at
+          # /var/lib/anvil. PVC when persistence is on; emptyDir otherwise
+          # (DB resets on restart — for throwaway/test installs).
           volumeMounts:
             - name: data
               mountPath: /var/lib/anvil

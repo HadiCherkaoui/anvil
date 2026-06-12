@@ -6,11 +6,7 @@ import { fetchLoaderVersions, type LoaderVersions } from "./api";
 
 const cache = new Map<string, Promise<LoaderVersions>>();
 
-/// Lazy-loads + memoises Forge / NeoForge loader versions per runtime.
-/// Returns `null` when `runtime` is null or while the upstream fetch is in
-/// flight; switching `runtime` does not trigger a synchronous reset (the
-/// derived `byRuntime[runtime]` lookup yields `undefined` until the next
-/// fetch resolves).
+/// Lazy-loads + memoises loader versions per runtime. Returns null while loading or when runtime is null.
 export function useLoaderVersions(
 	runtime: "forge" | "neoforge" | null,
 ): LoaderVersions | null {

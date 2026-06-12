@@ -29,15 +29,15 @@ export interface CreateDraft {
 	modrinth: { project_id: string; channel: CfChannel } | null;
 	runtime: Runtime | null;
 	initial_mods: ModEntry[];
-	/// Paper plugins pre-picked at create time. Mirrors `initial_mods` for
-	/// the modded path. Cleared on `type` switch away from paper.
+	// Paper plugins pre-picked at create time. Mirrors `initial_mods` for
+	// the modded path. Cleared on `type` switch away from paper.
 	initial_plugins: ModEntry[];
-	/// Forge / NeoForge loader version chosen from the cascading picker.
-	/// `null` means "use itzg's LATEST"; fabric ignores this.
+	// Forge / NeoForge loader version chosen from the cascading picker.
+	// `null` means "use itzg's LATEST"; fabric ignores this.
 	loader_version: string | null;
-	/// Curated server.properties overrides — the World section in the create
-	/// form sets `difficulty`, `hardcore`, `gamemode`. Other fields stay at
-	/// vanilla defaults until the operator visits the Properties tab.
+	// Curated server.properties overrides — the World section in the create
+	// form sets `difficulty`, `hardcore`, `gamemode`. Other fields stay at
+	// vanilla defaults until the operator visits the Properties tab.
 	properties: ServerProperties;
 }
 

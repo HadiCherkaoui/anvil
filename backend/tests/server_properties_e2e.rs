@@ -68,7 +68,6 @@ async fn properties_round_trip_via_db_column() {
     let p: ServerProperties = serde_json::from_str(&raw).unwrap();
     assert_eq!(p.difficulty, Difficulty::Hard);
     assert!(p.hardcore);
-    // Unset fields fall back to defaults.
     assert_eq!(p.gamemode, Gamemode::Survival);
     assert_eq!(p.max_players, 42);
     assert!(p.pvp);

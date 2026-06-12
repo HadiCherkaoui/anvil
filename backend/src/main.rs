@@ -30,9 +30,6 @@ async fn main() -> Result<()> {
     let config = Config::from_env().context("loading configuration")?;
     init_tracing(&config.log_level);
 
-    // Open the SQLite pool and run migrations. The pool is now exposed via
-    // AppState so M2 handlers can read/write the `servers` and `audit_log`
-    // tables.
     let pool = db::init(&config.database_url)
         .await
         .context("initializing database")?;
@@ -91,8 +88,7 @@ async fn main() -> Result<()> {
         mc_busybox_image: config.mc_busybox_image.clone(),
     };
 
-    // Hourly poller — covers both CF and Modrinth modpack rows. Skips CF
-    // rows in-loop when cf_client is None.
+    // Modpack poller; CF rows are skipped in-loop when cf_client is None.
     {
         let poller_state = state.clone();
         tokio::spawn(async move {
@@ -114,7 +110,7 @@ async fn main() -> Result<()> {
         bind.addr = %config.bind_addr,
         mc.namespace = config.mc_namespace,
         version = env!("CARGO_PKG_VERSION"),
-        "anvil listening on {{bind.addr}}",
+        "anvil listening",
     );
 
     axum::serve(listener, app)

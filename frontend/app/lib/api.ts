@@ -1,6 +1,4 @@
-// Network-boundary types for the panel API. Every shape is validated
-// with Zod at runtime so a backend-deploy drift is caught immediately
-// rather than silently rendering garbage.
+// Network-boundary types for the panel API, validated with Zod at runtime.
 
 import { z } from "zod";
 
@@ -53,8 +51,6 @@ export const serverPropertiesSchema = z.object({
 	allow_nether: z.boolean().default(true),
 	enable_command_block: z.boolean().default(false),
 	// itzg `SEED` -> vanilla `level-seed`. Empty string = random world.
-	// Capped at 256 chars and must not contain control chars (matches the
-	// backend `properties_seed_invalid` validation).
 	seed: z
 		.string()
 		.max(256)
@@ -102,8 +98,6 @@ export const serverSummarySchema = z.object({
 	exposure_mode: exposureModeSchema,
 	endpoint: endpointSchema.nullable(),
 	created_at: z.number().int(),
-	// M5: modpack provenance + update awareness. Defaults keep existing
-	// vanilla rows shaped the same as before for callers that ignore them.
 	source_kind: sourceKindSchema.default("vanilla"),
 	update_available: z.boolean().default(false),
 	latest_version_name: z.string().nullable().default(null),
@@ -138,8 +132,6 @@ export const serverDetailSchema = serverSummarySchema.extend({
 	storage_size_gi: z.number().int().nonnegative(),
 	nodeport: z.number().int().nullable(),
 	last_started_at: z.number().int().nullable(),
-	// M5: parsed provider config (passthrough JSON value) and the latest
-	// cached upstream version, when any.
 	source_config: z.unknown().default(null),
 	latest_version_id: z.number().int().nullable().default(null),
 	// True when the per-server file-helper Pod (`mc-{id}-files`) is up and
@@ -255,8 +247,6 @@ export const createServerRequestSchema = z.object({
 	exposure_mode: exposureModeSchema.optional(),
 	storage_class: z.string().optional(),
 	storage_size_gi: z.number().int().min(10).max(500).optional(),
-	// Provider discriminator (vanilla | curseforge | modrinth | modded | paper);
-	// when modpack/modded, the matching sub-config below is required.
 	source_kind: sourceKindSchema.optional(),
 	curseforge: curseforgeCreateSchema.optional(),
 	modrinth: modrinthCreateSchema.optional(),
@@ -886,7 +876,7 @@ export async function applyServerPlugins(
 	return jsonOrThrow(res, pluginsApplyResponseSchema);
 }
 
-// --- players (sub-project C) --------------------------------------------------
+// --- players --------------------------------------------------------------
 
 export const onlinePlayersSchema = z.object({
 	count: z.number().int().nonnegative(),
@@ -1005,7 +995,7 @@ export async function broadcastMessage(
 	await noContentOrThrow(res);
 }
 
-// --- backups (Spec 5) ----------------------------------------------------
+// --- backups --------------------------------------------------------------
 
 export const backupKindSchema = z.enum(["manual", "auto"]);
 
@@ -1093,7 +1083,7 @@ export async function deleteBackup(
 	await noContentOrThrow(res);
 }
 
-// --- Sub-project D: file browser ----------------------------------------
+// --- file browser ---------------------------------------------------------
 
 export const fileEntryTypeSchema = z.enum(["f", "d", "l", "o"]);
 export type FileEntryType = z.infer<typeof fileEntryTypeSchema>;
@@ -1161,12 +1151,21 @@ export async function uploadFile(
 		const url = `/api/servers/${encodeURIComponent(serverId)}/files?path=${encodeURIComponent(path)}`;
 		xhr.open("PUT", url);
 		xhr.responseType = "json";
+		const onAbort = (): void => {
+			xhr.abort();
+		};
+		// Detach from the caller's (possibly long-lived) signal once the
+		// XHR settles, so a later abort doesn't poke a finished request.
+		const detach = (): void => {
+			opts.signal?.removeEventListener("abort", onAbort);
+		};
 		xhr.upload.onprogress = (e): void => {
 			if (opts.onProgress && e.lengthComputable) {
 				opts.onProgress(e.loaded / e.total);
 			}
 		};
 		xhr.onload = (): void => {
+			detach();
 			if (xhr.status === 401) {
 				if (typeof window !== "undefined") {
 					window.location.replace("/api/auth/login");
@@ -1188,15 +1187,14 @@ export async function uploadFile(
 			);
 		};
 		xhr.onerror = (): void => {
+			detach();
 			reject(new ApiError(0, "network", "network error during upload"));
 		};
 		xhr.onabort = (): void => {
+			detach();
 			reject(new ApiError(0, "aborted", "upload cancelled"));
 		};
 		if (opts.signal) {
-			const onAbort = (): void => {
-				xhr.abort();
-			};
 			opts.signal.addEventListener("abort", onAbort, { once: true });
 		}
 		xhr.send(blob);

@@ -1,8 +1,7 @@
-//! Vanilla MC server provider (refactored from the M2 inline path).
+//! Vanilla MC server provider.
 //!
 //! Drives the configured itzg image, which configures itself from env vars
-//! (EULA, TYPE, VERSION, `INIT_MEMORY`, `MAX_MEMORY`, RCON). The
-//! `extra_env` set mirrors what M2's `build_statefulset` hardcoded.
+//! (EULA, TYPE, VERSION, `INIT_MEMORY`, `MAX_MEMORY`, RCON).
 
 use std::time::Duration;
 
@@ -24,11 +23,6 @@ pub struct VanillaProvider {
 }
 
 /// Minecraft version the vanilla provider asks itzg to download.
-///
-/// Currently a thin wrapper over a `&'static str` so that the M2 path which
-/// validates against `KNOWN_MC_VERSIONS` continues to drive the env. The
-/// provider stores this so `extra_env` can return the `VERSION` env var
-/// without an extra parameter.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VanillaVersion(Option<&'static str>);
 

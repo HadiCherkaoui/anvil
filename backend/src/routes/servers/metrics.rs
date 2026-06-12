@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::AppState;
 use crate::error::AppError;
+use crate::routes::servers::get::fetch_server_row;
 
 /// Body of `GET /api/servers/{id}/metrics`.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -28,14 +29,16 @@ pub struct ServerMetrics {
 ///
 /// # Errors
 ///
-/// Returns `AppError::Internal` if the metrics request fails for a reason
-/// other than the API not being installed or the pod not being scraped yet.
+/// Returns `AppError::NotFound` for unknown servers, `AppError::Internal`
+/// if the metrics request fails for a reason other than the API not being
+/// installed or the pod not being scraped yet.
 #[utoipa::path(
     get,
     path = "/api/servers/{id}/metrics",
     params(("id" = String, Path, description = "server UUID")),
     responses(
         (status = 200, description = "Live CPU and memory usage", body = ServerMetrics),
+        (status = 404, description = "Server not found"),
         (status = 500, description = "Metrics request failed")
     ),
     tag = "metrics"
@@ -44,6 +47,7 @@ pub async fn handle(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ServerMetrics>, AppError> {
+    fetch_server_row(&state.pool, &id).await?;
     let pod_name = format!("mc-{id}-0");
     let path = format!(
         "/apis/metrics.k8s.io/v1beta1/namespaces/{}/pods/{}",

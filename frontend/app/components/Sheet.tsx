@@ -39,12 +39,16 @@ export function Sheet({
 		const previous = document.activeElement as HTMLElement | null;
 		const panel = panelRef.current;
 		if (!panel) return undefined;
-		const focusables = panel.querySelectorAll<HTMLElement>(
-			'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-		);
-		focusables[0]?.focus();
+		const queryFocusables = (): NodeListOf<HTMLElement> =>
+			panel.querySelectorAll<HTMLElement>(
+				'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+			);
+		queryFocusables()[0]?.focus();
 		const handler = (event: KeyboardEvent): void => {
-			if (event.key !== "Tab" || focusables.length === 0) return;
+			if (event.key !== "Tab") return;
+			// Re-query on every Tab — sheets populate async content (search
+			// hits, version lists) that a one-shot snapshot would miss.
+			const focusables = queryFocusables();
 			const first = focusables[0];
 			const last = focusables[focusables.length - 1];
 			if (!first || !last) return;

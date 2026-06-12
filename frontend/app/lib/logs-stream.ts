@@ -1,12 +1,7 @@
-// Live WebSocket client for /api/servers/{id}/logs/stream.
-// Validates every frame with Zod, strips ANSI escapes, classifies
-// log lines into info/warn/error, and reconnects with exponential
-// backoff on unexpected close.
+// Live WebSocket client for /api/servers/{id}/logs/stream; reconnects with exponential backoff.
 
 import { useEffect, useState } from "react";
 import { z } from "zod";
-
-// --- frame schemas (mirror backend src/ws.rs) ----------------------------
 
 const helloFrameSchema = z.object({
 	type: z.literal("hello"),
@@ -40,8 +35,6 @@ export const frameSchema = z.discriminatedUnion("type", [
 export type Frame = z.infer<typeof frameSchema>;
 export type EndReason = z.infer<typeof endFrameSchema>["reason"];
 
-// --- public types --------------------------------------------------------
-
 export type LogLevel = "info" | "warn" | "error";
 
 export type LogLine = {
@@ -62,8 +55,6 @@ export type UseLogsStreamResult = {
 	readonly lastError: string | null;
 	readonly endedReason: EndReason | null;
 };
-
-// --- helpers (exported for testing/reuse) --------------------------------
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*[A-Za-z]/g;
 
@@ -102,8 +93,6 @@ export function parseFrame(raw: string): Frame | null {
 		return null;
 	}
 }
-
-// --- hook ----------------------------------------------------------------
 
 const DEFAULT_MAX_LINES = 2000;
 const BACKOFF_INITIAL_MS = 1_000;

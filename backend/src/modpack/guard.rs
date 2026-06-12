@@ -89,7 +89,6 @@ pub struct UpdateGuard {
     server_id: String,
     locks: Arc<Mutex<HashSet<String>>>,
     buses: Arc<Mutex<HashMap<String, watch::Receiver<UpdatePhase>>>>,
-    errors: Option<UpdateErrorMap>,
     sender: Option<watch::Sender<UpdatePhase>>,
 }
 
@@ -130,7 +129,6 @@ impl UpdateGuard {
             server_id: server_id.to_owned(),
             locks,
             buses,
-            errors: Some(errors),
             sender: Some(tx),
         })
     }
@@ -156,8 +154,8 @@ impl UpdateGuard {
 impl Drop for UpdateGuard {
     fn drop(&mut self) {
         // Drop the sender first so existing WS subscribers see the channel
-        // close; then take ourselves out of both maps. Lock order:
-        // buses → locks (matches `try_acquire`).
+        // close; then take ourselves out of both maps (one lock at a time,
+        // never both held).
         self.sender.take();
         if let Ok(mut buses) = self.buses.lock() {
             buses.remove(&self.server_id);
@@ -165,11 +163,9 @@ impl Drop for UpdateGuard {
         if let Ok(mut locks) = self.locks.lock() {
             locks.remove(&self.server_id);
         }
-        // Errors map is best-effort: a fresh `try_acquire` will also clear
-        // it. We do NOT clear it here on Drop because the WS handler reads
-        // the value AFTER the FSM emits Failed and drops the guard; clearing
-        // here would race the WS read.
-        let _ = self.errors.take();
+        // `update_errors` is intentionally NOT cleared here: the WS handler
+        // reads the failure reason AFTER the FSM drops the guard; clearing on
+        // Drop would race that read. The next `try_acquire` clears it.
     }
 }
 

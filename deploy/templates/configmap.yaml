@@ -8,41 +8,28 @@ metadata:
   labels:
     {{- include "anvil.labels" . | nindent 4 }}
 data:
-  # Bind address inside the Pod. The Service targets containerPort 8080.
   ANVIL_BIND_ADDR: "0.0.0.0:8080"
-  # SQLite path inside the mounted PVC.
   ANVIL_DATABASE_URL: "sqlite:///var/lib/anvil/anvil.db?mode=rwc"
-  # Namespace the panel reads/writes managed Minecraft resources in.
   ANVIL_MC_NAMESPACE: {{ .Values.mcNamespace | quote }}
-  # `tracing` filter directive.
   ANVIL_LOG_LEVEL: {{ .Values.logLevel | quote }}
-  # Default StorageClass for managed-server PVCs. Required.
   ANVIL_MC_STORAGE_CLASS: {{ .Values.mcDefaults.storageClassName | quote }}
-  # Default Service type for managed servers (overridable per server).
   ANVIL_MC_SVC_TYPE: {{ .Values.mcDefaults.serviceType | quote }}
-  # Hostname/IP used to display NodePort server addresses. Empty = "<unset>".
   ANVIL_NODE_HOST: {{ .Values.mcDefaults.nodeHost | quote }}
-  # Whether the cluster has a LoadBalancer provider.
   ANVIL_LB_SUPPORTED: {{ .Values.mcDefaults.loadbalancerSupported | quote }}
   {{- if .Values.oidc.enabled }}
-  # --- OIDC (M4) -----------------------------------------------------------
+  # --- OIDC -------------------------------------------------------------------
   ANVIL_OIDC_ISSUER_URL: {{ .Values.oidc.issuerUrl | quote }}
   ANVIL_OIDC_CLIENT_ID: {{ .Values.oidc.clientId | quote }}
   ANVIL_OIDC_REDIRECT_URL: {{ .Values.oidc.redirectUrl | quote }}
   ANVIL_ALLOWED_SUBS: {{ .Values.oidc.allowedSubs | quote }}
   {{- end }}
-  # --- Modpack (M5) --------------------------------------------------------
   ANVIL_MODPACK_POLL_MINUTES: {{ .Values.modpack.pollIntervalMinutes | quote }}
-  {{- if .Values.modpack.snapshotsPvc.enabled }}
+  # Always emitted — the backend requires it at startup. When
+  # snapshotsPvc.enabled=false the operator must provide a PVC with this
+  # name in mcNamespace themselves.
   ANVIL_MODPACK_SNAPSHOTS_PVC: "mc-snapshots"
-  {{- end }}
   # --- Managed-server image / timezone defaults ---------------------------
-  # Alpine image shared by the file-browser helper Pod (sub-project D)
-  # and the mod-sync Job (M5 — needs `apk add curl`).
   ANVIL_MC_ALPINE_IMAGE: {{ .Values.mcDefaults.alpineImage | quote }}
-  # IANA timezone stamped onto every managed MC pod (TZ env var).
   ANVIL_MC_TIMEZONE: {{ .Values.mcDefaults.timezone | quote }}
-  # Image used by every managed MC StatefulSet across all providers.
   ANVIL_MC_ITZG_IMAGE: {{ .Values.mcDefaults.itzgImage | quote }}
-  # Image used by backup / restore / snapshot-cleanup Jobs.
   ANVIL_MC_BUSYBOX_IMAGE: {{ .Values.mcDefaults.busyboxImage | quote }}

@@ -1,16 +1,10 @@
-//! User-facing manual backup + restore tasks (Spec 5).
+//! User-facing manual backup + restore tasks.
 //!
-//! Backup is the lean path — `(maybe stop) → tar → (maybe start)` — no
-//! announce, no done-marker verify; a backup is just a copy of `/data`,
-//! not a state change. Restore mirrors the orchestrator's phasing
-//! (announce → stop → restore → swap → start → verify) because untarring
-//! into `/data` is destructive and the snapshot's runtime config has to
-//! be reapplied.
-//!
-//! Both write archives under the `manual/` subdir of the snapshots PVC,
-//! opt out of GC, and snapshot the server's full restore-time config in
-//! `SQLite` so a restore can revert `mc_version`, memory, source
-//! kind/config, and `StatefulSet` env in one shot.
+//! Backup: `(maybe stop) → tar → (maybe start)` — no announce, no done-marker
+//! verify. Restore mirrors the full orchestrator phasing because untarring into
+//! `/data` is destructive and the snapshot's runtime config must be reapplied.
+//! Both paths write to the `manual/` subdir and opt out of GC. A `BackupSnapshot`
+//! is persisted in SQLite so restore can revert `mc_version`, memory, and env.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -56,11 +50,8 @@ pub fn new_backup_id() -> String {
     format!("bk-{}", Uuid::new_v4().simple())
 }
 
-/// Persists the pre-Job `backups` row as `pending`. Written before
-/// spawning the tar Job so the row exists if the process dies mid-Job;
-/// flipped to `complete` once the tar lands (see [`run_backup_inner`]).
-/// A crash leaves it `pending`, which [`fail_stale_pending_backups`] later
-/// reaps and which `list` hides until then.
+/// Inserts the `backups` row as `pending` before spawning the tar Job. A crash
+/// leaves it `pending` for [`fail_stale_pending_backups`] to reap.
 async fn insert_backup_row(
     state: &AppState,
     backup_id: &str,
@@ -107,8 +98,6 @@ async fn delete_pending_backup_row(state: &AppState, backup_id: &str) -> Result<
     Ok(())
 }
 
-/// SELECT shape shared by `snapshot_current` (`servers` row) and
-/// `load_backup_snapshot` (`backups` row) — the columns line up.
 type SnapRow = (String, i64, i64, Option<String>, String, String, String);
 
 fn snap_from_row(row: SnapRow) -> BackupSnapshot {
@@ -713,15 +702,15 @@ pub fn build_delete_job(
     snapshots_pvc: &str,
     busybox_image: &str,
 ) -> Job {
-    let cmd = format!(
-        "rm -f /snap/mc-{server_id}/manual/{backup_id}.tgz; \
-         echo deleted /snap/mc-{server_id}/manual/{backup_id}.tgz"
-    );
     small_pvc_job(
         &format!("backup-delete-{backup_id}"),
         namespace,
         snapshots_pvc,
-        &cmd,
+        vec![
+            "rm".to_owned(),
+            "-f".to_owned(),
+            format!("/snap/mc-{server_id}/manual/{backup_id}.tgz"),
+        ],
         busybox_image,
     )
 }
@@ -735,27 +724,27 @@ pub fn build_dir_cleanup_job(
     snapshots_pvc: &str,
     busybox_image: &str,
 ) -> Job {
-    let cmd = format!(
-        "rm -rf /snap/mc-{server_id}/manual; \
-         echo cleaned /snap/mc-{server_id}/manual"
-    );
     small_pvc_job(
         &format!("backup-cleanup-{server_id}"),
         namespace,
         snapshots_pvc,
-        &cmd,
+        vec![
+            "rm".to_owned(),
+            "-rf".to_owned(),
+            format!("/snap/mc-{server_id}/manual"),
+        ],
         busybox_image,
     )
 }
 
 /// Constructs a busybox Job that mounts the snapshots PVC at `/snap` and
-/// runs the given shell command. Backed by the same image / `RestartPolicy`
-/// pattern the orchestrator's backup Jobs use.
+/// runs the given argv. Exec-form on purpose — no shell parses the path,
+/// so ids interpolated into it can't inject commands.
 fn small_pvc_job(
     name: &str,
     namespace: &str,
     snapshots_pvc: &str,
-    cmd: &str,
+    argv: Vec<String>,
     busybox_image: &str,
 ) -> Job {
     let mut labels = BTreeMap::new();
@@ -763,7 +752,7 @@ fn small_pvc_job(
     let container = Container {
         name: "rm".to_owned(),
         image: Some(busybox_image.to_owned()),
-        command: Some(vec!["sh".to_owned(), "-c".to_owned(), cmd.to_owned()]),
+        command: Some(argv),
         volume_mounts: Some(vec![VolumeMount {
             name: "snap".to_owned(),
             mount_path: "/snap".to_owned(),
@@ -810,7 +799,7 @@ fn small_pvc_job(
 mod tests {
     use super::*;
 
-    fn extract_command(j: &Job) -> String {
+    fn extract_command(j: &Job) -> Vec<String> {
         j.spec
             .as_ref()
             .unwrap()
@@ -820,24 +809,27 @@ mod tests {
             .unwrap()
             .containers[0]
             .command
-            .as_ref()
-            .unwrap()[2]
             .clone()
+            .unwrap()
     }
 
     #[test]
     fn delete_job_targets_manual_subdir() {
         let j = build_delete_job("abc", "bk-uuid", "mc", "mc-snapshots", "busybox:test");
-        let cmd = extract_command(&j);
-        assert!(cmd.contains("/snap/mc-abc/manual/bk-uuid.tgz"));
+        assert_eq!(
+            extract_command(&j),
+            vec!["rm", "-f", "/snap/mc-abc/manual/bk-uuid.tgz"]
+        );
         assert_eq!(j.metadata.name.as_deref(), Some("backup-delete-bk-uuid"));
     }
 
     #[test]
     fn cleanup_job_wipes_manual_dir() {
         let j = build_dir_cleanup_job("abc", "mc", "mc-snapshots", "busybox:test");
-        let cmd = extract_command(&j);
-        assert!(cmd.contains("rm -rf /snap/mc-abc/manual"));
+        assert_eq!(
+            extract_command(&j),
+            vec!["rm", "-rf", "/snap/mc-abc/manual"]
+        );
         assert_eq!(j.metadata.name.as_deref(), Some("backup-cleanup-abc"));
     }
 

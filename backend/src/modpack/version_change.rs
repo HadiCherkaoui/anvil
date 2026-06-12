@@ -1,10 +1,8 @@
 //! Orchestrated MC version change for non-modpack servers.
 //!
 //! Mirrors `orchestrator::run` shape: announce → stop → backup → swap → start
-//! → verify, with auto-rollback on failure. Caller spawns this as a task and
-//! it owns the [`UpdateGuard`] until completion. Only `vanilla`, `paper`, and
-//! `modded` source kinds are accepted — modpack servers update via the
-//! modpack orchestrator.
+//! → verify, with auto-rollback on failure. Only `vanilla`, `paper`, and
+//! `modded` sources; modpack servers use the modpack orchestrator.
 
 use std::time::Duration;
 
@@ -22,8 +20,8 @@ use crate::modpack::guard::{UpdateGuard, record_terminal, set_update_error};
 use crate::modpack::jobs::{BACKUP_KEEP_COUNT, build_backup_job, build_restore_job};
 use crate::modpack::orchestrator::{
     BACKUP_JOB_TIMEOUT, POD_RUNNING_TIMEOUT, POD_TERMINATE_TIMEOUT, RESTORE_JOB_TIMEOUT,
-    UpdatePhase, announce_and_save, scale_to, spawn_job, wait_for_done_marker, wait_job,
-    wait_pod_gone, wait_pod_running,
+    UpdatePhase, announce_and_save, delete_job_and_wait, scale_to, spawn_job, wait_for_done_marker,
+    wait_job, wait_pod_gone, wait_pod_running,
 };
 use crate::routes::servers::create::insert_audit;
 
@@ -255,6 +253,13 @@ async fn run_inner(
         BACKUP_JOB_TIMEOUT,
     )
     .await;
+    if backup_outcome.is_err() {
+        // On timeout the Job pod may still be running with /data mounted —
+        // delete it so the rollback's restore Job isn't blocked on the RWO PVC.
+        let jobs: Api<k8s_openapi::api::batch::v1::Job> =
+            Api::namespaced(state.kube.clone(), &state.mc_namespace);
+        let _ = delete_job_and_wait(&jobs, &backup_name, Duration::from_secs(30)).await;
+    }
     if let Some(id) = backup_row_id.as_deref() {
         let new_status = if backup_outcome.is_ok() {
             "complete"
@@ -270,7 +275,6 @@ async fn run_inner(
         }
     }
     backup_outcome.map_err(FsmError::Pre)?;
-    // Mirror the file-side keep-N GC the tar Job did into the DB.
     let _ = crate::modpack::backups::gc_auto_backup_rows(state, server_id, BACKUP_KEEP_COUNT).await;
     insert_audit(
         &state.pool,
@@ -336,12 +340,9 @@ async fn run_inner(
     }
 
     // ─── Phase 7: persist + audit (best-effort) ──────────────────────────
-    // The swap already committed `mc_version` (Phase 4) and the pod booted on
-    // it (Phase 6), so the update HAS succeeded. A failure of this final
-    // bookkeeping must NOT flip the result to Failed (which would mislead the
-    // UI and, on retry, recompute from now-correct state) — at worst it
-    // leaves last_started_at / the success audit stale. Log and return Ok.
-    // The two writes still share a transaction so they land atomically.
+    // The update HAS succeeded — a bookkeeping failure must NOT flip the result
+    // to Failed. At worst it leaves last_started_at / the success audit stale.
+    // The two writes share a transaction so they land atomically.
     let now_end = Utc::now().timestamp();
     let bookkeeping: anyhow::Result<()> = async {
         let mut tx = state.pool.begin().await?;
@@ -546,9 +547,7 @@ async fn rollback(state: &AppState, server_id: &str, ctx: &RollbackContext) -> R
         .execute(&state.pool)
         .await?;
 
-    // Boot back on the prior version. Verify is best-effort — the rollback
-    // succeeds even if the boot marker takes too long, since the data is
-    // already restored and the user can intervene from the panel.
+    // Verify is best-effort — data is already restored; the user can intervene.
     scale_to(&state.kube, &state.mc_namespace, server_id, 1).await?;
     let _ = wait_pod_running(
         &state.kube,

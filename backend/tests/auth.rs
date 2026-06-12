@@ -2,8 +2,6 @@
 //!
 //! These tests do NOT contact a real Authentik instance. Login/callback flows
 //! are exercised manually against a live Authentik (see `docs/authentik-setup.md`).
-//! Here we cover the cookie validation surface in isolation: missing cookie,
-//! tampered signature, expired exp, and `ANVIL_ALLOWED_SUBS` gating.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -51,9 +49,6 @@ fn test_state(allowed: Vec<String>) -> AppState {
         cookie_key,
         allowed_subs: allowed,
         oidc,
-        // M5/B modpack fields — none of the auth-middleware tests exercise
-        // them, so all-disabled / empty defaults are fine. Modrinth is API-
-        // key-free so the client is always present.
         cf_client: None,
         mr_client: std::sync::Arc::new(
             anvil::modpack::ModrinthClient::new().expect("test Modrinth client"),

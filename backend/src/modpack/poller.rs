@@ -28,7 +28,8 @@ const PER_MOD_RATE_LIMIT_GAP: Duration = Duration::from_millis(100);
 /// before we hammer the DB / k8s API.
 const STARTUP_DELAY: Duration = Duration::from_secs(30);
 
-/// Background loop that refreshes `modpack_versions` for every CF server.
+/// Background loop that polls modpack versions, per-mod updates, and loader
+/// versions for every applicable server on each tick.
 pub async fn run(state: AppState) {
     sleep(STARTUP_DELAY).await;
     loop {

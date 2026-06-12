@@ -22,7 +22,7 @@ import {
 	type PlayersResponse,
 } from "../../lib/api";
 import { useServerDetailCtx } from "../../lib/server-detail-context";
-import { usePlayers } from "../../lib/use-players";
+import { usePlayers, type PlayersStatus } from "../../lib/use-players";
 
 export function PlayersBody(): ReactElement {
 	const detail = useServerDetailCtx();
@@ -146,7 +146,7 @@ export function PlayersBody(): ReactElement {
 
 interface BroadcastBarProps {
 	onOpen: () => void;
-	status: string;
+	status: PlayersStatus;
 }
 
 function BroadcastBar({ onOpen, status }: BroadcastBarProps): ReactElement {

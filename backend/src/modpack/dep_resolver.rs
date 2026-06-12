@@ -112,6 +112,10 @@ pub async fn resolve_required(
                         err = %err,
                         "resolving dep entry failed; skipping",
                     );
+                    // Un-mark so another branch of the graph can still
+                    // resolve this dep — `visited` would otherwise pin the
+                    // transient failure for the rest of the walk.
+                    visited.remove(&key);
                     continue;
                 }
             };

@@ -12,7 +12,6 @@
 //! Known behaviour: the 60 s pod-unavailability window resets on every
 //! re-attach, so a pod stuck in `CrashLoopBackOff` will keep this WS
 //! open indefinitely (each crash is a fresh attach + restart cycle).
-//! For the homelab use case this is fine; the user closes the tab.
 
 use std::time::Duration;
 
@@ -115,8 +114,7 @@ async fn write_loop(
         // Wait for the mc container to have started — that's when kube has
         // logs to stream. Gating on Ready (which our readiness probe ties
         // to "JVM accepting on 25565") would hide every line of boot
-        // output until world gen finishes; for ATM-11 that's >5min of
-        // perceived silence in the console.
+        // output until world gen finishes.
         match wait_for_container_started(&pods, &pod_name, &mut sender, &mut hb, &mut close_rx)
             .await
         {

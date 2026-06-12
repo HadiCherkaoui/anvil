@@ -1,9 +1,4 @@
-//! In-memory `SQLite` tests for the M2 schema.
-//!
-//! Each test calls `anvil::db::init("sqlite::memory:")` to get a fresh
-//! pool with migrations applied. M2 migration 0002 is destructive (M1
-//! had no production data), so the migration's correctness is the
-//! invariant these tests pin down.
+//! In-memory `SQLite` tests for the servers/audit_log schema.
 
 use anvil::db;
 use sqlx::Row;

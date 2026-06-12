@@ -60,10 +60,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
-{{/* Hard-fail when oidc is enabled but TLS isn't, or when required OIDC
-     values are missing. The cookie security flags are pointless over plain
-     HTTP and Authentik will reject http:// redirect URIs in any case. */}}
+{{/* Hard-fail when OIDC is disabled or misconfigured. The backend refuses
+     to start without the OIDC env vars, so oidc.enabled=false would only
+     produce a crash-looping pod — fail at render instead. The cookie
+     security flags are pointless over plain HTTP and Authentik will reject
+     http:// redirect URIs in any case. */}}
 {{- define "anvil.requireOidc" -}}
+{{- if not .Values.oidc.enabled -}}
+  {{- fail "anvil requires OIDC — the backend refuses to start without it; oidc.enabled=false is not supported" -}}
+{{- end -}}
 {{- if .Values.oidc.enabled -}}
   {{- if not .Values.ingress.tls.enabled -}}
     {{- fail "oidc.enabled requires ingress.tls.enabled (HTTPS is mandatory for the OIDC redirect_uri and Secure cookie flags)." -}}

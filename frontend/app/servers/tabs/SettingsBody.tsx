@@ -110,7 +110,7 @@ export function SettingsBody(): ReactElement {
 	const onExpand = (): void => {
 		if (pendingSize <= detail.storage_size_gi) return;
 		setResizing(true);
-		resizeServerStorage(detail.id, pendingSize)
+		void resizeServerStorage(detail.id, pendingSize)
 			.then(() => {
 				toast.push("resize requested", "success");
 				refresh();
@@ -140,9 +140,12 @@ export function SettingsBody(): ReactElement {
 			...(memoryDirty ? { memory_mi: memory } : {}),
 			...(autoUpdateDirty ? { auto_update_mode: autoUpdate } : {}),
 		};
-		updateServerSettings(detail.id, patch)
+		void updateServerSettings(detail.id, patch)
 			.then(() => {
 				toast.push("settings saved · applies on next start", "success");
+				// Without this the context keeps the pre-save detail and the
+				// form still reads dirty until the next 5 s poll.
+				refresh();
 			})
 			.catch((err: unknown) => {
 				const msg =

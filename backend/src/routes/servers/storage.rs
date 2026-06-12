@@ -14,9 +14,12 @@ use kube::api::{Patch, PatchParams};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use chrono::Utc;
+
 use crate::AppState;
 use crate::error::AppError;
 use crate::routes::cluster::current_caps;
+use crate::routes::servers::create::insert_audit;
 use crate::validation::validate_storage_size_gi;
 
 /// Request body for `PATCH /api/servers/:id/storage`.
@@ -108,6 +111,15 @@ pub async fn handle(
         .bind(&id)
         .execute(&state.pool)
         .await?;
+
+    insert_audit(
+        &state.pool,
+        &id,
+        "storage_resized",
+        Some(json!({ "from_gi": current, "to_gi": req.size_gi })),
+        Utc::now().timestamp(),
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,

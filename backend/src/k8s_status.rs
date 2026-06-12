@@ -25,10 +25,11 @@ const ERROR_REASONS: &[&str] = &[
 ];
 
 /// How long a pod can sit `ContainersNotReady` before we surface it as
-/// `Error`. Tuned to the slowest expected boot (mod-heavy `CurseForge`
-/// pack on a cold node); past this, it's almost always a real failure
-/// rather than a long boot.
-const CONTAINERS_NOT_READY_GRACE_SECS: i64 = 60;
+/// `Error`. Must exceed the largest readiness-probe fail budget
+/// (modpack kinds: 20 s delay + 60 × 5 s = 320 s), otherwise a slow but
+/// healthy first boot is flagged as `Error` while kubelet is still
+/// happily probing. Crash loops are caught earlier via [`ERROR_REASONS`].
+const CONTAINERS_NOT_READY_GRACE_SECS: i64 = 330;
 
 /// Derives the live [`ServerStatus`] from the `StatefulSet`'s replicas/ready
 /// counts plus the optional Pod.
@@ -68,6 +69,7 @@ pub fn derive_status(replicas: i32, ready_replicas: i32, pod: Option<&Pod>) -> S
 /// surface as `Error`:
 ///
 /// - any container is waiting with one of the [`ERROR_REASONS`];
+/// - any container was OOM-killed (current or last termination state);
 /// - `PodScheduled = False` with reason `Unschedulable` (no node has
 ///   the resources / volumes / taints to host the pod);
 /// - `ContainersReady = False` for longer than
@@ -91,9 +93,6 @@ fn pod_in_error_state(pod: &Pod) -> bool {
                 return true;
             }
             if c.type_ == "ContainersReady" && c.status == "False" {
-                // `Time` wraps `k8s_openapi::jiff::Timestamp`. Use the
-                // re-exported jiff so we don't need it as a runtime
-                // dependency on its own.
                 let stuck_for = c.last_transition_time.as_ref().map_or(0, |t| {
                     k8s_openapi::jiff::Timestamp::now().as_second() - t.0.as_second()
                 });
@@ -108,11 +107,22 @@ fn pod_in_error_state(pod: &Pod) -> bool {
         return false;
     };
     statuses.iter().any(|cs| {
-        cs.state
+        let waiting_error = cs
+            .state
             .as_ref()
             .and_then(|st| st.waiting.as_ref())
             .and_then(|w| w.reason.as_deref())
-            .is_some_and(|r| ERROR_REASONS.contains(&r))
+            .is_some_and(|r| ERROR_REASONS.contains(&r));
+        // OOMKilled surfaces as a `terminated` reason (current or last),
+        // never as a `waiting` reason — without this check an OOM-killed
+        // pod reads as `Starting` until kubelet escalates to CrashLoopBackOff.
+        let oom_killed = [
+            cs.state.as_ref().and_then(|st| st.terminated.as_ref()),
+            cs.last_state.as_ref().and_then(|st| st.terminated.as_ref()),
+        ]
+        .iter()
+        .any(|t| t.is_some_and(|t| t.reason.as_deref() == Some("OOMKilled")));
+        waiting_error || oom_killed
     })
 }
 
@@ -265,6 +275,27 @@ mod tests {
     fn replicas_one_pod_pending_is_starting() {
         let pod = make_pod_with_waiting("PodInitializing");
         assert_eq!(derive_status(1, 0, Some(&pod)), ServerStatus::Starting);
+    }
+
+    #[test]
+    fn replicas_one_pod_oom_killed_is_error() {
+        use k8s_openapi::api::core::v1::ContainerStateTerminated;
+        let mut pod = Pod::default();
+        pod.status = Some(PodStatus {
+            container_statuses: Some(vec![ContainerStatus {
+                name: "mc".to_owned(),
+                last_state: Some(ContainerState {
+                    terminated: Some(ContainerStateTerminated {
+                        reason: Some("OOMKilled".to_owned()),
+                        ..ContainerStateTerminated::default()
+                    }),
+                    ..ContainerState::default()
+                }),
+                ..ContainerStatus::default()
+            }]),
+            ..PodStatus::default()
+        });
+        assert_eq!(derive_status(1, 0, Some(&pod)), ServerStatus::Error);
     }
 
     #[test]

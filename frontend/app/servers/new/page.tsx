@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import {
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 	type ChangeEvent,
 	type ReactElement,
@@ -127,6 +128,7 @@ export default function NewServerPage(): ReactElement {
 	const versions =
 		draft.type === "paper" ? paperVersions : mojangVersions;
 	const [submitting, setSubmitting] = useState(false);
+	const submittingRef = useRef(false);
 	const [caps, setCaps] = useState<ClusterCapabilities | null>(null);
 	const [browseOpen, setBrowseOpen] = useState(false);
 
@@ -135,10 +137,6 @@ export default function NewServerPage(): ReactElement {
 		fetchCapabilities(ctrl.signal)
 			.then((c) => {
 				setCaps(c);
-				// Clamp the (loadbalancer-by-default) exposure_mode down to
-				// something the cluster actually supports. Only touches the
-				// field if the current selection is unavailable, so a user
-				// who already picked something keeps their choice.
 				setDraft((d) => {
 					if (d.exposure_mode === "loadbalancer" && !c.loadbalancer) {
 						return {
@@ -273,7 +271,11 @@ export default function NewServerPage(): ReactElement {
 	};
 
 	const submit = (): void => {
-		if (!valid) return;
+		// Ref, not state: two clicks in the same event-loop turn both see the
+		// pre-render `submitting === false`, so the disabled prop alone can't
+		// stop a double POST.
+		if (!valid || submittingRef.current) return;
+		submittingRef.current = true;
 		setSubmitting(true);
 		const isPaper = draft.type === "paper";
 		const isModpack =
@@ -333,7 +335,7 @@ export default function NewServerPage(): ReactElement {
 				: {}),
 			properties: draft.properties,
 		};
-		createServer(request)
+		void createServer(request)
 			.then((created) => {
 				toast.push(`${created.name} forged`, "success");
 				router.push(`/servers?name=${encodeURIComponent(created.name)}`);
@@ -346,6 +348,7 @@ export default function NewServerPage(): ReactElement {
 							? err.message
 							: "unknown error";
 				toast.push(`create failed · ${msg}`, "error");
+				submittingRef.current = false;
 				setSubmitting(false);
 			});
 	};
@@ -370,9 +373,7 @@ export default function NewServerPage(): ReactElement {
 				: [],
 		[loaderRuntime, draft.mc_version, loaderVs],
 	);
-	// Default to the newest loader for the current MC when the user hasn't
-	// picked one explicitly. Derived rather than stored to avoid a setState-
-	// in-effect dance — the request submit reads this directly.
+	// Derived rather than stored to avoid a setState-in-effect dance.
 	const effectiveLoaderVersion: string | null =
 		loaderRuntime !== null && draft.mc_version !== null
 			? (draft.loader_version ?? loaderChoicesForMc[0] ?? null)
@@ -445,9 +446,6 @@ export default function NewServerPage(): ReactElement {
 									if (v !== "paper") {
 										set("initial_plugins", []);
 									} else {
-										// Paper ships builds for a subset of MC versions;
-										// force the user to reselect so the dropdown source
-										// switch shows up cleanly.
 										set("mc_version", null);
 									}
 								}}

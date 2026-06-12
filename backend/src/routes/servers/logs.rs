@@ -1,7 +1,7 @@
 //! `GET /api/servers/:id/logs` — last 200 lines of pod logs.
 //!
-//! NOT a streaming endpoint — the spec says snapshot only. The frontend
-//! has a refresh button. Streaming via WebSocket lands in M3.
+//! NOT a streaming endpoint — snapshot only. The frontend has a refresh
+//! button. Streaming is in `logs_stream.rs`.
 
 use axum::Json;
 use axum::extract::{Path, State};

@@ -6,7 +6,7 @@
 //! with the new server's id+name. The user must call `POST /:id/start`
 //! afterwards to bring up the pod.
 //!
-//! M5: the request carries an optional `source_kind` (defaults to
+//! The request carries an optional `source_kind` (defaults to
 //! `"vanilla"`); when set to `"curseforge"`, the handler resolves the
 //! latest `ServerFiles` file from the `CurseForge` API and persists the
 //! provider config so the update orchestrator can re-instantiate it later.
@@ -284,10 +284,8 @@ pub async fn handle(
         _ => unreachable!("validated above"),
     };
 
-    // Persist metadata + audit entry. If k8s create fails after this, the
-    // SQLite row remains; DELETE handler tolerates missing k8s resources.
-    // NodePort allocation + insert happen inside a single transaction so
-    // two concurrent creates can't pick the same port.
+    // Persist metadata + audit entry before k8s; DELETE handler tolerates
+    // missing k8s resources so a retry can complete teardown.
     let nodeport = insert_server_with_nodeport(
         &state.pool,
         &id,
@@ -418,12 +416,11 @@ pub async fn handle(
         return Err(err);
     }
 
-    // C#10: when the user pre-picked mods at create time, kick the same
-    // apply task the manual `POST /:id/mods/apply` endpoint spawns. This
-    // mirrors the manual flow without going through the HTTP handler.
-    // Failure to acquire the lock is logged + dropped; the pending ops
-    // remain in source_config and the user can apply manually. Paper
-    // plugins follow the same pattern with `SyncTarget::Plugins`.
+    // When the user pre-picked mods at create time, kick the same apply
+    // task the manual `POST /:id/mods/apply` endpoint spawns. Failure to
+    // acquire the lock is logged + dropped; the pending ops remain in
+    // source_config and the user can apply manually. Paper plugins follow
+    // the same pattern with `SyncTarget::Plugins`.
     if resolved.initial_pending_mods > 0
         && (resolved.source_kind == SOURCE_KIND_MODDED || resolved.source_kind == SOURCE_KIND_PAPER)
     {
@@ -471,13 +468,10 @@ async fn resolve_curseforge(
     state: &AppState,
     cfg: Option<CurseForgeCreateConfig>,
 ) -> Result<ResolvedSource, AppError> {
-    if state.cf_client.is_none() {
-        return Err(AppError::BadRequest {
-            code: "cf_disabled",
-            message: "CurseForge support is not enabled on this panel (CF_API_KEY missing)"
-                .to_owned(),
-        });
-    }
+    let cf_client = state.cf_client.as_deref().ok_or(AppError::BadRequest {
+        code: "cf_disabled",
+        message: "CurseForge support is not enabled on this panel (CF_API_KEY missing)".to_owned(),
+    })?;
     let cfg = cfg.ok_or(AppError::BadRequest {
         code: "cf_config_missing",
         message: "curseforge.{project_id, channel} required for source_kind=curseforge".to_owned(),
@@ -486,10 +480,6 @@ async fn resolve_curseforge(
     // Resolve the project's slug now (itzg's mc-image-helper rejects calls
     // without --slug; we ship it as CF_SLUG via extra_env). One round-trip
     // is fine — create is rare.
-    let cf_client = state.cf_client.as_deref().ok_or(AppError::BadRequest {
-        code: "cf_disabled",
-        message: "CurseForge support is not enabled on this panel (CF_API_KEY missing)".to_owned(),
-    })?;
     let project = cf_client
         .project(cfg.project_id)
         .await

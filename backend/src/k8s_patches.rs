@@ -59,11 +59,10 @@ pub async fn with_properties_env(
 /// Server-side-applies the `mc` container's full `env` array on a managed
 /// `StatefulSet`.
 ///
-/// Strategic-merge silently dropped removals (the panel's previous shape) —
-/// k8s merges arrays by `name` and never observes a removal. Server-side
-/// apply with `force: true` makes the panel the authoritative owner of
-/// `containers[name=mc].env`, so any entry omitted from `env` is removed.
-/// Callers pass the *full* env block.
+/// Strategic-merge silently drops removals — k8s merges arrays by `name`
+/// and never observes a removal. Server-side apply with `force: true` makes
+/// the panel the authoritative owner of `containers[name=mc].env`, so any
+/// entry omitted from `env` is removed. Callers pass the *full* env block.
 ///
 /// # Errors
 ///
@@ -77,10 +76,6 @@ pub async fn patch_statefulset_env(
 ) -> Result<()> {
     let stsets: Api<StatefulSet> = Api::namespaced(client.clone(), ns);
     let resource_name = format!("mc-{server_id}");
-    // Apply patches must include enough identifying state for the API
-    // server to resolve the target — apiVersion+kind+name on the
-    // resource, plus the container `name` so strategic-merge keys onto
-    // the right container. The env block is the authoritative slice.
     let apply = json!({
         "apiVersion": "apps/v1",
         "kind": "StatefulSet",

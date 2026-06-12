@@ -1,9 +1,4 @@
-//! HTTP handlers for the four `/api/auth/*` endpoints.
-//!
-//! - `GET  /api/auth/login`    → 302 to Authentik authorize URL
-//! - `GET  /api/auth/callback` → exchange code, mint session JWT, set cookie, 302 to `/`
-//! - `GET  /api/auth/me`       → JSON body from request-extension claims
-//! - `POST /api/auth/logout`   → clear cookie, return Authentik end-session URL
+//! HTTP handlers for the `/api/auth/*` endpoints.
 
 use axum::Extension;
 use axum::Json;
@@ -44,11 +39,15 @@ fn state_cookie(value: String) -> Cookie<'static> {
 }
 
 fn removal(name: &'static str, path: &'static str) -> Cookie<'static> {
+    // Max-Age=0 marks this as a deletion even when the cookie is written
+    // straight into a Set-Cookie header (attach_state_removal) instead of
+    // going through CookieJar::remove.
     Cookie::build((name, ""))
         .http_only(true)
         .secure(true)
         .same_site(SameSite::Lax)
         .path(path)
+        .max_age(Duration::ZERO)
         .build()
 }
 
@@ -78,10 +77,6 @@ pub struct CallbackParams {
 }
 
 /// `GET /api/auth/callback` — exchange code, mint session JWT, set cookie.
-///
-/// On every error path we attach a removal `Set-Cookie` for
-/// [`OIDC_STATE_COOKIE`] so the short-lived state doesn't sit for the full
-/// 10-minute TTL after a failed exchange.
 ///
 /// # Errors
 ///
@@ -129,9 +124,10 @@ async fn callback_inner(
     let identity: ExchangedIdentity = state.oidc.exchange(code, &stored).await?;
 
     if !state.allowed_subs.is_empty() && !state.allowed_subs.iter().any(|s| s == &identity.sub) {
+        tracing::warn!(oidc.sub = %identity.sub, "subject not in ANVIL_ALLOWED_SUBS");
         return Err(AppError::Forbidden {
             code: "sub_not_allowed",
-            message: format!("subject {} is not in ANVIL_ALLOWED_SUBS", identity.sub),
+            message: "subject is not in the allowed list".to_owned(),
         });
     }
 
@@ -151,10 +147,8 @@ async fn callback_inner(
     Ok((private_jar, public_jar, Redirect::to("/")))
 }
 
-/// Appends a removal `Set-Cookie` for [`OIDC_STATE_COOKIE`] (path
-/// `/api/auth`, http-only, secure, `SameSite=Lax`) so a callback failure
-/// doesn't leave the encrypted state cookie sitting client-side for its
-/// full 10-minute TTL.
+/// Appends a removal `Set-Cookie` for [`OIDC_STATE_COOKIE`] so a callback
+/// failure doesn't leave the encrypted state cookie sitting for its full TTL.
 fn attach_state_removal(mut resp: Response) -> Response {
     let cookie = removal(OIDC_STATE_COOKIE, "/api/auth");
     if let Ok(value) = cookie.to_string().parse() {

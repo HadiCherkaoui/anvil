@@ -190,11 +190,15 @@ pub(crate) async fn fetch_detail(state: &AppState, id: &str) -> Result<ServerDet
             .bind(id)
             .fetch_optional(&state.pool)
             .await?;
+    // `fetch_optional` rather than `fetch_one`: the row can vanish between
+    // `fetch_server_row` above and this query (concurrent DELETE) — that's
+    // a 404, not a 500.
     let (source_kind, source_config_text): (String, String) =
         sqlx::query_as("SELECT source_kind, source_config FROM servers WHERE id = ?")
             .bind(id)
-            .fetch_one(&state.pool)
-            .await?;
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or(AppError::NotFound)?;
     let source_config: serde_json::Value =
         serde_json::from_str(&source_config_text).unwrap_or(serde_json::Value::Null);
     let (latest_version_id, latest_version_name) = match mv {

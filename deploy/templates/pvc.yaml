@@ -18,7 +18,7 @@ spec:
 {{- end }}
 {{- if .Values.modpack.snapshotsPvc.enabled }}
 ---
-# Shared snapshots PVC for the M5 modpack-update backup/swap/restore Jobs.
+# Shared snapshots PVC for the modpack-update backup/swap/restore Jobs.
 # Lives in `mcNamespace` so the per-server data PVCs and this one share the
 # same node (RWO is fine on a single-node cluster).
 apiVersion: v1

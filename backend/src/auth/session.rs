@@ -30,8 +30,6 @@ pub const OIDC_STATE_TTL_SECS: i64 = 10 * 60;
 /// Returns [`AppError::Internal`] if `jsonwebtoken` fails to encode (extremely
 /// unlikely; would indicate a serializer bug).
 pub fn mint(key: &[u8], claims: &SessionClaims) -> Result<String, AppError> {
-    // Wrap the user claims with `iss`/`aud` so verify can bind the token to
-    // this panel. SessionClaims itself stays free of registered claims.
     let stored = StoredClaims {
         inner: claims,
         iss: SESSION_ISS,
@@ -62,7 +60,6 @@ struct StoredClaims<'a> {
 pub fn verify(key: &[u8], token: &str) -> Result<SessionClaims, AppError> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_required_spec_claims(&["exp", "iss", "aud"]);
-    validation.validate_nbf = true;
     validation.set_issuer(&[SESSION_ISS]);
     validation.set_audience(&[SESSION_AUD]);
     let data = decode::<SessionClaims>(token, &DecodingKey::from_secret(key), &validation)

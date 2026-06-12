@@ -13,13 +13,13 @@ export type PlayerActionSource = "online" | "whitelist" | "banlist";
 interface PlayerActionMenuProps {
 	source: PlayerActionSource;
 	serverId: string;
-	/// Player username (for online + whitelist + banlist-player rows).
+	// Player username (for online + whitelist + banlist-player rows).
 	name?: string;
-	/// IP for banlist-ip rows; mutually exclusive with `name`.
+	// IP for banlist-ip rows; mutually exclusive with `name`.
 	ip?: string;
-	/// Open the shared PlayerActionDialog with the given variant.
+	// Open the shared PlayerActionDialog with the given variant.
 	openDialog: (variant: PlayerActionVariant) => void;
-	/// Trigger an out-of-band poll after a fire-and-toast action.
+	// Trigger an out-of-band poll after a fire-and-toast action.
 	onDone: () => void;
 }
 

@@ -33,7 +33,7 @@ pub async fn require_session(
     if !state.allowed_subs.is_empty() && !state.allowed_subs.iter().any(|s| s == &claims.sub) {
         return Err(AppError::Forbidden {
             code: "sub_not_allowed",
-            message: format!("subject {} is not in ANVIL_ALLOWED_SUBS", claims.sub),
+            message: "subject is not in the allowed list".to_owned(),
         });
     }
     req.extensions_mut().insert(claims);

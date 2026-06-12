@@ -156,9 +156,12 @@ fn parse_banlist_lines(s: &str, empty_keyword: &str) -> Vec<(String, String)> {
     // Anchor to the first line only — a ban reason can legitimately contain
     // the keyword and must not trigger a false empty result.
     let first_line = s.lines().next().unwrap_or("").trim();
+    // Drop the trailing "s" so the singular form matches too:
+    // "no bans" → "no ban" ⊂ both "There are no bans" and "There is no ban".
     let empty_short = empty_keyword
         .strip_prefix("There are ")
-        .unwrap_or(empty_keyword);
+        .unwrap_or(empty_keyword)
+        .trim_end_matches('s');
     if first_line.contains(empty_short) {
         return Vec::new();
     }

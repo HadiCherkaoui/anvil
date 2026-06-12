@@ -28,7 +28,7 @@ export function CommandBar(): ReactElement {
 	}, []);
 
 	const onLogout = (): void => {
-		logout()
+		void logout()
 			.then((url) => {
 				window.location.href = url;
 			})

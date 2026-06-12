@@ -1,8 +1,7 @@
 //! `POST /api/servers/:id/start` — scale the `StatefulSet` to 1 replica.
 //!
-//! Patches the `/scale` subresource (per the M2 task constraint —
-//! never strategic-merge on Spec). Updates `last_started_at` in
-//! `SQLite` and writes an audit-log entry.
+//! Patches the `/scale` subresource (never strategic-merge on Spec).
+//! Updates `last_started_at` in `SQLite` and writes an audit-log entry.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -41,9 +40,9 @@ pub async fn handle(
     // Verify the server is registered before touching k8s.
     let _row = fetch_server_row(&state.pool, &id).await?;
 
-    // Sub-project D: tear down the files-helper Pod before the MC pod
-    // re-attaches the RWO data PVC. Fail-fast so we don't end up with
-    // two pods racing for the volume.
+    // Tear down the files-helper Pod before the MC pod re-attaches the
+    // RWO data PVC. Fail-fast so we don't end up with two pods racing
+    // for the volume.
     tear_down_helper(&state, &id).await?;
 
     let stsets: Api<StatefulSet> = Api::namespaced(state.kube.clone(), &state.mc_namespace);

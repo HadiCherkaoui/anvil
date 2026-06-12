@@ -1,11 +1,8 @@
 //! Modpack provider abstraction.
 //!
-//! M5 introduces the second provider (`CurseForge`) alongside the original
-//! vanilla path; the trait emerges here. Each provider knows how to render
-//! the per-server pod image / launch command / env vars, and the
-//! `CurseForge` variant additionally knows how to look up the latest
-//! `ServerFiles` version and produce a download URL for the swap Job.
-//!
+//! Each provider knows how to render the per-server pod image / launch command
+//! / env vars, and providers with an upstream (CurseForge, Modrinth) also
+//! resolve the latest version and produce a download URL for the swap Job.
 //! Providers are reconstructed from the `SQLite` `source_kind` + `source_config`
 //! columns at the call sites that need them (the create handler, the poller,
 //! the update orchestrator).
@@ -78,7 +75,7 @@ pub struct ModpackHttp<'a> {
     pub mr: &'a ModrinthClient,
 }
 
-/// One provider per server source. Vanilla + `CurseForge` in M5; Modrinth later.
+/// One provider per server source.
 #[async_trait::async_trait]
 pub trait ModpackProvider: Send + Sync + std::fmt::Debug {
     /// Discriminator persisted as `servers.source_kind` (`"vanilla"` | `"curseforge"`).

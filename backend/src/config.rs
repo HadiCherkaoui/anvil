@@ -1,9 +1,4 @@
 //! Runtime configuration read from env vars at startup.
-//!
-//! M2 adds four knobs surfacing the cluster contract from `mcDefaults` in
-//! the Helm chart: the storage class for managed PVCs, the default Service
-//! type, the external host used to display `NodePort` addresses, and the
-//! LoadBalancer-supported flag the create handler honors.
 
 use std::env;
 use std::net::SocketAddr;
@@ -74,7 +69,7 @@ pub struct Config {
     pub session_key: Vec<u8>,
     /// Allowlist of Authentik subject UUIDs. Empty = any authenticated user.
     pub allowed_subs: Vec<String>,
-    /// `CurseForge` API key (M5). When unset / empty, modpack support is disabled
+    /// `CurseForge` API key. When unset / empty, modpack support is disabled
     /// and the New Server modal hides the `CurseForge` option.
     pub cf_api_key: Option<String>,
     /// Name of the PVC mounted by backup/swap/sync Jobs. Required — Modrinth
@@ -83,8 +78,7 @@ pub struct Config {
     pub modpack_snapshots_pvc: String,
     /// Hourly poll interval for `modpack_versions` updates.
     pub modpack_poll_interval_minutes: u64,
-    /// Alpine image shared by the per-server file-browser helper Pod
-    /// (sub-project D) and the mod-sync Job (M5 — needs `apk add curl`).
+    /// Alpine image shared by the per-server file-browser helper Pod and the mod-sync Job.
     /// Pin by digest. Required — backend refuses to start without it.
     pub mc_alpine_image: String,
     /// IANA timezone applied as the `TZ` env var on every managed MC pod
@@ -199,9 +193,7 @@ impl Config {
             .map(str::to_owned)
             .collect();
 
-        // CF_API_KEY is optional (CF disabled if unset). The snapshots PVC is
-        // mandatory because Modrinth (always-on) and modded servers both need
-        // it for the mod-sync / pack-swap FSMs.
+        // CF_API_KEY is optional (CF disabled if unset).
         let cf_api_key = optional_secret("CF_API_KEY_FILE", "CF_API_KEY")?;
         let modpack_snapshots_pvc = env::var("ANVIL_MODPACK_SNAPSHOTS_PVC").context(
             "ANVIL_MODPACK_SNAPSHOTS_PVC must be set — modpack/modded updates need a snapshots PVC",
@@ -277,14 +269,18 @@ fn clean_secret(raw: &str) -> String {
     raw.trim_start_matches('\u{feff}').trim().to_owned()
 }
 
-/// Like [`read_secret`] but returns `None` (not an error) when both vars are unset.
+/// Like [`read_secret`] but returns `None` (not an error) when both vars are
+/// unset or empty after cleaning.
 fn optional_secret(file_var: &str, value_var: &str) -> Result<Option<String>> {
     if let Ok(path) = env::var(file_var) {
         return std::fs::read_to_string(&path)
             .with_context(|| format!("{file_var}={path:?} could not be read"))
-            .map(|s| Some(clean_secret(&s)));
+            .map(|s| Some(clean_secret(&s)).filter(|s| !s.is_empty()));
     }
-    Ok(env::var(value_var).ok().filter(|s| !s.is_empty()))
+    Ok(env::var(value_var)
+        .ok()
+        .map(|s| clean_secret(&s))
+        .filter(|s| !s.is_empty()))
 }
 
 /// Reads a secret value from a k8s-mounted file path or, failing that, an env var.
@@ -294,5 +290,7 @@ fn read_secret(file_var: &str, value_var: &str) -> Result<String> {
             .with_context(|| format!("{file_var}={path:?} could not be read"))
             .map(|s| clean_secret(&s));
     }
-    env::var(value_var).with_context(|| format!("{value_var} (or {file_var}) must be set"))
+    env::var(value_var)
+        .map(|s| clean_secret(&s))
+        .with_context(|| format!("{value_var} (or {file_var}) must be set"))
 }

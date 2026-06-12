@@ -76,8 +76,8 @@ pub async fn handle(
         }
     }
 
-    // 0. Sub-project D: best-effort tear-down of the files-helper Pod
-    //    so we don't leak it when the server is deleted while stopped.
+    // 0. Best-effort tear-down of the files-helper Pod so we don't leak
+    //    it when the server is deleted while stopped.
     let _ = tear_down_helper(&state, &id).await;
 
     // 1. StatefulSet
@@ -124,7 +124,7 @@ pub async fn handle(
             .await,
     )?;
 
-    // 5. Headless Service (M3 — added alongside the public Service for
+    // 5. Headless Service (added alongside the public Service for
     //    in-cluster RCON DNS).
     delete_tolerate_404(
         services
@@ -135,7 +135,7 @@ pub async fn handle(
     // 6. Secret
     delete_tolerate_404(secrets.delete(&secret_name, &DeleteParams::default()).await)?;
 
-    // 7. Spec 5: schedule a fire-and-forget Job that wipes /snap/mc-{id}/manual
+    // 7. Schedule a fire-and-forget Job that wipes /snap/mc-{id}/manual
     //    on the snapshots PVC so manual backup tarballs don't orphan when the
     //    server goes away. The SQLite rows in `backups` are removed by the FK
     //    CASCADE on the next step. We don't wait — if the Job fails, the

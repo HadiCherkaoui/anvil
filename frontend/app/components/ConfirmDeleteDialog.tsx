@@ -23,10 +23,8 @@ export interface ConfirmDeleteDialogProps {
 }
 
 /**
- * Generic "type the name to confirm" destructive dialog. Used for both
- * server delete (sub-project A) and recursive folder delete (sub-project
- * D). Caller owns the API call; this component owns the typed-name
- * pattern, the busy state, and the Modal lifecycle.
+ * Generic "type the name to confirm" destructive dialog. Caller owns the API
+ * call; this component owns the typed-name pattern, the busy state, and the Modal lifecycle.
  */
 export function ConfirmDeleteDialog({
 	open,
@@ -45,8 +43,7 @@ export function ConfirmDeleteDialog({
 	const noop = (): void => undefined;
 
 	const handleClose = (): void => {
-		// Reset on close so re-opening the dialog gives a clean slate
-		// (matches sub-project A behaviour pre-refactor).
+		// Reset on close so re-opening the dialog gives a clean slate.
 		setTyped("");
 		setBusy(false);
 		setError(null);
@@ -57,7 +54,7 @@ export function ConfirmDeleteDialog({
 		if (!matches || busy) return;
 		setError(null);
 		setBusy(true);
-		onConfirm()
+		void onConfirm()
 			.then(() => {
 				setTyped("");
 				onClose();

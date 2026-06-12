@@ -41,11 +41,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create", "get"]
-  # RCON Secrets land in M5; surface RBAC now so the chart contract is stable.
+  # Per-server RCON Secrets (created/deleted with each managed server).
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # M5: backup / swap / restore Jobs spawned by the update orchestrator.
+  # Backup / swap / restore Jobs spawned by the update orchestrator.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]

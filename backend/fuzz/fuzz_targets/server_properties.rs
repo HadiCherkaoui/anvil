@@ -27,5 +27,3 @@ fuzz_target!(|data: &[u8]| {
         let _ = properties.to_env();
     }
 });
-
-// Rust guideline compliant 2026-02-16
