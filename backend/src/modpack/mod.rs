@@ -1,7 +1,7 @@
 //! Modpack provider abstraction.
 //!
 //! Each provider knows how to render the per-server pod image / launch command
-//! / env vars, and providers with an upstream (CurseForge, Modrinth) also
+//! / env vars, and providers with an upstream (`CurseForge`, Modrinth) also
 //! resolve the latest version and produce a download URL for the swap Job.
 //! Providers are reconstructed from the `SQLite` `source_kind` + `source_config`
 //! columns at the call sites that need them (the create handler, the poller,

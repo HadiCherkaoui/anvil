@@ -4,7 +4,7 @@
 //! verify. Restore mirrors the full orchestrator phasing because untarring into
 //! `/data` is destructive and the snapshot's runtime config must be reapplied.
 //! Both paths write to the `manual/` subdir and opt out of GC. A `BackupSnapshot`
-//! is persisted in SQLite so restore can revert `mc_version`, memory, and env.
+//! is persisted in `SQLite` so restore can revert `mc_version`, memory, and env.
 
 use std::collections::BTreeMap;
 use std::time::Duration;

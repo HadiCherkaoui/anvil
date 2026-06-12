@@ -433,7 +433,7 @@ pub async fn handle(
             &id,
             state.update_locks.clone(),
             state.update_phase_buses.clone(),
-            state.update_errors.clone(),
+            &state.update_errors,
         ) {
             let task_state = state.clone();
             let task_id = id.clone();

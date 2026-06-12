@@ -1,4 +1,4 @@
-//! In-memory `SQLite` tests for the servers/audit_log schema.
+//! In-memory `SQLite` tests for the `servers` / `audit_log` schema.
 
 use anvil::db;
 use sqlx::Row;

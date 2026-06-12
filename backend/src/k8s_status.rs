@@ -280,21 +280,23 @@ mod tests {
     #[test]
     fn replicas_one_pod_oom_killed_is_error() {
         use k8s_openapi::api::core::v1::ContainerStateTerminated;
-        let mut pod = Pod::default();
-        pod.status = Some(PodStatus {
-            container_statuses: Some(vec![ContainerStatus {
-                name: "mc".to_owned(),
-                last_state: Some(ContainerState {
-                    terminated: Some(ContainerStateTerminated {
-                        reason: Some("OOMKilled".to_owned()),
-                        ..ContainerStateTerminated::default()
+        let pod = Pod {
+            status: Some(PodStatus {
+                container_statuses: Some(vec![ContainerStatus {
+                    name: "mc".to_owned(),
+                    last_state: Some(ContainerState {
+                        terminated: Some(ContainerStateTerminated {
+                            reason: Some("OOMKilled".to_owned()),
+                            ..ContainerStateTerminated::default()
+                        }),
+                        ..ContainerState::default()
                     }),
-                    ..ContainerState::default()
-                }),
-                ..ContainerStatus::default()
-            }]),
-            ..PodStatus::default()
-        });
+                    ..ContainerStatus::default()
+                }]),
+                ..PodStatus::default()
+            }),
+            ..Pod::default()
+        };
         assert_eq!(derive_status(1, 0, Some(&pod)), ServerStatus::Error);
     }
 

@@ -108,7 +108,7 @@ impl UpdateGuard {
         server_id: &str,
         locks: Arc<Mutex<HashSet<String>>>,
         buses: Arc<Mutex<HashMap<String, watch::Receiver<UpdatePhase>>>>,
-        errors: UpdateErrorMap,
+        errors: &UpdateErrorMap,
     ) -> Option<Self> {
         {
             let mut guard = locks.lock().expect("update_locks poisoned");
@@ -182,7 +182,7 @@ mod tests {
         let locks = Arc::new(Mutex::new(HashSet::new()));
         let buses = Arc::new(Mutex::new(HashMap::new()));
         let errors = fresh_errors();
-        let g = UpdateGuard::try_acquire("a", locks.clone(), buses.clone(), errors);
+        let g = UpdateGuard::try_acquire("a", locks.clone(), buses.clone(), &errors);
         assert!(g.is_some());
         assert!(locks.lock().unwrap().contains("a"));
         assert!(buses.lock().unwrap().contains_key("a"));
@@ -193,9 +193,8 @@ mod tests {
         let locks = Arc::new(Mutex::new(HashSet::new()));
         let buses = Arc::new(Mutex::new(HashMap::new()));
         let errors = fresh_errors();
-        let _first =
-            UpdateGuard::try_acquire("a", locks.clone(), buses.clone(), errors.clone()).unwrap();
-        let second = UpdateGuard::try_acquire("a", locks, buses, errors);
+        let _first = UpdateGuard::try_acquire("a", locks.clone(), buses.clone(), &errors).unwrap();
+        let second = UpdateGuard::try_acquire("a", locks, buses, &errors);
         assert!(second.is_none());
     }
 
@@ -205,8 +204,7 @@ mod tests {
         let buses = Arc::new(Mutex::new(HashMap::new()));
         let errors = fresh_errors();
         {
-            let _g = UpdateGuard::try_acquire("a", locks.clone(), buses.clone(), errors.clone())
-                .unwrap();
+            let _g = UpdateGuard::try_acquire("a", locks.clone(), buses.clone(), &errors).unwrap();
         }
         assert!(!locks.lock().unwrap().contains("a"));
         assert!(!buses.lock().unwrap().contains_key("a"));
@@ -217,7 +215,7 @@ mod tests {
         let locks = Arc::new(Mutex::new(HashSet::new()));
         let buses = Arc::new(Mutex::new(HashMap::new()));
         let errors = fresh_errors();
-        let g = UpdateGuard::try_acquire("a", locks, buses.clone(), errors).unwrap();
+        let g = UpdateGuard::try_acquire("a", locks, buses.clone(), &errors).unwrap();
         let mut rx = buses.lock().unwrap().get("a").cloned().unwrap();
         g.emit(UpdatePhase::BackingUp);
         assert_eq!(*rx.borrow_and_update(), UpdatePhase::BackingUp);
@@ -232,7 +230,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("a".to_owned(), "stale".to_owned());
-        let _g = UpdateGuard::try_acquire("a", locks, buses, errors.clone()).unwrap();
+        let _g = UpdateGuard::try_acquire("a", locks, buses, &errors).unwrap();
         assert!(!errors.lock().unwrap().contains_key("a"));
     }
 }

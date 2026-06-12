@@ -132,7 +132,7 @@ pub async fn handle(
         &id,
         state.update_locks.clone(),
         state.update_phase_buses.clone(),
-        state.update_errors.clone(),
+        &state.update_errors,
     ) else {
         return Err(AppError::Conflict {
             code: "update_in_progress",

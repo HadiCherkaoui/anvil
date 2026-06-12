@@ -192,7 +192,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                 &id,
                 state.update_locks.clone(),
                 state.update_phase_buses.clone(),
-                state.update_errors.clone(),
+                &state.update_errors,
             ) else {
                 continue;
             };
@@ -583,7 +583,7 @@ async fn auto_apply_pending(
         server_id,
         state.update_locks.clone(),
         state.update_phase_buses.clone(),
-        state.update_errors.clone(),
+        &state.update_errors,
     ) else {
         // Another apply / update holds the lock — leave the bumps in
         // pending; the next poll tick (or a manual click) picks them up.
