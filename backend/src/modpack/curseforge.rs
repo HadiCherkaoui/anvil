@@ -6,24 +6,25 @@
 //! optionally `--file-id`. The file id MUST point at the modpack's CLIENT
 //! file — itzg refuses server-pack files because they ship without the
 //! `manifest.json` it needs to drive the install. mc-image-helper reads
-//! the client manifest, downloads the linked server pack itself, installs
+//! the client manifest, downloads each listed mod via the CF API, installs
 //! the mod loader, and writes `/data/.install-curseforge.env` (verified
 //! in mc-image-helper's `CurseForgeInstaller.matchesPreviousInstall`) so
 //! subsequent boots only reinstall when `CF_FILE_ID` differs.
 //!
 //! The provider's runtime job:
 //!   1. At create / poll time, pick the newest CLIENT file matching the
-//!      channel filter that links a server pack (via `serverPackFileId`).
-//!      Projects that only ship direct server-pack files have no client
-//!      manifest and are therefore unsupported on the `AUTO_CURSEFORGE`
-//!      path — the picker returns `None` for those.
+//!      channel filter. Server packs are never consumed on this path, so
+//!      a `serverPackFileId` link is NOT required — some projects (ATM-11
+//!      0.2.0) upload their server files as unlinked "additional files",
+//!      which the files API doesn't even list. Direct server-pack files
+//!      (`isServerPack: true`) stay excluded — they have no manifest.
 //!   2. Render the `CF_SLUG` + `CF_FILE_ID` env pair so itzg can resolve
 //!      and install the pack. The slug is captured once at create-time
 //!      from `CurseForgeApiClient::project` and never changes for a row.
 
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{anyhow, Context as _, Result};
 use k8s_openapi::api::core::v1::EnvVar;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -70,7 +71,7 @@ const CF_API_KEY_SECRET_FIELD: &str = "CF_API_KEY";
 /// per-server in a future revision if they hit the ceiling.
 const CF_BOOT_TIMEOUT: Duration = Duration::from_mins(15);
 
-/// Release channel filter applied when picking the latest server-pack file.
+/// Release channel filter applied when picking the latest client file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
@@ -118,8 +119,8 @@ pub struct Config {
     /// `current_version_id`, since that's what we surface in the UI.
     pub version_skip: Vec<String>,
     /// CLIENT file id currently deployed (the one with `manifest.json`).
-    /// itzg unpacks the client zip, reads its manifest, and downloads the
-    /// linked server pack itself — passing the server-pack id here would
+    /// itzg unpacks the client zip, reads its manifest, and downloads each
+    /// listed mod via the CF API — passing a server-pack id here would
     /// trip itzg's "do not select a server file" guard.
     #[serde(deserialize_with = "u32_or_numeric_string")]
     pub current_version_id: u32,
@@ -169,16 +170,17 @@ impl CurseForgeServerPack {
     /// and are unsupported here.
     ///
     /// The candidates are non-server-pack files matching the channel
-    /// filter, with a linked `serverPackFileId` (proof the project ships
-    /// a server pack at all), and not in the skip list (matched against
-    /// the file id or display name).
+    /// filter and not in the skip list (matched against the file id or
+    /// display name). A linked `serverPackFileId` is deliberately NOT
+    /// required: mc-image-helper installs from the client manifest and
+    /// never reads server packs, and some projects (ATM-11 0.2.0) ship
+    /// their server files as unlinked "additional files".
     #[must_use]
     pub fn pick_latest_client_file_id(&self, files: &[CfFile]) -> Option<u32> {
         files
             .iter()
             .filter(|f| !f.is_server_pack)
             .filter(|f| self.config.channel.accepts(f.release_type))
-            .filter(|f| f.server_pack_file_id.is_some())
             .filter(|f| {
                 let id_str = f.id.to_string();
                 !self
@@ -421,19 +423,19 @@ mod tests {
         assert_eq!(p.pick_latest_client_file_id(&files), Some(2));
     }
 
+    // Regression (ATM-11 0.2.0, 2026-07): authors sometimes upload the
+    // server pack as an unlinked "additional file", so the newest client
+    // file carries no `serverPackFileId`. itzg installs from the client
+    // manifest and never reads server packs — the picker must not hide
+    // such releases behind older, linked ones.
     #[test]
-    fn pick_latest_id_skips_clients_without_linked_server_pack() {
-        // A client file with no `serverPackFileId` proves the project
-        // doesn't ship a server pack at all — itzg can't install those.
+    fn pick_latest_id_accepts_clients_without_linked_server_pack() {
         let p = pack(Channel::Release, vec![]);
-        let files = vec![cf_file(
-            1,
-            "client-without-server-pack",
-            false,
-            1,
-            "2026-01-01T00:00:00Z",
-        )];
-        assert!(p.pick_latest_client_file_id(&files).is_none());
+        let files = vec![
+            cf_client_with_link(1, "ATM-0.1.2", 1, "2026-06-23T00:00:00Z", 100),
+            cf_file(2, "ATM-0.2.0", false, 1, "2026-07-02T00:00:00Z"),
+        ];
+        assert_eq!(p.pick_latest_client_file_id(&files), Some(2));
     }
 
     #[test]
