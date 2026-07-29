@@ -20,12 +20,26 @@ allowBuilds:
 # release named by the advisory, kept inside the parent's major so nothing
 # breaks. Drop an entry once the parent ships a fixed range on its own.
 #
-# `<pkg>@<major>` keys pin one major at a time — brace-expansion is present
-# as both v1 (via minimatch@3) and v5, and they are not interchangeable.
+# A `<pkg>@<major>` key pins one major at a time, for packages that resolve to
+# several incompatible lineages at once.
+#
+# Known gap: brace-expansion@1 stays flagged by GHSA-mh99-v99m-4gvg, whose
+# affected range is a flat `<=5.0.7` even though the fix only ever landed on
+# 5.x. It cannot be cleared here — see the note on the pin below — and it is
+# build-time only: node_modules lives in the Dockerfile's frontend-builder
+# stage and never reaches the distroless runtime image.
 overrides:
   "@babel/core": "^7.29.6" # GHSA-4x5r-pxfx-6jf8 — arbitrary file read
-  "brace-expansion@1": "^1.1.16" # GHSA-3jxr-9vmj-r5cp, GHSA-mh99-v99m-4gvg — DoS
-  "brace-expansion@5": "^5.0.8" # GHSA-jxxr-4gwj-5jf2 — DoS
+  # Split per-major and NOT unified on 5.x, which would look like the way to
+  # clear GHSA-mh99-v99m-4gvg: minimatch@3 does
+  # `var expand = require('brace-expansion')` and calls it directly, but 5.x's
+  # CommonJS build exports a namespace object, so forcing 5.x there dies with
+  # "expand is not a function" the moment ESLint expands a glob. Dropping
+  # minimatch@3 instead is no cheaper — eslint, @eslint/eslintrc and three
+  # eslint-plugin-* packages all still depend on it, so it needs a coordinated
+  # ESLint 10 upgrade rather than an override. 1.1.17 is the newest 1.x.
+  "brace-expansion@1": "^1.1.17" # GHSA-3jxr-9vmj-r5cp — DoS
+  "brace-expansion@5": "^5.0.8" # GHSA-jxxr-4gwj-5jf2, GHSA-mh99-v99m-4gvg — DoS
   "js-yaml@4": "^4.3.0" # GHSA-52cp-r559-cp3m, GHSA-h67p-54hq-rp68 — quadratic CPU
   postcss: "^8.5.18" # GHSA-6g55-p6wh-862q, GHSA-r28c-9q8g-f849, GHSA-qx2v-qp2m-jg93
   sharp: "^0.35.0" # GHSA-f88m-g3jw-g9cj — inherited libvips CVEs
