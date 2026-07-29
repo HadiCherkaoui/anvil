@@ -12,3 +12,20 @@
 allowBuilds:
   sharp: true
   unrs-resolver: true
+
+# Transitive-dependency security pins. Every entry is a package we do not
+# depend on directly — the vulnerable version is hard-pinned by a parent
+# (Next.js pins postcss exactly; ESLint drags in minimatch@3 -> brace-expansion@1)
+# so bumping our own deps cannot reach them. Each pin is the lowest fixed
+# release named by the advisory, kept inside the parent's major so nothing
+# breaks. Drop an entry once the parent ships a fixed range on its own.
+#
+# `<pkg>@<major>` keys pin one major at a time — brace-expansion is present
+# as both v1 (via minimatch@3) and v5, and they are not interchangeable.
+overrides:
+  "@babel/core": "^7.29.6" # GHSA-4x5r-pxfx-6jf8 — arbitrary file read
+  "brace-expansion@1": "^1.1.16" # GHSA-3jxr-9vmj-r5cp, GHSA-mh99-v99m-4gvg — DoS
+  "brace-expansion@5": "^5.0.8" # GHSA-jxxr-4gwj-5jf2 — DoS
+  "js-yaml@4": "^4.3.0" # GHSA-52cp-r559-cp3m, GHSA-h67p-54hq-rp68 — quadratic CPU
+  postcss: "^8.5.18" # GHSA-6g55-p6wh-862q, GHSA-r28c-9q8g-f849, GHSA-qx2v-qp2m-jg93
+  sharp: "^0.35.0" # GHSA-f88m-g3jw-g9cj — inherited libvips CVEs
