@@ -62,9 +62,14 @@ export function stripAnsi(line: string): string {
 	return line.replace(ANSI_ESCAPE, "");
 }
 
+// `Caused by:` sits outside the \b(?:…)\b group on purpose. A trailing \b
+// after the literal colon demands a *word* char next, but stack traces read
+// `Caused by: java.lang.…` — space follows, so inside the group that
+// alternative could never match and continuation lines were scored "info".
+const ERROR_PATTERN = /\b(?:ERROR|FATAL|SEVERE|Exception)\b|Caused by:/;
+
 export function classifyLine(line: string): LogLevel {
-	if (/\b(?:ERROR|FATAL|SEVERE|Exception|Caused by:)\b/.test(line))
-		return "error";
+	if (ERROR_PATTERN.test(line)) return "error";
 	if (/\bWARN(?:ING)?\b/.test(line)) return "warn";
 	return "info";
 }

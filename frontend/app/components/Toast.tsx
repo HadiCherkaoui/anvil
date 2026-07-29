@@ -33,6 +33,11 @@ const TONE_CLASS: Record<Tone, string> = {
 
 const TOAST_TTL_MS = 4000;
 
+// Monotonic counter, not Date.now() + Math.random(): two toasts pushed in the
+// same tick used to risk a duplicate React key, and randomness bought nothing
+// for a value that never leaves the page.
+let lastToastId = 0;
+
 export function ToastProvider({
 	children,
 }: {
@@ -40,7 +45,7 @@ export function ToastProvider({
 }): ReactElement {
 	const [toasts, setToasts] = useState<Toast[]>([]);
 	const push = useCallback((message: string, tone: Tone = "info"): void => {
-		const id = Date.now() + Math.random();
+		const id = ++lastToastId;
 		setToasts((prev) => [...prev, { id, message, tone }]);
 		window.setTimeout(() => {
 			setToasts((prev) => prev.filter((t) => t.id !== id));
