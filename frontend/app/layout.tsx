@@ -4,6 +4,7 @@
 
 import type { Metadata } from "next";
 import { Fira_Code, Fira_Sans } from "next/font/google";
+import { Colophon } from "./components/Colophon";
 import { CommandBar } from "./components/CommandBar";
 import { ToastProvider } from "./components/Toast";
 import "./globals.css";
@@ -34,6 +35,10 @@ export default function RootLayout({
 		firaSans.variable,
 		firaCode.variable,
 		"min-h-screen",
+		// Column so the colophon rail sits on the viewport floor on short pages
+		// instead of floating directly under the content.
+		"flex",
+		"flex-col",
 		"font-sans",
 		"antialiased",
 	].join(" ");
@@ -42,7 +47,8 @@ export default function RootLayout({
 			<body className={bodyClass}>
 				<ToastProvider>
 					<CommandBar />
-					<main>{children}</main>
+					<main className="flex-1">{children}</main>
+					<Colophon />
 				</ToastProvider>
 			</body>
 		</html>
