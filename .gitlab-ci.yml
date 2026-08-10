@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # anvil CI/CD pipeline.
 #
 # Two stages: test (parallel rust lint + tests) and image (docker push +

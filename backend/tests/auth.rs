@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration tests for the OIDC auth middleware and `/api/auth/me` endpoint.
 //!
 //! These tests do NOT contact a real Authentik instance. Login/callback flows

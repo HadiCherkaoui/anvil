@@ -1,0 +1,74 @@
+version = 1
+
+SPDX-PackageName = "anvil"
+SPDX-PackageSupplier = "Hadi Cherkaoui <contact@hide.cherkaoui.ch>"
+SPDX-PackageDownloadLocation = "https://gitlab.cherkaoui.ch/HadiCherkaoui/anvil"
+
+# Files that cannot carry an inline SPDX header without changing behaviour.
+# Everything else is annotated in-file by `reuse annotate`.
+#
+# Copyright notices carry no year on purpose: REUSE makes it optional, copyright
+# attaches automatically under Berne, and a year nobody updates becomes a false
+# claim rather than a useful fact. Git history is the record.
+
+# The root LICENSE is a verbatim copy of LICENSES/AGPL-3.0-or-later.txt, kept
+# because that is where GitLab and GitHub detect the licence. The text is the
+# FSF's, not ours -- `override` stops the 2007 FSF line inside it being reported
+# as this file's copyright.
+[[annotations]]
+path = "LICENSE"
+precedence = "override"
+SPDX-FileCopyrightText = "2007 Free Software Foundation, Inc. <https://fsf.org/>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# Generated, never hand-edited.
+[[annotations]]
+path = ["backend/Cargo.lock", "frontend/pnpm-lock.yaml"]
+SPDX-FileCopyrightText = "Hadi Cherkaoui <contact@hide.cherkaoui.ch>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# sqlx::migrate!("./migrations") in backend/src/db.rs embeds a checksum of all
+# fourteen migrations at compile time and verifies them at startup. Editing any
+# of them makes a deployed server fail with VersionMismatch against its existing
+# volume -- the single most damaging thing this rollout could have done.
+[[annotations]]
+path = "backend/migrations/**"
+SPDX-FileCopyrightText = "Hadi Cherkaoui <contact@hide.cherkaoui.ch>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# Helm templates render into the deployed manifests; guarded templates would
+# render comment-only documents when disabled, and .tpl is unknown to reuse.
+[[annotations]]
+path = "deploy/templates/**"
+SPDX-FileCopyrightText = "Hadi Cherkaoui <contact@hide.cherkaoui.ch>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# '# syntax=' must be line 1 or BuildKit silently unpins the frontend.
+[[annotations]]
+path = "Dockerfile"
+SPDX-FileCopyrightText = "Hadi Cherkaoui <contact@hide.cherkaoui.ch>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# JSON has no comment syntax.
+[[annotations]]
+path = ["frontend/package.json", "frontend/tsconfig.json"]
+SPDX-FileCopyrightText = "Hadi Cherkaoui <contact@hide.cherkaoui.ch>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# Written and periodically rewritten by Next.js tooling. All five lines sit
+# between its own <!-- BEGIN/END:nextjs-agent-rules --> markers -- none of it is
+# ours, and anything we inserted would be overwritten on the next update.
+[[annotations]]
+path = "frontend/AGENTS.md"
+precedence = "override"
+SPDX-FileCopyrightText = "Vercel, Inc."
+SPDX-License-Identifier = "MIT"
+
+# Verbatim captures of publicly published Maven metadata, used unmodified as
+# parser fixtures. Machine-generated version indexes with no creative expression
+# of ours; see LICENSES/LicenseRef-Upstream-Maven-Metadata.txt.
+[[annotations]]
+path = "backend/tests/fixtures/*_maven_metadata.xml"
+precedence = "override"
+SPDX-FileCopyrightText = "The MinecraftForge and NeoForged projects"
+SPDX-License-Identifier = "LicenseRef-Upstream-Maven-Metadata"

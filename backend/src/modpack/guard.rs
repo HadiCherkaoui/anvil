@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Drop-guard for one running update.
 //!
 //! Holds onto the per-server lock entry, the `watch::Sender` that feeds

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Normalised mod-dependency types for the Modrinth-only mod path.
 //!
 //! Individual mods are sourced exclusively from Modrinth (the catalog

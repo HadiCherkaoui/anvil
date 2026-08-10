@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration tests for `/api/servers/:id/backups`.
 //!
 //! The kube client is a tower-test mock without a configured responder,

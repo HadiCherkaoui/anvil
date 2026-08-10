@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/servers/{id}/logs/stream` — live tail of pod logs over WS.
 //!
 //! Per-connection task structure: split the WebSocket into a sender and

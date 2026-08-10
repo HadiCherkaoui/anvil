@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # ADR 0004: Cluster-Specific Values Surfaced via Helm Values, Not Hardcoded
 
 **Date:** 2026-05-02

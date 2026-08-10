@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `PATCH /api/servers/:id/version` — change MC version on a non-modpack server.
 //!
 //! Validates the request synchronously, acquires the per-server update lock,

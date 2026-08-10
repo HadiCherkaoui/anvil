@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/runtimes/{runtime}/versions` — Forge / `NeoForge` loader versions.
 //!
 //! Anvil scrapes the upstream Maven `maven-metadata.xml` for each runtime,

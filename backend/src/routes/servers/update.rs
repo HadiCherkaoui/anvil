@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `POST /api/servers/:id/update` — kick off an update FSM run.
 //!
 //! Validates the server is non-vanilla, picks the target version (body

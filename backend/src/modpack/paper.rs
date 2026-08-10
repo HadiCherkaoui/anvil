@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Paper provider — configured itzg image with `TYPE=PAPER`.
 //!
 //! Paper consumes Bukkit-API plugins, not Forge mods. The plugin list is

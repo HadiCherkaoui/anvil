@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Anvil — k8s-native Minecraft server panel.
 //!
 //! This crate exposes both an `anvil` binary and a small library surface

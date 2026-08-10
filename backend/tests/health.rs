@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration test for the health endpoint.
 //!
 //! Confirms the router responds to `GET /api/health` with 200 and a JSON body

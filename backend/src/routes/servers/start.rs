@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `POST /api/servers/:id/start` — scale the `StatefulSet` to 1 replica.
 //!
 //! Patches the `/scale` subresource (never strategic-merge on Spec).

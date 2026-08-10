@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `CurseForge` HTTP client with a 1h per-project file-list cache.
 //!
 //! Calls land on `api.curseforge.com/v1`; the API key comes from the

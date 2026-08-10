@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `/api/servers/{id}/plugins*` — Paper plugin list editing + apply + WS.
 //!
 //! Mirrors the `/mods` shape one-for-one: pending edits go into

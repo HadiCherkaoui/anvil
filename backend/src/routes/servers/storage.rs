@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `PATCH /api/servers/:id/storage` — grow-only PVC resize.
 //!
 //! ZFS-CSI supports online expansion when the PVC is mounted, otherwise

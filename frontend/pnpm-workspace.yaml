@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # pnpm 11 config — the package-script allowlist moved here from
 # `package.json#pnpm.onlyBuiltDependencies` (which pnpm 11 silently
 # ignores). Each entry must be `true` (run the package's postinstall

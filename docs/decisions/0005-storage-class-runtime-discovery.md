@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # ADR 0005: StorageClass List via Runtime k8s API, LB Support via Helm
 
 **Date:** 2026-05-02

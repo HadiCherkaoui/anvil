@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # cargo-fuzz crate for anvil. Kept OUT of the backend workspace (own
 # [workspace] table below) so its nightly-only, sanitizer-instrumented build
 # never perturbs `cargo build`/`cargo test` in the main crate.

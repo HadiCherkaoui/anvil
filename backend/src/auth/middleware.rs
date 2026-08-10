@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `require_session` axum middleware.
 //!
 //! Reads the `anvil_session` cookie, verifies the HS256 JWT, enforces

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # anvil Helm chart values. Override per-deployment; legal values documented in docs/cluster-profile.md and ADR 0004.
 
 image:

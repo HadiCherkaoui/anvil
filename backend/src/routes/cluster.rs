@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/cluster/capabilities` — what the cluster supports.
 //!
 //! Hybrid source per ADR 0005: LB / `NodePort` / `ClusterIP` availability

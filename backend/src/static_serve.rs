@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Static frontend serving (feature-gated).
 //!
 //! This module is compiled in two flavours, picked at build time via Cargo

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Anvil binary entry point.
 //!
 //! Boots a Tokio runtime, initializes tracing, opens the `SQLite` pool,

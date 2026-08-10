@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/servers/:id` — detail view of a single managed server.
 //!
 //! Reads the metadata from `SQLite` and concurrently fetches the live

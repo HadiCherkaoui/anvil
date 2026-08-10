@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Sync FSM for `modded` mods and Paper plugins.
 //!
 //! [`SyncTarget::Mods`] reads `modded.pending` and commits to `modded.mods`;

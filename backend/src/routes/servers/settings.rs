@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `PATCH /api/servers/:id/settings` — update server settings.
 //!
 //! `memory_mi` applies on next start to every server type. Modpack-specific

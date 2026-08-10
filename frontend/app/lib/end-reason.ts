@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Friendly translations for the kebab-case `EndReason` strings the
 // /logs/stream WS emits — without them the UI shows internal protocol
 // vocabulary like "pod-unavailable".

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Modrinth API client (`api.modrinth.com/v2`).
 //!
 //! No auth required; sets a polite `User-Agent` per Modrinth's API docs.

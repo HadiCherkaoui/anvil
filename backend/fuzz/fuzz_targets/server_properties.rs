@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Fuzz the user-editable `server.properties` JSON input path.
 //!
 //! Minecraft server properties are edited through Anvil's Properties tab and

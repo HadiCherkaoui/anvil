@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/servers/:id/logs` — last 200 lines of pod logs.
 //!
 //! NOT a streaming endpoint — snapshot only. The frontend has a refresh

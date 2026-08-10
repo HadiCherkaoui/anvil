@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Integration tests for `PATCH /api/servers/:id/version`.
 //!
 //! These exercise the synchronous validation path of the route. The FSM is

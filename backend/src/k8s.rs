@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Kubernetes client glue and label/annotation constants.
 //!
 //! Wraps `kube::Client` construction and defines the shape types

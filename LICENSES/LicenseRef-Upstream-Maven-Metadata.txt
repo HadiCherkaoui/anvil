@@ -1,0 +1,14 @@
+Upstream Maven repository metadata
+
+The files covered by this reference are verbatim captures of Maven repository
+metadata published publicly by the MinecraftForge and NeoForged projects. They
+are used unmodified as test fixtures.
+
+They are machine-generated indexes of released version strings. They contain no
+creative expression authored by this project, and no copyright is claimed over
+them here. They are reproduced solely to pin the parser's behaviour against real
+upstream responses.
+
+Sources:
+  https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml
+  https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml

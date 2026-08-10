@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Helper-Pod lifecycle (`mc-{id}-files`) and the generic `pods/exec`
 //! primitives for file ops. Pure plumbing — handler logic lives in
 //! `routes/servers/files.rs`.

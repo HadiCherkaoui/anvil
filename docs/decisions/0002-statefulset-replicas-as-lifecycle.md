@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # ADR 0002: StatefulSet Replicas as Lifecycle Primitive
 
 **Date:** 2026-05-02

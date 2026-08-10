@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Backup, restore, and mod-sync Job builders.
 //!
 //! Each Job mounts the per-server data PVC (`data-mc-{id}-0`); backup and

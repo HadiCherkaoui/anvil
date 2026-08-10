@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `/api/servers/{id}/mods*` — modlist editing + apply + apply-stream WS.
 //!
 //! Pending ops are appended to `source_config.pending` by `POST /mods` and

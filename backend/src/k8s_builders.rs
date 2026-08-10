@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Pure constructors for the per-server k8s objects.
 //!
 //! These functions take a [`BuildParams`] and return typed kube-rs

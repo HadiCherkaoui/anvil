@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `POST /api/servers/:id/stop` — scale the `StatefulSet` to 0 replicas.
 //!
 //! Same shape as `start.rs` but no `last_started_at` update.

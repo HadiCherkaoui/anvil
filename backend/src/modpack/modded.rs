@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Modded runtime provider — Fabric / Forge / `NeoForge` with explicit modlist.
 //!
 //! Reuses the configured itzg image with `TYPE` switching. Mod jars are NOT

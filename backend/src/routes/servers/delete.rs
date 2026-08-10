@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `DELETE /api/servers/:id` — tear down a managed server in the order
 //! `StatefulSet` → wait for pod gone → PVC → public Service → headless
 //! Service → Secret → `SQLite` row.

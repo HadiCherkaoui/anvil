@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Authentik OIDC client with a 1h provider-metadata cache.
 //!
 //! Login = Authorization Code + PKCE; the cookie we issue afterwards is our

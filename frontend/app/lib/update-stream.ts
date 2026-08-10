@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Hook for /api/servers/:id/update/stream — typed frames, reconnect with exponential backoff.
 
 "use client";

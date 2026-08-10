@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/servers/{id}/players` — bulk read.
 //! `POST /api/servers/{id}/players/action` — discriminated 11-variant body.
 //! `POST /api/servers/{id}/players/broadcast` — `/say MESSAGE`.

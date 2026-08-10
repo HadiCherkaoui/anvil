@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Orchestrated MC version change for non-modpack servers.
 //!
 //! Mirrors `orchestrator::run` shape: announce → stop → backup → swap → start

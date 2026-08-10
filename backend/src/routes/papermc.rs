@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/papermc/versions` — supported Paper Minecraft versions.
 //!
 //! itzg's `TYPE=PAPER` rejects MC versions Paper doesn't ship for, so the

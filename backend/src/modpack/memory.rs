@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! JVM memory + GC env shared by every itzg-based provider.
 //!
 //! itzg's image reads `INIT_MEMORY` and `MAX_MEMORY` to set `-Xms` / `-Xmx`.

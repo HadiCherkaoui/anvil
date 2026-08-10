@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `OpenAPI` document root for the anvil API.
 //!
 //! [`ApiDoc`] is the entry point consumed by `utoipa-axum`'s

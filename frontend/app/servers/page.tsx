@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { Suspense, type ReactElement } from "react";
 
 import { ServerDetailView } from "./ServerDetailView";

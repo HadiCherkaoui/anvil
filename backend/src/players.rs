@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Pure parsing of Minecraft RCON outputs and log lines.
 //!
 //! All functions are I/O-free and `kube`-free. The route handlers feed

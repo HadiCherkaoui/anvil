@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `GET /api/servers/{id}/update/stream` — live update progress over WS.
 //!
 //! Subscribes to the orchestrator's `watch::Receiver<UpdatePhase>` for the

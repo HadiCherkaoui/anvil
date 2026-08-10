@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `/api/catalog/*` — unified `CurseForge` + Modrinth catalog.
 //!
 //! `GET /api/catalog/search` fans out to Modrinth (always-on) + `CurseForge`

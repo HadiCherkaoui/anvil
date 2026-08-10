@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! E2E sanity for the new properties column: round-trips through the DB
 //! and the public env-emission helper. No k8s API in scope — these are
 //! pool-only tests using the same in-memory `SQLite` the other test files

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `CurseForge` modpack provider.
 //!
 //! Drives the configured itzg image with `TYPE=AUTO_CURSEFORGE`. itzg

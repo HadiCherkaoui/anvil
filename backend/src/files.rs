@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Pure parsers for the file-browser exec output.
 //!
 //! Functions are I/O-free and `kube`-free. Tests cover real busybox

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Session JWT mint + verify (HS256, signed with `ANVIL_SESSION_KEY`).
 
 use crate::auth::types::SessionClaims;

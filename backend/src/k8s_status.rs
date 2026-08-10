@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Pure functions deriving live status and endpoint from k8s objects.
 //!
 //! No I/O — handlers fetch the StatefulSet/Pod/Service first, then call

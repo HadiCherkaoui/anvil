@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # Anvil — Mod dependencies · per-mod updates · paper plugin pre-select (Spec 4)
 
 **Date:** 2026-05-06

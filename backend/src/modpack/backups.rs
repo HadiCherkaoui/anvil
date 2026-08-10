@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! User-facing manual backup + restore tasks.
 //!
 //! Backup: `(maybe stop) → tar → (maybe start)` — no announce, no done-marker

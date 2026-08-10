@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Wire-format frame types for the WebSocket logs stream.
 //!
 //! Each WS text frame is a JSON object whose `type` discriminates the
