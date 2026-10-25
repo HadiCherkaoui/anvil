@@ -23,7 +23,7 @@ async fn properties_default_emits_full_env_block() {
         "VIEW_DISTANCE",
         "SIMULATION_DISTANCE",
         "PVP",
-        "WHITE_LIST",
+        "ENABLE_WHITELIST",
         "SPAWN_PROTECTION",
         "SPAWN_ANIMALS",
         "SPAWN_MONSTERS",

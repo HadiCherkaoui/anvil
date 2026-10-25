@@ -211,7 +211,8 @@ impl ServerProperties {
             kv("VIEW_DISTANCE", self.view_distance.to_string()),
             kv("SIMULATION_DISTANCE", self.simulation_distance.to_string()),
             kv("PVP", bool_str(self.pvp)),
-            kv("WHITE_LIST", bool_str(self.white_list)),
+            // itzg ignores `WHITE_LIST`; `true` here also turns on enforce-whitelist.
+            kv("ENABLE_WHITELIST", bool_str(self.white_list)),
             kv("SPAWN_PROTECTION", self.spawn_protection.to_string()),
             kv("SPAWN_ANIMALS", bool_str(self.spawn_animals)),
             kv("SPAWN_MONSTERS", bool_str(self.spawn_monsters)),
@@ -302,8 +303,20 @@ mod tests {
         let env = p.to_env();
         let pvp = env.iter().find(|e| e.name == "PVP").unwrap();
         assert_eq!(pvp.value.as_deref(), Some("false"));
-        let wl = env.iter().find(|e| e.name == "WHITE_LIST").unwrap();
+        let wl = env.iter().find(|e| e.name == "ENABLE_WHITELIST").unwrap();
         assert_eq!(wl.value.as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn to_env_enables_whitelist_through_itzg_toggle() {
+        let p = ServerProperties {
+            white_list: true,
+            ..ServerProperties::default()
+        };
+        let env = p.to_env();
+        let wl = env.iter().find(|e| e.name == "ENABLE_WHITELIST").unwrap();
+        assert_eq!(wl.value.as_deref(), Some("true"));
+        assert!(env.iter().all(|e| e.name != "WHITE_LIST"));
     }
 
     #[test]
