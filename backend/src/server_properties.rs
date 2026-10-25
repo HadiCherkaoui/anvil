@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(d.spawn_protection, 16);
         assert!(d.allow_nether);
         assert!(!d.allow_flight);
-        assert!(d.seed.is_empty());
+        assert_eq!(d.seed, "");
     }
 
     #[test]

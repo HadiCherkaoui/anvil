@@ -213,7 +213,7 @@ mod tests {
     fn capabilities_no_expandable_when_all_disallow() {
         let scs = vec![sc("a", false, false), sc("b", false, false)];
         let caps = compute_caps_from_scs(&scs, false);
-        assert!(caps.expandable_storage_classes.is_empty());
+        assert_eq!(caps.expandable_storage_classes, Vec::<String>::new());
         assert!(!caps.loadbalancer);
         assert_eq!(caps.default_storage_class, None);
     }

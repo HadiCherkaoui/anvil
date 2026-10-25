@@ -169,7 +169,7 @@ mod tests {
     fn empty_versions_is_ok() {
         let json = r#"{"latest": {"release": "1.21.4"}, "versions": []}"#;
         let v = parse_manifest(json).expect("parses");
-        assert!(v.is_empty());
+        assert_eq!(v, Vec::<String>::new());
     }
 
     #[test]

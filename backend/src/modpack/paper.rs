@@ -166,7 +166,7 @@ mod tests {
         }"#;
         let c: Config = serde_json::from_str(body).expect("parses");
         assert_eq!(c.plugins.len(), 1);
-        assert!(c.pending_plugins.is_empty());
+        assert_eq!(c.pending_plugins, Vec::<ModEntry>::new());
         assert_eq!(c.plugins[0].filename, "LuckPerms-Bukkit-5.4.jar");
     }
 
@@ -174,7 +174,7 @@ mod tests {
     fn config_defaults_plugin_fields_when_absent() {
         let body = r#"{"mc_version": "1.21.1"}"#;
         let c: Config = serde_json::from_str(body).expect("parses");
-        assert!(c.plugins.is_empty());
-        assert!(c.pending_plugins.is_empty());
+        assert_eq!(c.plugins, Vec::<ModEntry>::new());
+        assert_eq!(c.pending_plugins, Vec::<ModEntry>::new());
     }
 }

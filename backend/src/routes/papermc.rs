@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn fallback_versions_are_usable() {
-        assert!(!FALLBACK_VERSIONS.is_empty());
+        assert_ne!(FALLBACK_VERSIONS, [] as [&str; 0]);
         // The fallback feeds the same dropdown, so it is bound by the same
         // release-channel rule as parsed upstream data.
         assert!(FALLBACK_VERSIONS.iter().all(|v| is_release(v)));

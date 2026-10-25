@@ -125,7 +125,10 @@ async fn loader_versions_neoforge_returns_grouping() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(!v["mc_versions"].as_array().unwrap().is_empty());
+    assert_ne!(
+        v["mc_versions"].as_array().unwrap(),
+        &Vec::<serde_json::Value>::new()
+    );
     assert!(v["by_mc"]["1.21.4"].as_array().is_some());
 }
 
